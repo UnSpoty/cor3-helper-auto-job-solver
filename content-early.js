@@ -7,6 +7,15 @@ var webVersion = null;
     if (window.__cor3WsInterceptorActive) return;
     window.__cor3WsInterceptorActive = true;
 
+    // F12 helper: call `__cor3Dump()` from the page console at any time to
+    // get a full state snapshot of the auto-jobs pipeline. The actual snapshot
+    // is built in the isolated content-script world and printed via console.*.
+    window.__cor3Dump = function () {
+        window.postMessage({ type: 'COR3_REQ_DUMP' }, '*');
+        console.log('[COR3 Helper] __cor3Dump() requested — snapshot will follow above this line.');
+    };
+    console.log('[COR3 Helper] Debug: type __cor3Dump() in console for a full auto-jobs state snapshot.');
+
     const OrigWebSocket = window.WebSocket;
     const trackedSockets = [];
     let activeSocket = null; // The socket that's currently receiving messages
@@ -411,6 +420,27 @@ var webVersion = null;
             return;
         }
 
+        // Intercept job operation responses (must come before the generic market data relay)
+        if (eventName === 'market' && payload && payload.event && payload.event.action) {
+            var jobAction = payload.event.action;
+            if (jobAction === 'job.take') {
+                window.postMessage({
+                    type: 'COR3_WS_JOB_ACCEPTED',
+                    data: payload.data,
+                    error: payload.error || null
+                }, '*');
+                // Fallthrough: response may also contain updated market data
+            }
+            if (jobAction === 'job.completed' || jobAction === 'job.complete') {
+                window.postMessage({
+                    type: 'COR3_WS_JOB_COMPLETED',
+                    data: payload.data,
+                    error: payload.error || null
+                }, '*');
+                return;
+            }
+        }
+
         // Intercept market responses — only relay actual market data (not "connected" acks)
         if (eventName === 'market' && payload && payload.data) {
             var mkt = payload.data.market;
@@ -639,6 +669,22 @@ var webVersion = null;
         var msg = '42["event",{"event":{"name":"expeditions","action":"collect.all"},"data":{"expeditionId":"' + expeditionId + '"}}]';
         wsSend(msg);
         return true;
+    };
+
+    // Accept a market job
+    window.__cor3AcceptJob = function (jobId, marketId) {
+        console.log('[COR3 Helper] Accepting job:', jobId, 'market:', marketId);
+        var data = JSON.stringify({ marketId: marketId, jobId: jobId });
+        var msg = '42["event",{"event":{"name":"market","action":"job.take"},"data":' + data + '}]';
+        return wsSend(msg);
+    };
+
+    // Complete a market job after solving
+    window.__cor3CompleteJob = function (jobId, marketId) {
+        console.log('[COR3 Helper] Completing job:', jobId, 'market:', marketId);
+        var data = JSON.stringify({ marketId: marketId, jobId: jobId });
+        var msg = '42["event",{"event":{"name":"market","action":"job.complete"},"data":' + data + '}]';
+        return wsSend(msg);
     };
 
     // Get a random human-like delay (400–900ms)
@@ -927,6 +973,13 @@ var webVersion = null;
         }
         if (event.data && event.data.type === 'COR3_KEEP_ALIVE') {
             window.__cor3KeepAlive();
+        }
+        // Job automation actions
+        if (event.data && event.data.type === 'COR3_ACCEPT_JOB') {
+            window.__cor3AcceptJob(event.data.jobId, event.data.marketId);
+        }
+        if (event.data && event.data.type === 'COR3_COMPLETE_JOB') {
+            window.__cor3CompleteJob(event.data.jobId, event.data.marketId);
         }
     });
 

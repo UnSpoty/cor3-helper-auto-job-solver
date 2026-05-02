@@ -2025,6 +2025,546 @@ chrome.storage.onChanged.addListener((changes, area) => {
     }
 });
 
+// --- Auto Jobs ---
+const autoJobsToggle = document.getElementById('autoJobsToggle'); // legacy span, kept for compat
+const autoJobsStatusEl = document.getElementById('autoJobsStatus');
+const autoJobsInfoEl = document.getElementById('autoJobsInfo');
+const autoJobsCurrentJobEl = document.getElementById('autoJobsCurrentJob');
+const autoJobsHomeToggle = document.getElementById('autoJobsHomeToggle');
+const autoJobsDarkToggle = document.getElementById('autoJobsDarkToggle');
+const autoJobsBuggedRow = document.getElementById('autoJobsBuggedRow');
+const autoJobsBuggedLabel = document.getElementById('autoJobsBuggedLabel');
+const autoJobsClearBugged = document.getElementById('autoJobsClearBugged');
+
+// Tracks enabled state (autoJobsToggle is now a span, not a checkbox)
+let autoJobsEnabled = false;
+
+function updateServerPills() {
+    document.querySelectorAll('.server-pill').forEach(pill => {
+        const cb = pill.querySelector('input[type="checkbox"]');
+        if (cb) pill.classList.toggle('active', cb.checked);
+    });
+}
+
+function updateAutoJobsUI(enabled) {
+    const btn = document.getElementById('autoJobsToggleBtn');
+    const configPanel = document.getElementById('jobsConfigPanel');
+    const runningPanel = document.getElementById('autoJobsRunningPanel');
+    const statusLine = document.getElementById('autoJobsStatusLine');
+
+    if (btn) {
+        btn.textContent = enabled ? '⏹ STOP AUTO JOBS' : '▶ START AUTO JOBS';
+        btn.classList.toggle('running', enabled);
+    }
+    if (configPanel) configPanel.classList.toggle('locked', enabled);
+    if (runningPanel) runningPanel.style.display = enabled ? '' : 'none';
+    if (statusLine) statusLine.textContent = enabled ? 'Running — monitoring for jobs...' : 'Configure above, then press START';
+    if (autoJobsInfoEl) autoJobsInfoEl.style.display = 'none';
+}
+
+function updateBuggedJobsDisplay(buggedObj) {
+    if (!autoJobsBuggedRow || !autoJobsBuggedLabel) return;
+    const now = Date.now();
+    const valid = Object.values(buggedObj || {}).filter(e => now - (e.ts || e) < 2 * 3600 * 1000);
+    if (valid.length === 0) {
+        autoJobsBuggedRow.style.display = 'none';
+        return;
+    }
+    const names = valid.map(e => e.name || '?').slice(0, 3).join(', ');
+    const extra = valid.length > 3 ? ` +${valid.length - 3}` : '';
+    autoJobsBuggedLabel.textContent = `⚠ Bugged (${valid.length}): ${names}${extra}`;
+    autoJobsBuggedRow.style.display = 'flex';
+}
+
+if (autoJobsClearBugged) {
+    autoJobsClearBugged.addEventListener('click', async () => {
+        const tab = await getCor3Tab();
+        if (tab) {
+            chrome.tabs.sendMessage(tab.id, { action: 'clearBuggedJobs' }).catch(() => {});
+        } else {
+            chrome.storage.local.set({ buggedJobIds: {} });
+        }
+    });
+}
+
+function updateAutoJobsStatusLabel(enabled) {
+    if (autoJobsStatusEl) {
+        autoJobsStatusEl.textContent = enabled ? 'Active' : 'Off';
+        autoJobsStatusEl.style.color = enabled ? 'var(--accent-green)' : 'var(--text-dim)';
+    }
+    updateAutoJobsUI(enabled);
+}
+
+function updateAutoJobsCurrentJob(state) {
+    if (!autoJobsCurrentJobEl) return;
+    const isStale = state && state.status !== 'idle' && state.updatedAt && (Date.now() - state.updatedAt > 5 * 60 * 1000);
+    if (!state || state.status === 'idle' || isStale) {
+        autoJobsCurrentJobEl.textContent = 'No active job';
+        autoJobsCurrentJobEl.style.color = 'var(--text-dim)';
+        return;
+    }
+    const isIpJob = state.jobType === 'ip_injection';
+    const isUploadJob = state.jobType === 'data_upload';
+    const isDecryptExtract = state.jobType === 'decrypt_extract';
+    const iconMap = { ip_injection: '💉', ip_cleanup: '🧹', data_upload: '📤', file_decryption: '🔐', log_deletion: '🗑️', log_download: '📥', file_elimination: '❌', data_download: '📥', decrypt_extract: '🔓' };
+    const solveIcon = iconMap[state.jobType] || '🔐';
+    const labels = { accepting: '⏳ Accepting', solving: `${solveIcon} Solving`, completing: '✅ Completing' };
+    const label = labels[state.status] || state.status;
+    const detail = state.jobName || state.jobId || '?';
+    const hasServer = isIpJob || isUploadJob || isDecryptExtract || ['ip_cleanup', 'log_deletion', 'log_download', 'file_elimination', 'data_download'].includes(state.jobType);
+    const server = hasServer && state.serverName ? ` @ ${state.serverName}` : '';
+    const file = (isUploadJob || isDecryptExtract || state.jobType === 'file_decryption') && state.fileCondition ? ` [${state.fileCondition}]` : '';
+    autoJobsCurrentJobEl.textContent = `${label}: ${detail}${server}${file}`;
+    autoJobsCurrentJobEl.style.color = 'var(--accent-cyan)';
+}
+
+const autoJobsDebugToggle = document.getElementById('autoJobsDebugToggle');
+const autoJobsDebugPanel = document.getElementById('autoJobsDebugPanel');
+const autoJobsDebugResult = document.getElementById('autoJobsDebugResult');
+
+function updateDebugPanelVisibility() {
+    if (!autoJobsDebugPanel) return;
+    const debugOn = autoJobsDebugToggle && autoJobsDebugToggle.checked;
+    autoJobsDebugPanel.style.display = debugOn ? '' : 'none';
+}
+
+// Load saved settings on popup open
+chrome.storage.sync.get('autoJobsSettings', data => {
+    const settings = data.autoJobsSettings || { enabled: false, debugMode: false, markets: { home: true, dark: true } };
+    autoJobsEnabled = !!settings.enabled;
+    if (autoJobsHomeToggle) autoJobsHomeToggle.checked = settings.markets.home !== false;
+    if (autoJobsDarkToggle) autoJobsDarkToggle.checked = settings.markets.dark !== false;
+    if (autoJobsDebugToggle) autoJobsDebugToggle.checked = settings.debugMode === true;
+    const enabledTypes = settings.enabledJobTypes || {};
+    document.querySelectorAll('.job-type-toggle').forEach(cb => {
+        cb.checked = enabledTypes[cb.dataset.type] !== false;
+    });
+    updateAutoJobsStatusLabel(settings.enabled);
+    updateDebugPanelVisibility();
+    updateServerPills();
+});
+
+// Load current job state on popup open
+chrome.storage.local.get(['autoJobsState', 'buggedJobIds'], data => {
+    if (data.autoJobsState) updateAutoJobsCurrentJob(data.autoJobsState);
+    updateBuggedJobsDisplay(data.buggedJobIds || {});
+});
+
+async function saveAndSendAutoJobsSettings() {
+    const enabledJobTypes = {};
+    document.querySelectorAll('.job-type-toggle').forEach(cb => {
+        enabledJobTypes[cb.dataset.type] = cb.checked;
+    });
+    const settings = {
+        enabled: autoJobsEnabled,
+        debugMode: autoJobsDebugToggle ? autoJobsDebugToggle.checked : false,
+        markets: {
+            home: autoJobsHomeToggle ? autoJobsHomeToggle.checked : true,
+            dark: autoJobsDarkToggle ? autoJobsDarkToggle.checked : true
+        },
+        enabledJobTypes
+    };
+    await chrome.storage.sync.set({ autoJobsSettings: settings });
+    const tab = await getCor3Tab();
+    if (tab) {
+        chrome.tabs.sendMessage(tab.id, { action: 'toggleAutoJobs', settings }).catch(() => {});
+    }
+    updateAutoJobsStatusLabel(settings.enabled);
+    updateDebugPanelVisibility();
+}
+
+// New START/STOP button
+const autoJobsToggleBtn = document.getElementById('autoJobsToggleBtn');
+if (autoJobsToggleBtn) {
+    autoJobsToggleBtn.addEventListener('click', async () => {
+        autoJobsEnabled = !autoJobsEnabled;
+        await saveAndSendAutoJobsSettings();
+    });
+}
+if (autoJobsHomeToggle) autoJobsHomeToggle.addEventListener('change', () => { updateServerPills(); saveAndSendAutoJobsSettings(); });
+if (autoJobsDarkToggle) autoJobsDarkToggle.addEventListener('change', () => { updateServerPills(); saveAndSendAutoJobsSettings(); });
+if (autoJobsDebugToggle) autoJobsDebugToggle.addEventListener('change', saveAndSendAutoJobsSettings);
+document.querySelectorAll('.job-type-toggle').forEach(cb => {
+    cb.addEventListener('change', saveAndSendAutoJobsSettings);
+});
+
+// Debug job trigger buttons
+document.querySelectorAll('.debug-job-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+        const jobType = btn.dataset.type;
+        if (!jobType) return;
+        const tab = await getCor3Tab();
+        if (!tab) {
+            if (autoJobsDebugResult) autoJobsDebugResult.textContent = 'No game tab found';
+            return;
+        }
+        document.querySelectorAll('.debug-job-btn').forEach(b => b.disabled = true);
+        if (autoJobsDebugResult) autoJobsDebugResult.textContent = 'Looking for ' + jobType + ' job...';
+        chrome.tabs.sendMessage(tab.id, { action: 'debugTriggerJobType', jobType }, response => {
+            document.querySelectorAll('.debug-job-btn').forEach(b => b.disabled = false);
+            if (chrome.runtime.lastError) {
+                if (autoJobsDebugResult) autoJobsDebugResult.textContent = 'Error: ' + chrome.runtime.lastError.message;
+                return;
+            }
+            if (response && response.success) {
+                if (autoJobsDebugResult) autoJobsDebugResult.textContent = 'Accepted ' + response.jobType + ' #' + response.jobId + ' — check console';
+            } else {
+                if (autoJobsDebugResult) autoJobsDebugResult.textContent = 'Not found: ' + (response && response.error || 'unknown error');
+            }
+        });
+    });
+});
+
+function renderAutoJobsLog(entries) {
+    const el = document.getElementById('autoJobsLog');
+    if (!el) return;
+    if (!entries || entries.length === 0) {
+        el.innerHTML = '<span style="color:var(--text-dim)">No activity yet</span>';
+        return;
+    }
+    el.innerHTML = entries.slice().reverse().map(e => {
+        if (e.level === 'separator') {
+            return `<div class="log-separator">${e.msg}</div>`;
+        }
+        const d = new Date(e.ts);
+        const ts = d.toLocaleTimeString('en', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+        const cls = e.level === 'warn' ? 'warn' : e.level === 'error' ? 'error' : e.level === 'ok' ? 'ok' : '';
+        return `<div class="log-entry ${cls}"><span class="log-entry-ts">${ts}</span><span class="log-entry-msg">${e.msg}</span></div>`;
+    }).join('');
+}
+
+chrome.storage.local.get('autoJobsLog', data => {
+    renderAutoJobsLog(data.autoJobsLog || []);
+});
+
+const autoJobsLogClear = document.getElementById('autoJobsLogClear');
+if (autoJobsLogClear) {
+    autoJobsLogClear.addEventListener('click', () => {
+        chrome.storage.local.set({ autoJobsLog: [] });
+        renderAutoJobsLog([]);
+    });
+}
+
+// Live-update job status when content.js changes storage
+chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes.autoJobsState) {
+        updateAutoJobsCurrentJob(changes.autoJobsState.newValue);
+    }
+    if (area === 'local' && changes.buggedJobIds) {
+        updateBuggedJobsDisplay(changes.buggedJobIds.newValue || {});
+    }
+    if (area === 'local' && changes.autoJobsLog) {
+        renderAutoJobsLog(changes.autoJobsLog.newValue || []);
+    }
+});
+
+// ─── Confirmation panel ───────────────────────────────────────────────────────
+
+let _confirmCountdownInterval = null;
+let _currentConfirmData = null;
+
+function showConfirmPanel(data) {
+    const panel = document.getElementById('jobConfirmPanel');
+    if (!panel) return;
+    _currentConfirmData = data;
+
+    const badge = document.getElementById('confirmTypeBadge');
+    const nameEl = document.getElementById('confirmJobName');
+    const paramsEl = document.getElementById('confirmParams');
+    if (badge) badge.textContent = (data.jobType || '').replace(/_/g, ' ');
+    if (nameEl) nameEl.textContent = data.jobName || '—';
+
+    if (paramsEl) {
+        const rows = [];
+        const p = (key, val) => {
+            const missing = !val;
+            const cls = missing ? 'cpv missing' : 'cpv';
+            const display = missing ? '⚠ not found' : val;
+            rows.push(`<div class="confirm-param-row"><span class="cpk">${key}:</span> <span class="${cls}">${display}</span></div>`);
+        };
+        if (data.serverName !== undefined) p('Server', data.serverName);
+        if (data.fileCondition !== undefined) p('File / Log', data.fileCondition);
+        if (data.logSeqs) p('Log seqs', JSON.stringify(data.logSeqs));
+        if (data.ips && data.ips.length) p('IPs', data.ips.join(', '));
+        paramsEl.innerHTML = rows.join('');
+    }
+
+    panel.style.display = 'block';
+
+    // Countdown
+    if (_confirmCountdownInterval) clearInterval(_confirmCountdownInterval);
+    const endTs = data.ts + 300_000;
+    function updateCountdown() {
+        const rem = Math.max(0, Math.ceil((endTs - Date.now()) / 1000));
+        const m = Math.floor(rem / 60);
+        const s = rem % 60;
+        const el = document.getElementById('confirmCountdown');
+        if (el) el.textContent = `${m}:${s.toString().padStart(2, '0')}`;
+        if (rem === 0) {
+            clearInterval(_confirmCountdownInterval);
+            hideConfirmPanel();
+        }
+    }
+    updateCountdown();
+    _confirmCountdownInterval = setInterval(updateCountdown, 1000);
+}
+
+function hideConfirmPanel() {
+    const panel = document.getElementById('jobConfirmPanel');
+    if (panel) panel.style.display = 'none';
+    if (_confirmCountdownInterval) { clearInterval(_confirmCountdownInterval); _confirmCountdownInterval = null; }
+    _currentConfirmData = null;
+}
+
+function sendConfirmResult(approved) {
+    if (!_currentConfirmData) return;
+    chrome.storage.local.set({ autoJobsConfirmResult: { requestTs: _currentConfirmData.ts, approved } });
+    hideConfirmPanel();
+}
+
+document.getElementById('confirmApproveBtn')?.addEventListener('click', () => sendConfirmResult(true));
+document.getElementById('confirmRejectBtn')?.addEventListener('click',  () => sendConfirmResult(false));
+
+document.getElementById('confirmCopyBtn')?.addEventListener('click', () => {
+    if (!_currentConfirmData) return;
+    const text = JSON.stringify(_currentConfirmData.debugInfo || _currentConfirmData, null, 2);
+    navigator.clipboard.writeText(text).then(() => {
+        const btn = document.getElementById('confirmCopyBtn');
+        if (btn) { btn.textContent = '✓ Copied'; setTimeout(() => { btn.textContent = '📋 Copy'; }, 1500); }
+    }).catch(() => {});
+});
+
+// Load pending confirm on popup open
+chrome.storage.local.get('autoJobsPendingConfirm', data => {
+    if (data.autoJobsPendingConfirm && data.autoJobsPendingConfirm.ts) {
+        // Only show if within the 5-minute window
+        if (Date.now() - data.autoJobsPendingConfirm.ts < 300_000) {
+            showConfirmPanel(data.autoJobsPendingConfirm);
+        }
+    }
+});
+
+// Live update when a new confirmation arrives
+chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local') return;
+    if (changes.autoJobsPendingConfirm) {
+        const nv = changes.autoJobsPendingConfirm.newValue;
+        if (nv && nv.ts && Date.now() - nv.ts < 300_000) {
+            showConfirmPanel(nv);
+        } else {
+            hideConfirmPanel();
+        }
+    }
+});
+
+// ─── Available jobs list ──────────────────────────────────────────────────────
+
+const JOB_TYPE_KEYWORDS_POPUP = {
+    file_decryption:  ['file decryption',  'file_decryption'],
+    ip_cleanup:       ['ip cleanup',        'ip_cleanup'],
+    ip_injection:     ['ip injection',      'ip_injection'],
+    log_deletion:     ['log deletion',      'log_deletion'],
+    log_download:     ['log download',      'log_download'],
+    file_elimination: ['file elimination',  'file_elimination'],
+    data_download:    ['data download',     'data_download'],
+    data_upload:      ['data upload',       'data_upload'],
+    decrypt_extract:  ['decrypt & extract', 'decrypt and extract', 'decrypt_extract'],
+};
+
+function detectJobTypePopup(job) {
+    if (!job || job.isCompleted || job.isExpired) return null;
+    const name = (job.name || job.category || '').toLowerCase();
+    for (const [type, kws] of Object.entries(JOB_TYPE_KEYWORDS_POPUP)) {
+        if (kws.some(kw => name.includes(kw))) return type;
+    }
+    return null;
+}
+
+function extractServerPopup(job) {
+    const rs = job.relatedServers;
+    if (!rs) return null;
+    if (typeof rs === 'string') return rs || null;
+    if (Array.isArray(rs) && rs.length > 0) {
+        const f = rs[0];
+        if (typeof f === 'string') return f || null;
+        if (f && typeof f === 'object') return f.name || f.serverName || f.server || null;
+    }
+    return null;
+}
+
+function extractFilePopup(job) {
+    const items = job.conditions && job.conditions.items;
+    if (!Array.isArray(items)) return null;
+    for (const item of items) {
+        const d = item.details;
+        if (!d) continue;
+        if (Array.isArray(d.logNames) && d.logNames.length > 0) return d.logNames[0];
+        if (typeof d.logName === 'string' && d.logName) return d.logName;
+        if (Array.isArray(d.fileNames) && d.fileNames.length > 0) return d.fileNames[0];
+        if (typeof d.fileName === 'string' && d.fileName) return d.fileName;
+        if (Array.isArray(d.fileIds) && d.fileIds.length > 0) return d.fileIds[0];
+        if (typeof d.fileId === 'string' && d.fileId) return d.fileId;
+        if (Array.isArray(d.extensions) && d.extensions.length > 0 && d.extensions[0] && d.extensions[0].ext) return d.extensions[0].ext;
+    }
+    return null;
+}
+
+function extractIPsPopup(job) {
+    const items = job.conditions && job.conditions.items;
+    if (!Array.isArray(items)) return [];
+    const ips = [];
+    for (const item of items) {
+        const d = item.details;
+        if (!d) continue;
+        if (Array.isArray(d.ipAddresses)) ips.push(...d.ipAddresses);
+        else if (Array.isArray(d.ips)) ips.push(...d.ips);
+        else if (typeof d.ipAddress === 'string' && d.ipAddress) ips.push(d.ipAddress);
+    }
+    return ips.filter(ip => /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip));
+}
+
+function renderJobsAvailableList() {
+    const container = document.getElementById('jobsAvailableList');
+    const countEl   = document.getElementById('jobsAvailableCount');
+    if (!container) return;
+
+    chrome.storage.local.get(['marketData', 'darkMarketData', 'darkMarketAvailable', 'buggedJobIds', 'autoJobsSettings', 'autoJobsState'], result => {
+        const bugged   = result.buggedJobIds || {};
+        const now      = Date.now();
+        const settings = result.autoJobsSettings || {};
+        const enabledTypes = settings.enabledJobTypes || {};
+
+        const sections = [];
+
+        // ── In-progress job (from script state) ──────────────────────────────
+        const state = result.autoJobsState;
+        const isStale = state && state.status !== 'idle' && state.updatedAt && (now - state.updatedAt > 5 * 60 * 1000);
+        if (state && state.status && state.status !== 'idle' && !isStale) {
+            const type = state.jobType || 'unknown';
+            const statusLabels = { accepting: '⏳ accepting', solving: '▶ solving', completing: '✅ completing' };
+            const statusLabel = statusLabels[state.status] || state.status;
+
+            let params = `<span style="color:var(--accent-cyan)">${statusLabel}</span>`;
+            if (state.serverName)    params += `  ·  srv: <b>${state.serverName}</b>`;
+            if (state.fileCondition) params += `  ·  file/log: <b>${state.fileCondition}</b>`;
+            if (state.ips && state.ips.length)      params += `  ·  ips: <b>${state.ips.join(', ')}</b>`;
+            if (state.logSeqs && state.logSeqs.length) params += `  ·  seqs: <b>${state.logSeqs.join(', ')}</b>`;
+
+            sections.push(`
+                <div class="avail-job-row in-progress-row">
+                    <span class="avail-job-type type-${type}">${type.replace(/_/g,' ')}</span>
+                    <div class="avail-job-info">
+                        <div class="avail-job-name">${state.jobName || state.jobId || '?'}<span class="avail-job-tag in-progress">● LIVE</span></div>
+                        <div class="avail-job-params">${params}</div>
+                    </div>
+                </div>`);
+            sections.push('<div class="avail-inprogress-sep">— available —</div>');
+        }
+
+        // ── Market jobs ───────────────────────────────────────────────────────
+        const siteInProgressRows = [];
+        const rows = [];
+
+        function detectTypeByName(job) {
+            if (!job) return null;
+            const name = (job.name || job.category || '').toLowerCase();
+            for (const [t, kws] of Object.entries(JOB_TYPE_KEYWORDS_POPUP)) {
+                if (kws.some(kw => name.includes(kw))) return t;
+            }
+            return null;
+        }
+
+        function pushSiteInProgress(job, source) {
+            const type = detectTypeByName(job);
+            if (!type) return;
+            const darkTag = source === 'dark' ? '<span class="avail-job-source-dark"> D4RK</span>' : '';
+            const server = extractServerPopup(job);
+            const file   = extractFilePopup(job);
+            const ips    = extractIPsPopup(job);
+            let params = '';
+            if (server) params += `srv: <b>${server}</b>  `;
+            if (file)   params += `file: <b>${file}</b>  `;
+            if (ips.length) params += `ips: <b>${ips.join(', ')}</b>`;
+            const tag = '<span class="avail-job-tag site-inprogress">IN PROGRESS</span>';
+            siteInProgressRows.push(`
+                <div class="avail-job-row site-inprogress-row">
+                    <span class="avail-job-type type-${type}">${type.replace(/_/g,' ')}</span>
+                    <div class="avail-job-info">
+                        <div class="avail-job-name">${job.name || job.id}${tag}${darkTag}</div>
+                        <div class="avail-job-params">${params || '<span style="color:var(--text-dim)">no params in API</span>'}</div>
+                    </div>
+                </div>`);
+        }
+
+        function scanMarket(data, source) {
+            if (!data) return;
+            // In-progress jobs are in recentJobs with status "TAKEN"
+            if (Array.isArray(data.recentJobs)) {
+                for (const job of data.recentJobs) {
+                    if (job.status === 'TAKEN') pushSiteInProgress(job, source);
+                }
+            }
+            // Available jobs
+            if (!data.jobs) return;
+            for (const job of data.jobs) {
+                if (job.isExpired) continue;
+                const type = detectTypeByName(job);
+                if (!type) continue;
+                const isBugged   = bugged[job.id] && (now - (bugged[job.id].ts || bugged[job.id])) < 2 * 3600 * 1000;
+                const isDisabled = enabledTypes[type] === false;
+                const server = extractServerPopup(job);
+                const file   = extractFilePopup(job);
+                const ips    = extractIPsPopup(job);
+                let params = '';
+                if (server) params += `srv: <b>${server}</b>  `;
+                if (file)   params += `file: <b>${file}</b>  `;
+                if (ips.length) params += `ips: <b>${ips.join(', ')}</b>`;
+                if (!params) params = '<span style="color:var(--text-dim)">params from DOM after accept</span>';
+                const darkTag = source === 'dark' ? '<span class="avail-job-source-dark"> D4RK</span>' : '';
+                const tags = (isBugged   ? '<span class="avail-job-tag bugged">bugged</span>'   : '') +
+                             (isDisabled ? '<span class="avail-job-tag disabled">disabled</span>' : '') +
+                             darkTag;
+                rows.push(`
+                    <div class="avail-job-row">
+                        <span class="avail-job-type type-${type}">${type.replace(/_/g,' ')}</span>
+                        <div class="avail-job-info">
+                            <div class="avail-job-name">${job.name || job.id}${tags}</div>
+                            <div class="avail-job-params">${params}</div>
+                        </div>
+                    </div>`);
+            }
+        }
+
+        scanMarket(result.marketData,     'home');
+        if (result.darkMarketAvailable !== false) scanMarket(result.darkMarketData, 'dark');
+
+        if (siteInProgressRows.length) {
+            sections.push(...siteInProgressRows);
+            sections.push('<div class="avail-siteinprogress-sep">— available —</div>');
+        }
+
+        if (countEl) countEl.textContent = rows.length ? `(${rows.length})` : '';
+
+        const allContent = [...sections, ...rows];
+        container.innerHTML = allContent.length
+            ? allContent.join('')
+            : '<span style="color:var(--text-dim);font-size:10px;">No available jobs</span>';
+    });
+}
+
+document.getElementById('refreshJobsListBtn')?.addEventListener('click', renderJobsAvailableList);
+
+// Render on popup open
+renderJobsAvailableList();
+
+// Re-render when market data or job state changes
+chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && (changes.marketData || changes.darkMarketData || changes.buggedJobIds || changes.autoJobsState)) {
+        renderJobsAvailableList();
+    }
+});
+
+
 // Version Info ---
 async function displayVersionInfo(retryCount) {
     retryCount = retryCount || 0;
