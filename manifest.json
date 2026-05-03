@@ -25,7 +25,8 @@
     "https://raw.githubusercontent.com/*"
   ],
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "scripts": ["errors.js", "background.js"]
   },
   "content_scripts": [
     {

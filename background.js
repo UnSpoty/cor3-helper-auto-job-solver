@@ -1,7 +1,12 @@
 // background.js
-// Service worker for background tasks (keep-alive, decision monitoring, expedition polling)
-
-importScripts('errors.js');
+// Background tasks (keep-alive, decision monitoring, expedition polling).
+// In Chrome this runs as a service worker; in Firefox MV3 (when the
+// service_worker pref is off) the manifest's "scripts" array loads errors.js
+// and this file as classic background scripts. importScripts only exists in
+// the service-worker context.
+if (typeof importScripts === 'function') {
+    importScripts('errors.js');
+}
 
 // --- Helpers ---
 async function getCor3Tab() {
