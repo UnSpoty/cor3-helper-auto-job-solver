@@ -446,6 +446,37 @@ window.addEventListener('message', (event) => {
         return;
     }
 
+    // wsSend returned false (no open socket) — that send never reached the server,
+    // so no WS_JOB_ACCEPTED is coming back for it. Drop the slot now so the batch
+    // can finalize on the responses we *do* get instead of waiting out the 60s
+    // accept watchdog. Jobs that did reach the server still arrive as TAKEN and
+    // tryResumeInProgressJob picks them up on the next market refresh.
+    if (event.data && event.data.type === 'COR3_ACCEPT_JOB_SEND_FAILED') {
+        if (autoJobState.status !== 'accepting') return;
+        const failedId = event.data.jobId;
+        const orderIdx = bulkSentOrder.findIndex(p => p.id === failedId);
+        if (orderIdx !== -1) bulkSentOrder.splice(orderIdx, 1);
+        // Unblock retry on the next scan — the job is still AVAILABLE on the server.
+        sentAcceptIds.delete(failedId);
+        if (bulkAcceptTotal > 0) bulkAcceptTotal--;
+        ajWarn(`accept SEND_FAILED ${failedId} — no active socket (now ${bulkAcceptCount}/${bulkAcceptTotal})`);
+        pushAutoJobLog(`Accept: send failed for ${failedId} — no socket (will retry)`, 'warn');
+        if (bulkAcceptCount >= bulkAcceptTotal) {
+            saveAutoJobsQueue();
+            bulkPendingJobs    = [];
+            bulkSentOrder      = [];
+            bulkAcceptCount    = 0;
+            bulkAcceptTotal    = 0;
+            bulkAcceptStartedAt = 0;
+            pushAutoJobLog(`Accept done — queue: ${autoJobsQueue.length} job(s)`, 'ok');
+            ajLog(`accept batch DONE (with send failures) — queue depth ${autoJobsQueue.length}`);
+            resetAutoJobState('accept-batch-complete');
+            setTimeout(() => requestMarketRefresh('accept-batch-done'), 500);
+            setTimeout(executeNextFromQueue, 1000);
+        }
+        return;
+    }
+
     if (event.data && event.data.type === 'COR3_WS_JOB_COMPLETED') {
         if (autoJobState.status === 'completing') {
             if (event.data.error) {
@@ -469,6 +500,20 @@ window.addEventListener('message', (event) => {
                 setTimeout(executeNextFromQueue, 3000);
             }
         }
+    }
+
+    // ── Auto Jobs: Network Map server list (for priority UI) ────────────────
+    if (event.data && event.data.type === 'COR3_NM_SERVERS' && Array.isArray(event.data.servers)) {
+        chrome.storage.local.get(['networkMapServers'], r => {
+            const prev = Array.isArray(r.networkMapServers) ? r.networkMapServers : [];
+            // Union previous + freshly scraped, preserving every server we've ever seen.
+            const merged = [...new Set([...prev, ...event.data.servers])].sort();
+            const changed = merged.length !== prev.length || merged.some((s, i) => s !== prev[i]);
+            if (changed) {
+                chrome.storage.local.set({ networkMapServers: merged });
+                ajLog(`networkMapServers updated: ${merged.length} server(s)`);
+            }
+        });
     }
 
     // ── Auto Jobs: job-manager events ────────────────────────────────────────
@@ -675,6 +720,10 @@ function checkAutoSendOnExpeditionData(expeditions) {
 // ─── Auto Jobs ────────────────────────────────────────────────────────────────
 
 let autoJobsSettings = { enabled: false, debugMode: false, markets: { home: true, dark: true }, enabledJobTypes: {} };
+// Per-server execution priority, e.g. { "RM7-S4L4": 999, "RM7-E1L5": 1 }.
+// Higher = run earlier. Missing entries are treated as 0. Stored in
+// chrome.storage.sync so the popup and content.js stay in sync.
+let serverPriorities = {};
 // States: 'idle' | 'accepting' | 'solving' | 'completing'
 //   accepting — one or more COR3_ACCEPT_JOB requests sent, waiting for WS confirmations
 //   solving   — exactly one job is being run by job-manager
@@ -748,8 +797,11 @@ function parseKDTimerMs(timerText) {
 }
 
 try {
-    chrome.storage.sync.get('autoJobsSettings', data => {
+    chrome.storage.sync.get(['autoJobsSettings', 'serverPriorities'], data => {
         if (data.autoJobsSettings) autoJobsSettings = data.autoJobsSettings;
+        if (data.serverPriorities && typeof data.serverPriorities === 'object') {
+            serverPriorities = data.serverPriorities;
+        }
         // Restore persisted job state so we don't lose progress on page reload.
         // startAutoJobsMonitor is called INSIDE the inner callback so that autoJobState
         // is fully restored before tryResumeInProgressJob runs.
@@ -788,6 +840,14 @@ try {
             }
             if (autoJobsSettings.enabled) startAutoJobsMonitor();
         });
+    });
+    // Live-update serverPriorities when the popup edits them, so the next
+    // executeNextFromQueue uses the new values without needing a page reload.
+    chrome.storage.onChanged.addListener((changes, area) => {
+        if (area !== 'sync') return;
+        if (changes.serverPriorities && changes.serverPriorities.newValue) {
+            serverPriorities = changes.serverPriorities.newValue;
+        }
     });
 } catch (e) {}
 
@@ -1331,6 +1391,20 @@ function acceptCandidatesBatch(candidates) {
 
 const FILE_BASED_TYPES = new Set(['data_upload', 'file_decryption', 'log_deletion', 'log_download', 'file_elimination', 'data_download', 'decrypt_extract']);
 
+// Higher number = picked first. file_decryption has no server target (just open
+// a downloaded file + minigame) so it's the cheapest/safest job in the queue —
+// always pick it before anything that touches a server.
+const NO_SERVER_PRIORITY = Number.POSITIVE_INFINITY;
+function jobPriority(job) {
+    if (!job.serverName || job.jobType === 'file_decryption') return NO_SERVER_PRIORITY;
+    const p = serverPriorities[job.serverName];
+    return Number.isFinite(p) ? p : 0;
+}
+function sortQueueByPriority() {
+    // Stable sort: jobs with equal priority keep their original (FIFO) order.
+    autoJobsQueue.sort((a, b) => jobPriority(b) - jobPriority(a));
+}
+
 async function executeNextFromQueue() {
     if (autoJobsQueue.length === 0) {
         if (autoJobState.status !== 'idle') resetAutoJobState('queue-empty');
@@ -1341,6 +1415,7 @@ async function executeNextFromQueue() {
         return;
     }
 
+    sortQueueByPriority();
     const job = autoJobsQueue[0];
     if (!FLOW_DISPATCH[job.jobType]) {
         ajWarn(`queue: unknown type "${job.jobType}" — dropping ${job.jobId}`);
@@ -1935,8 +2010,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (request.settings) autoJobsSettings = request.settings;
         if (autoJobsSettings.enabled) {
             startAutoJobsMonitor();
+            // Lock NM closure for the entire auto-jobs session (job-manager
+            // checks this flag in its capture-phase click handler).
+            window.postMessage({ type: 'COR3_AUTOJOBS_ACTIVE_CHANGED', active: true }, '*');
             // Open Network Map and Market (Jobs tab) every time auto-jobs is manually started;
-            // also refresh WS market data immediately
+            // also refresh WS market data immediately. The Network Map open also
+            // triggers a server-list scrape used by the priority UI.
             setTimeout(() => {
                 window.postMessage({ type: 'COR3_OPEN_NETWORK_MAP' }, '*');
                 window.postMessage({
@@ -1948,7 +2027,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             }, 800);
         } else {
             stopAutoJobsMonitor();
+            window.postMessage({ type: 'COR3_AUTOJOBS_ACTIVE_CHANGED', active: false }, '*');
         }
+        sendResponse({ success: true });
+    } else if (request.action === "rescanNetworkMap") {
+        window.postMessage({ type: 'COR3_REQUEST_NM_SERVERS' }, '*');
         sendResponse({ success: true });
     } else if (request.action === "debugTriggerJobType") {
         if (autoJobState.status !== 'idle') {

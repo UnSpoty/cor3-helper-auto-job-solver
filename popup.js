@@ -2188,6 +2188,88 @@ document.querySelectorAll('.job-type-toggle').forEach(cb => {
     cb.addEventListener('change', saveAndSendAutoJobsSettings);
 });
 
+// ── Server Priority panel ────────────────────────────────────────────────────
+// Renders one row per server known to the extension (populated by content.js
+// scraping the Network Map). Each row has a 0–999 number input wired to
+// chrome.storage.sync.serverPriorities. content.js picks the changes up via
+// chrome.storage.onChanged so the next queue pop uses the new values.
+
+const serverPriorityList = document.getElementById('serverPriorityList');
+const serverPriorityRescanBtn = document.getElementById('serverPriorityRescanBtn');
+const PRIORITY_MIN = 0, PRIORITY_MAX = 999;
+
+function renderServerPriorityList(servers, priorities) {
+    if (!serverPriorityList) return;
+    if (!servers || servers.length === 0) {
+        serverPriorityList.innerHTML = '<div class="server-priority-empty">No servers known yet — start Auto Jobs once to populate.</div>';
+        return;
+    }
+    serverPriorityList.innerHTML = '';
+    for (const name of servers) {
+        const row = document.createElement('div');
+        row.className = 'server-priority-row';
+        const nameEl = document.createElement('span');
+        nameEl.className = 'name';
+        nameEl.textContent = name;
+        nameEl.title = name;
+        const input = document.createElement('input');
+        input.className = 'priority';
+        input.type = 'number';
+        input.min = String(PRIORITY_MIN);
+        input.max = String(PRIORITY_MAX);
+        input.step = '1';
+        input.value = String(priorities[name] ?? 0);
+        input.dataset.server = name;
+        input.addEventListener('change', onPriorityInputChange);
+        row.appendChild(nameEl);
+        row.appendChild(input);
+        serverPriorityList.appendChild(row);
+    }
+}
+
+function onPriorityInputChange(e) {
+    const server = e.target.dataset.server;
+    if (!server) return;
+    let v = parseInt(e.target.value, 10);
+    if (!Number.isFinite(v)) v = 0;
+    v = Math.max(PRIORITY_MIN, Math.min(PRIORITY_MAX, v));
+    e.target.value = String(v);
+    chrome.storage.sync.get('serverPriorities', data => {
+        const next = { ...(data.serverPriorities || {}) };
+        if (v === 0) delete next[server]; else next[server] = v;
+        chrome.storage.sync.set({ serverPriorities: next });
+    });
+}
+
+function refreshServerPriorityPanel() {
+    if (!serverPriorityList) return;
+    chrome.storage.local.get('networkMapServers', local => {
+        chrome.storage.sync.get('serverPriorities', sync => {
+            renderServerPriorityList(local.networkMapServers || [], sync.serverPriorities || {});
+        });
+    });
+}
+
+refreshServerPriorityPanel();
+
+// Live update if either store changes (content.js scrape adds servers,
+// or the user edits a value in another popup window).
+chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes.networkMapServers) {
+        refreshServerPriorityPanel();
+    } else if (area === 'sync' && changes.serverPriorities) {
+        refreshServerPriorityPanel();
+    }
+});
+
+if (serverPriorityRescanBtn) {
+    serverPriorityRescanBtn.addEventListener('click', async () => {
+        const tab = await getCor3Tab();
+        if (!tab) return;
+        chrome.tabs.sendMessage(tab.id, { action: 'rescanNetworkMap' }).catch(() => {});
+    });
+}
+
 // Debug job trigger buttons
 document.querySelectorAll('.debug-job-btn').forEach(btn => {
     btn.addEventListener('click', async () => {

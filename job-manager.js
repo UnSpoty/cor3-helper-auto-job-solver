@@ -1411,13 +1411,18 @@
     }
 
     // ─── UI Lock ─────────────────────────────────────────────────────────────
-    // Prevents the user from closing Network Map or SAI terminals while the
-    // pipeline is running. Set window.__pipelineLocked = true/false to control.
+    // Two independent locks:
+    //   __pipelineLocked    — true while a single solver flow is running
+    //                         (blocks both NM and SAI close)
+    //   __autoJobsActive    — true the entire time auto-jobs is enabled
+    //                         (blocks NM close only — SAI may still be closed
+    //                          between flows)
 
     window.__pipelineLocked = false;
+    window.__autoJobsActive = false;
 
     document.addEventListener('click', function (e) {
-        if (!window.__pipelineLocked) return;
+        if (!window.__pipelineLocked && !window.__autoJobsActive) return;
         // Both SAI and Network Map use [data-sentry-component="CloseApp"].
         // The CloseApp sits inside Application > ApplicationWidget, so we check
         // the closest Application ancestor to determine which app is being closed.
@@ -1426,17 +1431,46 @@
         const parentApp = closeBtn.closest('[data-sentry-component="Application"]');
         if (!parentApp) return;
         if (parentApp.querySelector('[data-sentry-component="NetworkMapApplication"]')) {
+            // Either a flow is running OR auto-jobs is on — NM is needed in both cases.
+            if (!window.__pipelineLocked && !window.__autoJobsActive) return;
             e.stopImmediatePropagation();
             e.preventDefault();
-            console.warn('[JM] UI Lock: blocked Network Map close (pipeline running)');
-            postJobLog('Cannot close Network Map — pipeline is running', 'warn');
+            const reason = window.__pipelineLocked ? 'pipeline running' : 'auto-jobs running';
+            console.warn(`[JM] UI Lock: blocked Network Map close (${reason})`);
+            postJobLog(`Cannot close Network Map — ${reason}`, 'warn');
         } else if (parentApp.querySelector('[data-sentry-component="ServerAdministrationInterfaceApplication"]')) {
+            // SAI is only locked while a flow is actually executing.
+            if (!window.__pipelineLocked) return;
             e.stopImmediatePropagation();
             e.preventDefault();
             console.warn('[JM] UI Lock: blocked SAI close (pipeline running)');
             postJobLog('Cannot close SAI terminal — pipeline is running', 'warn');
         }
     }, true); // capture phase so we intercept before React handlers
+
+    // ─── Network Map server-list scraper ──────────────────────────────────────
+    // Walks every ServerItem currently rendered in the Network Map and posts
+    // the unique non-Home server names back to content.js. Used by the auto-jobs
+    // priority UI so the popup can show all known servers.
+
+    function scrapeAndPostNetworkMapServers() {
+        const items = document.querySelectorAll(NM_SERVER_ITEM_SEL);
+        if (items.length === 0) {
+            jmWarn('scrapeNetworkMapServers: no ServerItem elements found');
+            return;
+        }
+        const names = new Set();
+        for (const item of items) {
+            // Skip the Home server tile — it's not a job target.
+            if (item.querySelector('[data-sentry-component="HomeServerIcon"]')) continue;
+            const nameEl = item.querySelector(NM_SERVER_NAME_SEL);
+            const name = nameEl ? nameEl.textContent.trim() : '';
+            if (name) names.add(name);
+        }
+        const list = [...names].sort();
+        jmLog(`scrapeNetworkMapServers: ${list.length} server(s) — ${list.join(', ')}`);
+        window.postMessage({ type: 'COR3_NM_SERVERS', servers: list }, '*');
+    }
 
     // ─── Network Map auto-opener ──────────────────────────────────────────────
     // Finds the Network Map shortcut on the desktop and double-clicks it.
@@ -1571,7 +1605,28 @@
 
         if (event.data.type === 'COR3_OPEN_NETWORK_MAP') {
             jmLog('open Network Map (request)');
-            ensureNetworkMapOpen();
+            (async () => {
+                const ok = await ensureNetworkMapOpen();
+                if (ok) {
+                    // Brief settle so React finishes rendering all server tiles before scraping.
+                    await sleep(400);
+                    scrapeAndPostNetworkMapServers();
+                }
+            })();
+        }
+
+        if (event.data.type === 'COR3_REQUEST_NM_SERVERS') {
+            (async () => {
+                const ok = await ensureNetworkMapOpen();
+                if (!ok) return;
+                await sleep(400);
+                scrapeAndPostNetworkMapServers();
+            })();
+        }
+
+        if (event.data.type === 'COR3_AUTOJOBS_ACTIVE_CHANGED') {
+            window.__autoJobsActive = !!event.data.active;
+            jmLog(`auto-jobs active = ${window.__autoJobsActive}`);
         }
 
         if (event.data.type === 'COR3_OPEN_MARKET_JOBS') {

@@ -676,7 +676,13 @@ var webVersion = null;
         console.log('[COR3 Helper] Accepting job:', jobId, 'market:', marketId);
         var data = JSON.stringify({ marketId: marketId, jobId: jobId });
         var msg = '42["event",{"event":{"name":"market","action":"job.take"},"data":' + data + '}]';
-        return wsSend(msg);
+        var ok = wsSend(msg);
+        if (!ok) {
+            // No socket — notify content.js so its bulk-accept watchdog doesn't sit
+            // idle for 60s waiting on a WS response that will never arrive.
+            window.postMessage({ type: 'COR3_ACCEPT_JOB_SEND_FAILED', jobId: jobId, marketId: marketId }, '*');
+        }
+        return ok;
     };
 
     // Complete a market job after solving
