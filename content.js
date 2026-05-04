@@ -1085,12 +1085,20 @@ function _resolveJobParamsInner(type, apiJob) {
 
     switch (type) {
         case 'file_decryption': {
-            // FD always specifies an extension; sometimes also a concrete filename.
+            // The server's job condition is the FULL filename (e.g. "backup_7227.eb52x").
+            // Right after a market reset, the WS_JOB_ACCEPTED payload sometimes only
+            // carries the extension while fileNames is still empty; the full filename
+            // appears on the TAKEN copy a moment later. If we queue with just the
+            // extension, the solver clicks whatever stale .ext file is in Downloads
+            // → either job-conditions-not-met or the minigame fails to appear on a
+            // file that was already consumed → the job gets falsely marked bugged.
+            // Defer when only the extension is present, like ip/log/file_elimination.
             const fileName = pickDetail(d => d.fileNames?.[0] || d.fileName || d.files?.[0]?.name);
             const fileExt  = pickDetail(d => d.extensions?.[0]?.ext);
-            const fileCondition = fileName || fileExt;
-            if (!fileCondition) return { ok: false, reason: 'no fileName/extension in conditions' };
-            return { ok: true, params: { fileCondition } };
+            if (!fileName) {
+                return { ok: false, reason: fileExt ? `only extension "${fileExt}", no fileName yet` : 'no fileName/extension in conditions' };
+            }
+            return { ok: true, params: { fileCondition: fileName } };
         }
         case 'data_upload':
         case 'file_elimination':
