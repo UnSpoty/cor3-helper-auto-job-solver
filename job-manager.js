@@ -1064,29 +1064,23 @@
             console.warn('[JM] Log Download — logs section not found:', SAI_LOGS_SEL);
         }
 
-        const downloadCount = (Array.isArray(logSeqs) && logSeqs.length > 0) ? logSeqs.length : 1;
-        console.log('[JM] Log Download — need to download', downloadCount, 'log(s)');
-        postJobLog(`Log Download: name "${logName}", downloading ${downloadCount}`);
-
         let downloadedCount = 0;
+        let downloadCount = 0;
 
         if (logName) {
-            for (let i = 0; i < downloadCount && !window.__jobManagerAbort; i++) {
-                // Find all rows with this name and pick the i-th one
-                let rows = [];
-                for (let attempt = 0; attempt < 15 && !window.__jobManagerAbort; attempt++) {
-                    rows = findAllLogRowsByName(sai, logName);
-                    if (rows.length > i) break;
-                    await sleep(300);
-                }
+            // Find all rows matching the name first, then download each one
+            let allRows = [];
+            for (let attempt = 0; attempt < 15 && !window.__jobManagerAbort; attempt++) {
+                allRows = findAllLogRowsByName(sai, logName);
+                if (allRows.length > 0) break;
+                await sleep(300);
+            }
+            downloadCount = allRows.length;
+            console.log('[JM] Log Download — need to download', downloadCount, 'log(s)');
+            postJobLog(`Log Download: name "${logName}", downloading ${downloadCount}`);
 
-                const row = rows[i] || null;
-                if (!row) {
-                    console.warn('[JM] Log Download — row', i, 'not found for:', logName);
-                    postJobLog(`Log Download: row ${i + 1}/${downloadCount} not found`, 'error');
-                    break;
-                }
-
+            for (let i = 0; i < allRows.length && !window.__jobManagerAbort; i++) {
+                const row = allRows[i];
                 const _selectedText = [...row.querySelectorAll('span')].map(s => s.textContent.trim()).filter(Boolean).join(' | ');
                 console.log(`[JM] Log Download — downloading (${i + 1}/${downloadCount}):`, _selectedText);
                 postJobLog(`Log Download: downloading (${i + 1}/${downloadCount}): ${_selectedText}`);
@@ -1098,11 +1092,14 @@
                     break;
                 }
                 downloadBtn.click();
-                await sleep(700);
+                await sleep(1500);
                 downloadedCount++;
             }
         } else if (Array.isArray(logSeqs) && logSeqs.length > 0) {
             // Seq fallback
+            downloadCount = logSeqs.length;
+            console.log('[JM] Log Download — need to download', downloadCount, 'log(s)');
+            postJobLog(`Log Download: seqs ${JSON.stringify(logSeqs)}, downloading ${downloadCount}`);
             for (let i = 0; i < logSeqs.length && !window.__jobManagerAbort; i++) {
                 let row = null;
                 for (let attempt = 0; attempt < 15 && !window.__jobManagerAbort; attempt++) {
