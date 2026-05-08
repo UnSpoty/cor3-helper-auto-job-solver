@@ -330,6 +330,28 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
     align-items: center;
 }
 
+/* ─── Collapsible (HTML <details>) ───────────────────────────────────── */
+.collapsible { margin: 0; padding: 0; }
+.collapsible > summary {
+    list-style: none;
+    cursor: pointer;
+    user-select: none;
+    display: block;
+}
+.collapsible > summary::-webkit-details-marker { display: none; }
+.collapsible > summary::marker { content: ''; }
+.collapsible > summary::after {
+    content: ' ▾';
+    font-size: 9px;
+    color: var(--os-color-text-tertiary);
+    display: inline-block;
+    margin-left: 6px;
+    transition: transform 0.15s;
+}
+.collapsible:not([open]) > summary::after {
+    transform: rotate(-90deg);
+}
+
 /* ─── Empty state ────────────────────────────────────────────────────── */
 .empty {
     text-align: center;

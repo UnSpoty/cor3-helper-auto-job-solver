@@ -15,9 +15,10 @@
 Сократили вкладки с 8 до 5 и переразложили контент по
 "что я хочу видеть рядом":
 
-- **Overview**: Daily Ops · Markets · Auto-refresh markets · Alarms (+форма) ·
-  Auto solvers (auto-decrypt, auto-daily-hack) · Game appearance (4 toggles) ·
-  versions footer.
+- **Overview**: Daily Ops (+ Auto daily-hack toggle inside the card) ·
+  Markets — Home / Dark, каждая карточка несёт свой Auto-refresh toggle ·
+  Auto solvers (только Auto-decrypt) · Game appearance (4 toggles) ·
+  Alarms — collapsible `<details>`, default-open · versions footer.
 - **Expeditions** (новая): Active expeditions · Pending decisions ·
   Auto-choose decision (toggle + risk slider) · Auto-send mercenary · Roster ·
   Stash.
@@ -28,7 +29,14 @@
 (было `${h}h ${m}m` без `s`). Добавлен `.gitignore` для
 `.claude/settings.local.json` и root-level `.mcp.json`.
 
-Модуль `auto-refresh` сохранён — UI для него теперь живёт в Overview.
+Главный принцип после второго прохода: тоггл живёт там же, где блок,
+которым он управляет. Auto daily-hack — внутри Daily Ops карточки.
+Auto-refresh — внутри карточки конкретного маркета (а не отдельной
+сводной секции). Это сэкономило вертикаль и убрало мысленный шаг
+"найди где включается то, что относится вот к этому".
+
+Модуль `auto-refresh` сохранён — UI для него теперь живёт в карточках
+маркетов в Overview.
 
 ### Bug fixes (предыдущий заход)
 
