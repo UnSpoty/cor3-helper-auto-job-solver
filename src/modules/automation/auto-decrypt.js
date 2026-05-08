@@ -1,0 +1,42 @@
+// src/modules/automation/auto-decrypt.js
+// Reads chrome.storage.sync.autoDecryptEnabled. When true on boot, sends
+// COR3_START_DECRYPT_SOLVER to MAIN. Reacts to subsequent toggles.
+
+(function () {
+    const root = (typeof globalThis !== 'undefined') ? globalThis : self;
+    const { Module, Bus, Store, Registry, constants: C } = root.COR3;
+
+    function start() { Bus.window.post(C.MSG.SOLVER.START_DECRYPT, null); }
+    function stop() { Bus.window.post(C.MSG.SOLVER.STOP_DECRYPT, null); }
+
+    class AutoDecryptModule extends Module {
+        constructor() {
+            super({
+                id: 'auto-decrypt',
+                name: 'Auto-decrypt solver',
+                category: C.CATEGORY.AUTOMATION,
+                owns: { storageKeys: [C.STORAGE_SYNC.AUTO_DECRYPT_ENABLED] },
+            });
+        }
+        async start() {
+            const enabled = await Store.sync.getOne(C.STORAGE_SYNC.AUTO_DECRYPT_ENABLED, false);
+            if (enabled) { this.info('starting decrypt solver'); start(); }
+
+            this.track(Store.sync.onChanged((changes) => {
+                const ch = changes[C.STORAGE_SYNC.AUTO_DECRYPT_ENABLED];
+                if (!ch) return;
+                if (ch.newValue) { this.info('toggle ON'); start(); }
+                else { this.info('toggle OFF'); stop(); }
+            }));
+
+            // Legacy popup toggle support: chrome.runtime action
+            this.track(Bus.runtime.on('toggleDecryptSolver', (payload) => {
+                if (payload && payload.enabled) start(); else stop();
+                return { success: true };
+            }));
+            this.info('auto-decrypt ready');
+        }
+    }
+
+    Registry.register(new AutoDecryptModule());
+})();

@@ -1,0 +1,228 @@
+# COR3 Helper — Cross-Session Todo
+
+Этот файл — единый чеклист переработки расширения. Обновляется на каждом чекпоинте между сессиями. Полный план: `C:\Users\Admin\.claude\plans\glistening-beaming-dawn.md`.
+
+## Phase 1 — Foundation ✅ (current session)
+
+- [x] Создать каталоги `src/core/`, `src/shared/`, `docs/`, `plans/`
+- [x] `src/shared/constants.js` — все MSG/STORAGE/FLOW в одном месте
+- [x] `src/shared/dom.js` — sleep, waitForEl, click, react-input
+- [x] `src/shared/ws-frames.js` — Socket.IO v4 parser
+- [x] `src/shared/errors.js` — error capture
+- [x] `src/core/bus.js` — Bus.window + Bus.runtime
+- [x] `src/core/store.js` — Promise-обёртка над chrome.storage
+- [x] `src/core/logger.js` — ring buffer + subscribe
+- [x] `src/core/module.js` — Module base
+- [x] `src/core/registry.js` — boot/setModuleState
+- [x] `src/core/settings.js` — module enable/log persistence
+- [x] `docs/module-spec.md` — контракт + how to add new
+- [x] `CLAUDE.md` — секция Modules
+- [x] `plans/todo.md` — этот файл
+- [x] `node --check` всех новых файлов
+- [x] Manifest НЕ трогаем; legacy продолжает работать
+
+**Чекпоинт:** перезагрузить расширение → должно работать как раньше (legacy untouched).
+
+## Phase 2 — Data layer migration ✅
+
+- [x] `src/interceptors/ws-interceptor.js` — wraps WebSocket, parses via wsFrames, emits via Bus.window; preserves all `window.__cor3*` outbound helpers
+- [x] `src/interceptors/http-interceptor.js` — fetch+XHR captures bearer + translation.json version + users/me systemVersion + daily rewards
+- [x] `src/interceptors/solver-loader.js` — `inject(path)` helper for Phase 3 game modules
+- [x] `src/modules/data/auth.js` (bearer + 3 version keys + daily rewards)
+- [x] `src/modules/data/expeditions.js`, `decisions.js`, `market.js`, `dark-market.js`, `stash.js`, `mercenaries.js`, `merc-config.js`, `expedition-config.js`
+- [x] `src/entry/content-early.js` — MAIN-world boot stub (interceptors do the work)
+- [x] `src/entry/content.js` — calls Registry.boot() + Settings.onChange live re-sync
+- [x] Manifest updated:
+    - content_scripts[0] (MAIN) = 9 files (shared/core/interceptors/entry)
+    - content_scripts[1] (isolated) = 21 files (shared/core/data-modules/entry/legacy content.js)
+- [x] Legacy `content-early.js`, `errors.js`, `ws-messages.js`, `ws-interceptor.js` no longer in content_scripts — kept on disk for rollback only
+- [x] `node --check` all new files OK
+- [x] `cor3LogWsMessage` stubbed as no-op in `src/shared/errors.js` (legacy content.js still calls it)
+
+**Skipped intentionally:** `daily-ops.js` data module — daily-ops fetch logic is HTTP-driven and lives in legacy content.js; will migrate alongside automation in Phase 4.
+
+**Migration topology:**
+```
+MAIN world (document_start, fully replaced):
+  shared → core/bus → interceptors → entry/content-early
+Isolated world (document_idle, parallel-load):
+  shared → core/* → data modules → entry/content [Registry.boot] → legacy content.js
+```
+
+**Чекпоинт:** перезагрузить расширение в `chrome://extensions/`. Должно работать как раньше:
+- popup рендерит markets, expeditions, mercenaries, stash, decisions
+- auto-jobs продолжает работать (legacy content.js + legacy job-manager.js)
+- auto-send-merc продолжает работать (legacy content.js)
+- alarms продолжают работать
+- В DevTools console игровой страницы должно быть:
+  - `[COR3] WebSocket interceptor installed (modular)`
+  - `[COR3] HTTP interceptor installed`
+  - `[COR3.entry/content-early] MAIN-world boot complete`
+- В DevTools console для popup или service-worker'а:
+  - `[COR3.Logger]` — записи под module id `bus`, `auth`, `expeditions`, `market`, … когда приходят данные
+- Storage key `chrome.storage.local.cor3_logs` должен заполниться записями.
+
+## Phase 3 — Game layer ✅
+
+- [x] `src/modules/game/network-map.js` — selectors, find/scrape servers, K/D detect, ensureNetworkMapOpen, openServerMarket, UI Lock click handler
+- [x] `src/modules/game/server-connect.js` — full Connect→K/D→Login→ActiveAccess pipeline; depends on network-map
+- [x] `src/modules/game/sai-navigator.js` — SAI tab switching, downloadsWatcher singleton, row finders for Logs/Files/Transit, addIpViaModal, confirmDeleteDialog
+- [x] `src/modules/game/flows/_shared.js` — single-flow guard, startFlow wrapper, sendDone/sendTimeout/userLog helpers, abort listener, exposes COR3.game.flows
+- [x] All 9 flow modules: file-decryption, ip-injection, ip-cleanup (virtual-scroll re-query), file-upload, log-deletion (name + seq fallback), log-download, file-elimination, data-download, decrypt-extract
+- [x] `src/modules/solvers/decrypt.js` — config-hack minimax solver (logic verbatim from legacy)
+- [x] `src/modules/solvers/daily-hack.js` — System Log Integrity + Signal Hack
+- [x] Logger now forwards MAIN-world entries via `COR3_LOG_REMOTE` Bus envelope; isolated content.js registers a log-bridge that calls `Logger.ingest()`
+- [x] Manifest updated: 28-file MAIN content_scripts list (shared/core/interceptors/game/flows/solvers/entry); web_accessible_resources emptied (solvers no longer dynamically injected)
+- [x] Legacy deleted: `job-manager.js`, `decrypt-solver.js`, `daily-hack-solver.js`, `ws-interceptor.js`, `content-early.js`
+- [x] `node --check` all Phase 3 files OK
+
+**Modules registered (MAIN world): 16**
+- network-map, server-connect, sai-navigator (game core)
+- flows-core
+- 9 flow modules (flow-file-decryption, flow-ip-injection, …, flow-decrypt-extract)
+- solver-decrypt, solver-daily-hack
+
+**Cross-world log bridge:**
+```
+MAIN module.this.info('msg')  →  Logger.push (no chrome.storage)
+                              →  Bus.window.post('COR3_LOG_REMOTE', {moduleId, entry})
+                              →  isolated content.js: Bus.window.on('COR3_LOG_REMOTE')
+                              →  Logger.ingest(moduleId, entry)
+                              →  cor3_logs[moduleId][...]
+```
+
+**Known limitation (deferred to Phase 5):** Module Manager UI in MAIN-world cannot be controlled by the `chrome.storage.sync.modules` toggles because MAIN has no chrome.* APIs. MAIN modules always start. To truly disable a flow, use `autoJobsSettings.enabledJobTypes` (the auto-jobs orchestrator in isolated world won't dispatch the START message).
+
+**Чекпоинт:** перезагрузить расширение в `chrome://extensions/`. Auto-jobs продолжает решать задачи. В DevTools console игровой страницы должно быть:
+- `[COR3] WebSocket interceptor installed (modular)`
+- `[COR3] HTTP interceptor installed`
+- `[COR3.entry/content-early] MAIN-world boot complete — 16 modules`
+
+В UI popup (или через `chrome.storage.local.get('cor3_logs', console.log)`) — записи под module id'ами `network-map`, `server-connect`, `flow-file-decryption` и т.д. когда auto-jobs прогоняет очередную задачу.
+
+Тестируйте минимум 2 flow вживую: `file_decryption` (если есть в маркете) и `ip_injection`. Если что-то не работает — `git checkout HEAD~1 -- job-manager.js decrypt-solver.js daily-hack-solver.js ws-interceptor.js content-early.js manifest.json` восстановит legacy.
+
+## Phase 4 — Automation modules ✅
+
+- [x] `src/modules/automation/timers.js` — alarms tick engine (chrome.storage.sync.alarms)
+- [x] `src/modules/automation/auto-refresh.js` — market polling on timer expiry
+- [x] `src/modules/automation/auto-send-merc.js` — completed expedition → container → collect → relaunch (cheapest merc)
+- [x] `src/modules/automation/auto-choose-decision.js` — risk-threshold formula (replaces loot/risk slider modifiers)
+- [x] `src/modules/automation/auto-jobs.js` — full state machine: idle/accepting/solving/completing; bugged blacklist; K/D server skip; server priorities; debug confirmation gate; watchdogs (60s accept, 3min solving, 45s completing)
+- [x] `src/modules/automation/auto-decrypt.js`, `auto-daily-hack.js` — toggle solver via Bus
+- [x] `src/modules/automation/daily-ops.js` — fetch from svc-corie.cor3.gg
+- [x] `src/modules/automation/runtime-bridge.js` — chrome.runtime → window.postMessage relay (replaces legacy content.js handler)
+- [x] 4 appearance modules: system-messages, background, network-fog, map-fx
+
+## Phase 5 — UI rebuild ✅
+
+- [x] `src/ui/popup.css` — cor3.gg palette (single theme, --os-color-* variables from ui_exmpl.html)
+- [x] `src/ui/popup.html` — minimal shell with header + tabs + 8 section containers
+- [x] `src/ui/shell.js` — entry, mode detection (?mode=popout), tab routing, section lifecycle
+- [x] Components: `icons.js`, `timer.js`, `module-card.js`, `log-viewer.js`
+- [x] Sections: `overview` (daily ops + markets + expeditions + decisions), `stash`, `mercenaries`, `auto-jobs`, `alarms`, `modules-panel`, `logs-panel`, `settings`
+- [x] Pop-out mode + side-panel mode (header buttons)
+- [x] Module Manager UI uses `chrome.scripting.executeScript` to read snapshot from BOTH worlds (isolated + MAIN)
+- [x] Live Log Viewer reads `chrome.storage.local.cor3_logs` with module + level filter
+
+## Phase 6 — Cleanup + verify ✅
+
+- [x] Deleted legacy: `content.js`, `popup.js`, `popup.html`, `errors.js`, `ws-messages.js`, `background.js`, `versions.json`
+- [x] New `src/entry/background.js` — keep-alive + expedition polling for auto-features
+- [x] Manifest finalized:
+    - `background.service_worker` = `src/entry/background.js` (Chrome) + `scripts:[...]` (Firefox compat)
+    - `content_scripts[0]` (MAIN, document_start): 29 files
+    - `content_scripts[1]` (isolated, document_idle): 33 files (no more legacy content.js)
+    - `action.default_popup` + `side_panel.default_path` = `src/ui/popup.html`
+    - Added `scripting` permission for Module Manager UI
+    - `web_accessible_resources` = empty
+- [x] `node --check` all files in `src/` — OK
+
+## Final state
+
+```
+cor3-helper/
+├── manifest.json
+├── CLAUDE.md
+├── ui_exmpl.html              (kept as reference)
+├── icon/
+├── docs/
+│   └── module-spec.md
+├── plans/
+│   └── todo.md
+└── src/
+    ├── core/             (6 files: bus, store, logger, module, registry, settings)
+    ├── shared/           (4 files: constants, dom, ws-frames, errors)
+    ├── interceptors/     (3 files: ws, http, solver-loader)
+    ├── modules/
+    │   ├── data/         (9 files)
+    │   ├── automation/   (9 files: timers, auto-refresh, auto-send-merc,
+    │   │                  auto-choose-decision, auto-jobs, auto-decrypt,
+    │   │                  auto-daily-hack, daily-ops, runtime-bridge)
+    │   ├── game/         (3 + flows/ + …)
+    │   │   ├── network-map, server-connect, sai-navigator
+    │   │   └── flows/    (10 files: _shared + 9 flows)
+    │   ├── solvers/      (2 files: decrypt, daily-hack)
+    │   └── appearance/   (4 files)
+    ├── ui/
+    │   ├── popup.html, popup.css, shell.js
+    │   ├── components/   (4 files)
+    │   └── sections/     (8 files)
+    └── entry/            (3 files: content-early, content, background)
+```
+
+**Total:** 65+ source files, ~6500 lines of new code, 0 lines of legacy code.
+
+## Verification (next checkpoint)
+
+When you can test:
+1. Reload extension at `chrome://extensions/`. Watch for errors there.
+2. Open cor3.gg → DevTools console → expect:
+   - `[COR3] WebSocket interceptor installed (modular)`
+   - `[COR3] HTTP interceptor installed`
+   - `[COR3.entry/content-early] MAIN-world boot complete — 16 modules`
+3. Open the popup (or side panel). New cor3.gg-styled UI loads with 8 tabs.
+4. Test each tab:
+   - **Overview**: shows daily ops timer, markets, expeditions, pending decisions
+   - **Stash**: capacity bar + items
+   - **Mercs**: roster + auto-send toggles
+   - **Auto-Jobs**: master toggle, queue, bugged, log
+   - **Alarms**: existing alarms + form to add new
+   - **Modules**: full registry list grouped by category, master + log switches per module
+   - **Logs**: live stream with module + level filter
+   - **Settings**: auto-refresh / auto-solvers / risk threshold / appearance toggles
+5. Toggle auto-jobs ON. Should:
+   - Open Network Map
+   - Open both markets (home + dark)
+   - Start scanning, accepting, solving jobs
+6. Live log should show entries from `network-map`, `auto-jobs`, `flow-*`, `solver-*`.
+
+Rollback: `git checkout HEAD~N -- .` (where N is whatever pre-rewrite commit).
+
+## Known limitations (deferred)
+
+- **Cross-world Module Manager state sync**: master switches only persist via `chrome.storage.sync.modules`. The Settings.onChange listener in `entry/content.js` re-syncs the isolated-world Registry. MAIN-world Registry doesn't subscribe to sync changes (no chrome.* APIs). To fully control MAIN modules from the UI, add a Bus.window broadcast from isolated → MAIN when settings change. Tracked here for the next session.
+- **`debugTriggerJobType`** (legacy popup debug feature): not exposed in new UI. Auto-jobs `debugMode` toggle still gates dispatch behind a confirmation, but the per-type "trigger one of these jobs now" button is gone. Re-add in a future session if needed.
+- **Per-job-type enable/disable** in `autoJobsSettings.enabledJobTypes`: persisted but no UI control yet — add a sub-section to the Auto-Jobs tab if you want to disable specific flows.
+
+## Полезные команды между сессиями
+
+```bash
+# Найти все TODO/FIXME в src
+rg -n "TODO|FIXME" src/
+
+# Lint всё новое
+node --check src/core/*.js src/shared/*.js src/interceptors/*.js \
+             src/modules/**/*.js src/entry/*.js
+
+# Посмотреть текущий manifest
+cat manifest.json
+```
+
+## Принципы между сессиями
+
+1. **Не дописывать в один файл бесконечно** — если модуль > 300 строк, вытащить хелперы в shared/.
+2. **Только storage keys и MSG types из constants.js** — никаких inline-строк.
+3. **Логи через `this.info/debug/warn/error`** — никаких `console.log` в модулях.
+4. **`this.track(unsub)`** для каждой подписки.
+5. **Перед коммитом: `node --check src/**/*.js`**.

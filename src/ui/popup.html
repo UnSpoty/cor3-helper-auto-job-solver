@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>COR3 Helper</title>
+    <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+    <header class="app-header">
+        <div class="app-title">COR3 <small>helper</small></div>
+        <div class="header-actions">
+            <button class="icon-btn" id="popOutBtn" title="Pop out">⧉</button>
+            <button class="icon-btn" id="sidePanelBtn" title="Side panel">⊟</button>
+        </div>
+    </header>
+
+    <nav class="tabs" id="tabs"></nav>
+
+    <main id="main">
+        <section class="section" data-tab="overview"  id="section-overview"></section>
+        <section class="section" data-tab="stash"     id="section-stash"></section>
+        <section class="section" data-tab="mercs"     id="section-mercs"></section>
+        <section class="section" data-tab="autojobs"  id="section-autojobs"></section>
+        <section class="section" data-tab="alarms"    id="section-alarms"></section>
+        <section class="section" data-tab="modules"   id="section-modules"></section>
+        <section class="section" data-tab="logs"      id="section-logs"></section>
+        <section class="section" data-tab="settings"  id="section-settings"></section>
+    </main>
+
+    <!-- Load order matches manifest content_scripts so the SAME globals are
+         available. Popup is its own context but shares the COR3 namespace. -->
+    <script src="../shared/constants.js"></script>
+    <script src="../shared/dom.js"></script>
+    <script src="../core/bus.js"></script>
+    <script src="../core/store.js"></script>
+    <script src="../core/logger.js"></script>
+    <script src="../shared/errors.js"></script>
+
+    <script src="components/icons.js"></script>
+    <script src="components/timer.js"></script>
+    <script src="components/module-card.js"></script>
+    <script src="components/log-viewer.js"></script>
+
+    <script src="sections/overview.js"></script>
+    <script src="sections/stash.js"></script>
+    <script src="sections/mercenaries.js"></script>
+    <script src="sections/auto-jobs.js"></script>
+    <script src="sections/alarms.js"></script>
+    <script src="sections/modules-panel.js"></script>
+    <script src="sections/logs-panel.js"></script>
+    <script src="sections/settings.js"></script>
+
+    <script src="shell.js"></script>
+</body>
+</html>

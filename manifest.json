@@ -13,20 +13,30 @@
     "storage",
     "activeTab",
     "tabs",
-    "sidePanel"
+    "sidePanel",
+    "scripting"
   ],
   "side_panel": {
-    "default_path": "popup.html"
+    "default_path": "src/ui/popup.html"
   },
   "host_permissions": [
     "https://cor3.gg/*",
     "https://os.cor3.gg/*",
-    "https://svc-corie.cor3.gg/*",
-    "https://raw.githubusercontent.com/*"
+    "https://svc-corie.cor3.gg/*"
   ],
   "background": {
-    "service_worker": "background.js",
-    "scripts": ["errors.js", "background.js"]
+    "service_worker": "src/entry/background.js",
+    "scripts": [
+      "src/shared/constants.js",
+      "src/core/bus.js",
+      "src/core/store.js",
+      "src/core/logger.js",
+      "src/shared/errors.js",
+      "src/core/module.js",
+      "src/core/settings.js",
+      "src/core/registry.js",
+      "src/entry/background.js"
+    ]
   },
   "content_scripts": [
     {
@@ -35,7 +45,35 @@
         "https://os.cor3.gg/*"
       ],
       "js": [
-        "content-early.js"
+        "src/shared/constants.js",
+        "src/shared/dom.js",
+        "src/shared/ws-frames.js",
+        "src/shared/errors.js",
+        "src/core/bus.js",
+        "src/core/store.js",
+        "src/core/logger.js",
+        "src/core/module.js",
+        "src/core/settings.js",
+        "src/core/registry.js",
+        "src/interceptors/ws-interceptor.js",
+        "src/interceptors/http-interceptor.js",
+        "src/interceptors/solver-loader.js",
+        "src/modules/game/network-map.js",
+        "src/modules/game/server-connect.js",
+        "src/modules/game/sai-navigator.js",
+        "src/modules/game/flows/_shared.js",
+        "src/modules/game/flows/file-decryption.js",
+        "src/modules/game/flows/ip-injection.js",
+        "src/modules/game/flows/ip-cleanup.js",
+        "src/modules/game/flows/file-upload.js",
+        "src/modules/game/flows/log-deletion.js",
+        "src/modules/game/flows/log-download.js",
+        "src/modules/game/flows/file-elimination.js",
+        "src/modules/game/flows/data-download.js",
+        "src/modules/game/flows/decrypt-extract.js",
+        "src/modules/solvers/decrypt.js",
+        "src/modules/solvers/daily-hack.js",
+        "src/entry/content-early.js"
       ],
       "run_at": "document_start",
       "world": "MAIN"
@@ -46,9 +84,39 @@
         "https://os.cor3.gg/*"
       ],
       "js": [
-        "errors.js",
-        "ws-messages.js",
-        "content.js"
+        "src/shared/constants.js",
+        "src/shared/dom.js",
+        "src/shared/ws-frames.js",
+        "src/core/bus.js",
+        "src/core/store.js",
+        "src/core/logger.js",
+        "src/shared/errors.js",
+        "src/core/module.js",
+        "src/core/settings.js",
+        "src/core/registry.js",
+        "src/modules/data/auth.js",
+        "src/modules/data/expeditions.js",
+        "src/modules/data/decisions.js",
+        "src/modules/data/market.js",
+        "src/modules/data/dark-market.js",
+        "src/modules/data/stash.js",
+        "src/modules/data/mercenaries.js",
+        "src/modules/data/merc-config.js",
+        "src/modules/data/expedition-config.js",
+        "src/modules/automation/timers.js",
+        "src/modules/automation/auto-refresh.js",
+        "src/modules/automation/auto-send-merc.js",
+        "src/modules/automation/auto-choose-decision.js",
+        "src/modules/automation/auto-decrypt.js",
+        "src/modules/automation/auto-daily-hack.js",
+        "src/modules/automation/daily-ops.js",
+        "src/modules/automation/auto-jobs.js",
+        "src/modules/automation/runtime-bridge.js",
+        "src/modules/appearance/system-messages.js",
+        "src/modules/appearance/background.js",
+        "src/modules/appearance/network-fog.js",
+        "src/modules/appearance/map-fx.js",
+        "src/entry/content.js"
       ],
       "run_at": "document_idle"
     }
@@ -60,20 +128,8 @@
   },
   "action": {
     "default_icon": "icon/favicon128.png",
-    "default_popup": "popup.html",
+    "default_popup": "src/ui/popup.html",
     "default_title": "COR3 Helper"
   },
-  "web_accessible_resources": [
-    {
-      "resources": [
-        "ws-interceptor.js",
-        "decrypt-solver.js",
-        "daily-hack-solver.js",
-        "job-manager.js"
-      ],
-      "matches": [
-        "<all_urls>"
-      ]
-    }
-  ]
+  "web_accessible_resources": []
 }
