@@ -435,8 +435,8 @@ tick():
 ```
 
 `startContinuous(vol)` plays a beep every 2 s; `stopContinuous()` clears it.
-Popup's Alarms tab has Test / Stop-all buttons that call `chrome.tabs.sendMessage`
-with `testAlarm` / `stopAlarm` types.
+Popup's Overview tab (under "Add alarm") has Test / Stop-all buttons that
+call `chrome.tabs.sendMessage` with `testAlarm` / `stopAlarm` types.
 
 ---
 

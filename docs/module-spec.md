@@ -325,6 +325,14 @@ CSS-инжекция / DOM-удаление. Storage-driven.
 - запись `{ id, label }` в массив `TABS` в `shell.js`
 - `<section data-tab="<id>" id="section-<id>">` в `popup.html` body
 
+**Важно:** для активной (initial) вкладки шелл вызывает `mount()` *и* сразу
+`activate()`. Если оба зовут `render()`, а сам `render()` async (await
+Store), то оба `container.innerHTML = ''` отработают **до** первых
+`appendChild` и контент задвоится. Поэтому в `mount()` ставь только
+подписки (`Store.local.onChanged` и т.п.), а первый рендер делай в
+`activate()`. См. `overview.js` / `expeditions.js`. Этот баг укусил
+overview и logs-panel в мае 2026; не наступай ещё раз.
+
 ## Тонкости
 
 - **Порядок загрузки.** Файлы content_scripts грузятся по порядку в один

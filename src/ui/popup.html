@@ -17,14 +17,11 @@
     <nav class="tabs" id="tabs"></nav>
 
     <main id="main">
-        <section class="section" data-tab="overview"  id="section-overview"></section>
-        <section class="section" data-tab="stash"     id="section-stash"></section>
-        <section class="section" data-tab="mercs"     id="section-mercs"></section>
-        <section class="section" data-tab="autojobs"  id="section-autojobs"></section>
-        <section class="section" data-tab="alarms"    id="section-alarms"></section>
-        <section class="section" data-tab="modules"   id="section-modules"></section>
-        <section class="section" data-tab="logs"      id="section-logs"></section>
-        <section class="section" data-tab="settings"  id="section-settings"></section>
+        <section class="section" data-tab="overview"     id="section-overview"></section>
+        <section class="section" data-tab="expeditions"  id="section-expeditions"></section>
+        <section class="section" data-tab="autojobs"     id="section-autojobs"></section>
+        <section class="section" data-tab="modules"      id="section-modules"></section>
+        <section class="section" data-tab="logs"         id="section-logs"></section>
     </main>
 
     <!-- Load order matches manifest content_scripts so the SAME globals are
@@ -42,13 +39,10 @@
     <script src="components/log-viewer.js"></script>
 
     <script src="sections/overview.js"></script>
-    <script src="sections/stash.js"></script>
-    <script src="sections/mercenaries.js"></script>
+    <script src="sections/expeditions.js"></script>
     <script src="sections/auto-jobs.js"></script>
-    <script src="sections/alarms.js"></script>
     <script src="sections/modules-panel.js"></script>
     <script src="sections/logs-panel.js"></script>
-    <script src="sections/settings.js"></script>
 
     <script src="shell.js"></script>
 </body>

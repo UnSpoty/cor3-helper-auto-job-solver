@@ -70,7 +70,7 @@ cor3-helper/
 | Adjust the SAI navigation pipeline | `src/modules/game/server-connect.js` (login flow), `src/modules/game/sai-navigator.js` (tab switching, helpers) |
 | Tune the decrypt minimax | `src/modules/solvers/decrypt.js` (algorithm verbatim from legacy) |
 | Add a new popup section | new file in `src/ui/sections/`, `<script>` tag in `src/ui/popup.html`, entry in `TABS` array in `src/ui/shell.js` |
-| Add a new chrome.storage.sync user-pref | enum in `STORAGE_SYNC.*`, UI control in `src/ui/sections/settings.js`, listener in the consuming module |
+| Add a new chrome.storage.sync user-pref | enum in `STORAGE_SYNC.*`, UI control in `src/ui/sections/overview.js` (or `expeditions.js` if expedition-related), listener in the consuming module |
 | Toggle an appearance feature | `src/modules/appearance/<feature>.js` (CSS injection, MutationObserver patterns) |
 
 ## Development workflow

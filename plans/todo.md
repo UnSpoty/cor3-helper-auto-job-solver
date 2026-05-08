@@ -8,7 +8,29 @@
 
 ---
 
-## Recently fixed — May 2026
+## Recently shipped — May 2026
+
+### UI restructure (later in the same day)
+
+Сократили вкладки с 8 до 5 и переразложили контент по
+"что я хочу видеть рядом":
+
+- **Overview**: Daily Ops · Markets · Auto-refresh markets · Alarms (+форма) ·
+  Auto solvers (auto-decrypt, auto-daily-hack) · Game appearance (4 toggles) ·
+  versions footer.
+- **Expeditions** (новая): Active expeditions · Pending decisions ·
+  Auto-choose decision (toggle + risk slider) · Auto-send mercenary · Roster ·
+  Stash.
+- **Auto-Jobs / Modules / Logs** — без изменений.
+
+Удалены секции `settings.js`, `alarms.js`, `stash.js`, `mercenaries.js`.
+`timer.fmt()` теперь всегда показывает секунды, даже когда часы > 0
+(было `${h}h ${m}m` без `s`). Добавлен `.gitignore` для
+`.claude/settings.local.json` и root-level `.mcp.json`.
+
+Модуль `auto-refresh` сохранён — UI для него теперь живёт в Overview.
+
+### Bug fixes (предыдущий заход)
 
 Три бага найдены и починены в одну сессию (один коммит):
 

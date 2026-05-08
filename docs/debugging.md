@@ -288,4 +288,4 @@ After any code change:
 | Skip a job type | Edit `chrome.storage.sync.autoJobsSettings.enabledJobTypes['file_decryption'] = false` (no UI yet) |
 | Boost a server's priority | `chrome.storage.sync.serverPriorities['RM7-S4L4'] = 999` |
 | Permanently bug a job | `chrome.storage.local.buggedJobIds['<id>'] = {ts: Date.now()+999*3600000, name: '?'}` |
-| Stop alarms | Alarms tab → Stop all (the form button) |
+| Stop alarms | Overview tab → Add alarm card → Stop all |

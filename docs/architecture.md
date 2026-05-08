@@ -28,8 +28,8 @@ and the runtime API. They communicate over `window.postMessage`.
 ```
 ┌────────────────────────────────────────────────┐
 │ UI  (src/ui/popup.html + popup.css + shell.js) │
-│  • 8 sections — Overview, Stash, Mercs,        │
-│    Auto-Jobs, Alarms, Modules, Logs, Settings  │
+│  • 5 sections — Overview, Expeditions,         │
+│    Auto-Jobs, Modules, Logs                    │
 │  • 4 components — icons, timer, module-card,   │
 │    log-viewer                                  │
 ├────────────────────────────────────────────────┤

@@ -6,14 +6,11 @@
     const C = root.COR3.constants;
 
     const TABS = [
-        { id: 'overview', label: 'Overview' },
-        { id: 'stash',    label: 'Stash' },
-        { id: 'mercs',    label: 'Mercs' },
-        { id: 'autojobs', label: 'Auto-Jobs' },
-        { id: 'alarms',   label: 'Alarms' },
-        { id: 'modules',  label: 'Modules' },
-        { id: 'logs',     label: 'Logs' },
-        { id: 'settings', label: 'Settings' },
+        { id: 'overview',    label: 'Overview' },
+        { id: 'expeditions', label: 'Expeditions' },
+        { id: 'autojobs',    label: 'Auto-Jobs' },
+        { id: 'modules',     label: 'Modules' },
+        { id: 'logs',        label: 'Logs' },
     ];
 
     // Mode detection
