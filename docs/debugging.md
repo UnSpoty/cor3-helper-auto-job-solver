@@ -112,6 +112,53 @@ Object.fromEntries(
 
 ## Common issues
 
+### "cor3.gg tab freezes solid the moment the extension loads — F12 won't even open"
+
+Resolved May 2026, but documenting the failure mode in case anything similar
+ever shows up again.
+
+**Symptom:** with the extension enabled, the cor3.gg tab hangs at first
+paint. DevTools (`F12` / Ctrl+Shift+I) never opens because the renderer
+process is wedged in synchronous JS execution. Disabling the extension
+restores the site immediately.
+
+**Root cause:** `src/core/logger.js` registered its bus tracer
+unconditionally. In MAIN world `Logger.push()` forwards every entry via
+`Bus.window.post('COR3_LOG_REMOTE', …)`, and `Bus.window.post` calls the
+trace function **synchronously** before posting. The trace handler called
+`push('bus', DEBUG, …)` which posted again, fired the trace again, …
+unbounded synchronous recursion. The first log line during boot was enough
+to overflow the stack and freeze the tab so hard the browser couldn't
+service the F12 keypress.
+
+**Fix:** see `src/core/logger.js` — the `Bus.setTrace(...)` registration is
+now gated on `HAS_STORAGE`, so MAIN never installs a tracer; an `inTrace`
+re-entry guard and a `COR3_LOG_REMOTE` filter add belt-and-suspenders. See
+[architecture.md → Bus tracer recursion](architecture.md#bus-tracer-recursion-resolved-may-2026)
+for full detail.
+
+**If the tab ever freezes like this again:**
+1. Don't try to F12 the wedged tab — it will keep hanging. Open
+   `chrome://extensions`, disable COR3 Helper, then refresh cor3.gg to
+   confirm the extension is the cause.
+2. Reproduce in chrome-devtools-mcp: `await page.goto('https://cor3.gg')`.
+   The MCP browser doesn't load this extension, so the page itself works
+   there — useful for isolating "extension vs site" questions.
+3. Search for new sync `setTrace` / `subscribe(...)` callbacks in
+   `src/core/*` that loop back into `Bus.window.post`. The same recursion
+   shape can appear in any subscribe→post→subscribe chain.
+
+### "Service worker keeps logging `Receiving end does not exist`"
+
+Background SW pings the cor3.gg tab every 30 s with
+`chrome.tabs.sendMessage({action:'keepWorkerAlive'})`. If the tab matches
+the URL pattern but has no content script attached yet (page loading,
+just-reloaded extension, navigation between pages), Chrome rejects with
+"Receiving end does not exist". This is harmless and self-heals on the
+next tick. `src/entry/background.js → isNoReceiverError()` filters this
+specific message so it doesn't flood the SW's `cor3LogError` log; any
+other exception still logs.
+
 ### "Auto-jobs status is stuck in `solving` and never completes"
 
 Likely causes:

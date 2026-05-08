@@ -24,11 +24,22 @@ async function getCor3Tab() {
 }
 
 // ─── Keep-alive ───────────────────────────────────────────────────────
+// "Receiving end does not exist" is expected whenever the cor3.gg tab has no
+// content script attached yet (page loading, just-reloaded extension, tab on
+// a non-matching URL fragment). It's not an actionable error, so silence it
+// — the SW just retries on the next 30 s tick.
+function isNoReceiverError(e) {
+    const msg = (e && (e.message || String(e))) || '';
+    return /Receiving end does not exist|Could not establish connection/i.test(msg);
+}
+
 async function keepAlive() {
     try {
         const tab = await getCor3Tab();
-        if (tab) await chrome.tabs.sendMessage(tab.id, { action: 'keepWorkerAlive' });
+        if (!tab) return;
+        await chrome.tabs.sendMessage(tab.id, { action: 'keepWorkerAlive' });
     } catch (e) {
+        if (isNoReceiverError(e)) return;
         if (self.cor3LogError) self.cor3LogError('background', e, { action: 'keepAlive' });
     }
 }

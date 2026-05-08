@@ -155,7 +155,9 @@
 
     root.COR3.ui.overview = {
         mount(container) {
-            // re-render on relevant storage changes
+            // Subscribe only — first render comes from activate(). Calling render here
+            // races the activate() render and produces duplicate content (both clear
+            // innerHTML before their await, both append after).
             unsubs.push(Store.local.onChanged((changes) => {
                 if (changes[C.STORAGE_LOCAL.DAILY_OPS] || changes[C.STORAGE_LOCAL.MARKET] ||
                     changes[C.STORAGE_LOCAL.DARK_MARKET] || changes[C.STORAGE_LOCAL.EXPEDITIONS] ||
@@ -163,7 +165,6 @@
                     if (container.classList.contains('active')) render(container);
                 }
             }));
-            render(container);
         },
         activate(container) { render(container); },
         deactivate() { clearTimers(); },

@@ -202,6 +202,28 @@ End result: every log line, regardless of which world emitted it, lands in
 `chrome.storage.local.cor3_logs[moduleId]` and is visible in the popup's
 Logs tab.
 
+### Bus tracer recursion (resolved May 2026)
+
+Logger also installs `Bus.setTrace(...)` to record every cross-world Bus
+event under the synthetic module id `bus`. Critically, this registration is
+gated on `HAS_STORAGE`. **Do not remove that gate.** Without it, MAIN world
+hits unbounded synchronous recursion on the first log line:
+
+```
+push('mod', INFO, 'msg')           // any module logs
+  → Bus.window.post('COR3_LOG_REMOTE', …)   // MAIN forwards (no chrome.storage)
+    → trace('send', 'window', 'COR3_LOG_REMOTE', env)   // sync inside winPost()
+      → push('bus', DEBUG, 'SEND window COR3_LOG_REMOTE', env)
+        → Bus.window.post('COR3_LOG_REMOTE', …)   // and around again
+          → trace(…) → push(…) → … stack overflow
+```
+
+This froze the cor3.gg tab so hard that DevTools couldn't open. The fix is
+threefold: gate `setTrace` on `HAS_STORAGE`, keep an `inTrace` re-entry
+guard, and skip `COR3_LOG_REMOTE` inside the tracer (it's already ingested
+under its real `moduleId`, no need to dup as `bus` debug). The receiving
+isolated side still traces `recv`, so bus traffic is still visible.
+
 ## Storage as pub/sub
 
 Each data module owns a small set of `chrome.storage.local` keys. UI sections

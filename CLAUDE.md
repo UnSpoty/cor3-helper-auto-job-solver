@@ -99,6 +99,14 @@ find src -name '*.js' -exec node --check {} \;
    come first.
 5. **Verify in chrome-devtools-mcp.** See [debugging.md](docs/debugging.md)
    for the probes and smoke test.
+6. **Beware sync-recursion through `Bus.setTrace`.** The Logger trace fires
+   synchronously from every `Bus.window.post` / `Bus.runtime.send`. If you
+   add anything that calls `Bus.window.post` from inside a tracer or a
+   `Logger.subscribe` handler, you will burn the renderer's stack — the
+   May 2026 page-freeze incident (see
+   [debugging.md → cor3.gg tab freezes solid](docs/debugging.md#cor3gg-tab-freezes-solid-the-moment-the-extension-loads--f12-wont-even-open))
+   was exactly this. Logger now gates its tracer on `HAS_STORAGE`; preserve
+   the gate.
 
 ## Decisions baked into this codebase
 

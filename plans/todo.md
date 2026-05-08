@@ -8,6 +8,33 @@
 
 ---
 
+## Recently fixed — May 2026
+
+Три бага найдены и починены в одну сессию (один коммит):
+
+1. **MAIN-мир падал в синхронную бесконечную рекурсию через Logger.**
+   `Logger` всегда регистрировал `Bus.setTrace(...)`. В MAIN `push()` форвардит
+   запись через `Bus.window.post('COR3_LOG_REMOTE', …)`, а `Bus.window.post`
+   синхронно вызывает trace → `push('bus', …)` → снова `post` → … stack
+   overflow на первой же лог-строке. Симптом: cor3.gg-таб полностью виснет
+   при запуске расширения, F12 не открывается. Фикс: gating tracer на
+   `HAS_STORAGE`, `inTrace` re-entry guard, фильтр `COR3_LOG_REMOTE` чтобы
+   не дублировать. См. `src/core/logger.js` и
+   `docs/architecture.md → Bus tracer recursion`.
+2. **Дублирование контента в Overview и Logs.** `shell.js` для активной
+   вкладки звал `mount(el)` и сразу `activate(el)`. У этих двух секций оба
+   метода вызывали async `render()`. Оба клира `container.innerHTML = ''`
+   успевали отработать **до** первых `appendChild`, и контент дописывался
+   дважды. Фикс: убрал `render()` из `mount()` в `overview.js` и
+   `logs-panel.js`. У остальных секций mount уже только подписывался —
+   они не были затронуты.
+3. **Шум "Receiving end does not exist" в SW логах.** `keepAlive` падал каждые
+   30 с, когда контент-скрипт ещё не успел подгрузиться. Не баг — нормальное
+   поведение Chrome — но захламляло `cor3LogError`. Фикс: `isNoReceiverError`
+   глушит конкретно эту строку в `src/entry/background.js`.
+
+---
+
 ## Next session — start here
 
 ### Setup

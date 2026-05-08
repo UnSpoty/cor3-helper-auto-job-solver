@@ -162,10 +162,23 @@
         catch (_) { return String(v); }
     }
 
-    // Auto-trace bus traffic under module id 'bus'
-    if (root.COR3.Bus && typeof root.COR3.Bus.setTrace === 'function') {
+    // Auto-trace bus traffic under module id 'bus'.
+    // CRITICAL: only register in contexts that can persist logs locally
+    // (chrome.storage available). In MAIN world push() forwards every entry
+    // via Bus.window.post('COR3_LOG_REMOTE'), and Bus.window.post fires the
+    // trace synchronously — registering here would create unbounded synchronous
+    // recursion (push → post → trace → push → …) that overflows the stack on
+    // the first log line and freezes the tab so hard DevTools can't even open.
+    // The receiving (isolated) side still traces 'recv', so we don't lose
+    // visibility into bus traffic.
+    let inTrace = false;
+    if (HAS_STORAGE && root.COR3.Bus && typeof root.COR3.Bus.setTrace === 'function') {
         root.COR3.Bus.setTrace(({ direction, transport, type, payload }) => {
-            push('bus', C.LOG_LEVEL.DEBUG, `${direction.toUpperCase()} ${transport} ${type}`, payload);
+            if (inTrace) return;                 // re-entry guard
+            if (type === 'COR3_LOG_REMOTE') return; // already ingested under its real moduleId
+            inTrace = true;
+            try { push('bus', C.LOG_LEVEL.DEBUG, `${direction.toUpperCase()} ${transport} ${type}`, payload); }
+            finally { inTrace = false; }
         });
     }
 

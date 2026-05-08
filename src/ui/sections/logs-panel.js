@@ -50,7 +50,9 @@
     }
 
     root.COR3.ui.logs = {
-        mount(container) { render(container); },
+        // No-op mount: render is driven by activate() to avoid the dup-render race
+        // (both pre-await innerHTML clears land before either appendChild → 2× content).
+        mount() {},
         activate(container) { render(container); },
         deactivate(container) {
             if (container._logViewer) try { container._logViewer.destroy(); } catch (_) {}
