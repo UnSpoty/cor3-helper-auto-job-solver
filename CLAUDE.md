@@ -1,201 +1,164 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Quick orientation for an AI assistant entering this codebase. Detailed
+references live in `docs/`.
 
-## Project Overview
+## TL;DR
 
-**COR3 Helper** is a Chrome extension (Manifest V3) that enhances the [cor3.gg](https://cor3.gg) game by intercepting WebSocket data and presenting an enriched popup/side-panel UI with timers, market info, auto-solvers, and mercenary management.
+COR3 Helper is a Chrome MV3 (and Firefox-compatible) extension for the
+[cor3.gg](https://cor3.gg) game. Modular architecture, ~70 files in `src/`.
+Every feature is a `COR3.Module` registered with `COR3.Registry`. Five
+execution contexts share a global `window.COR3.*` namespace via classic
+IIFE-loaded scripts. No build step.
 
-**Status: full modular rewrite complete (Phases 1–6).** All legacy monolith files have been replaced. Plan in `C:\Users\Admin\.claude\plans\glistening-beaming-dawn.md`; cross-session log in `plans/todo.md`.
+The legacy monolith (`content.js`, `popup.js`, `job-manager.js`, etc.)
+was retired in May 2026; if you find references to those files anywhere,
+they're stale.
 
-## Development Workflow
+## Documentation map
 
-No build step. Vanilla JavaScript. Manifest's `content_scripts.js` array loads files in order; modules register on the global `COR3.*` namespace.
+Read these in order when ramping up:
 
-**Reload after changes:**
-1. Edit source files
-2. Go to `chrome://extensions/` (Developer Mode on)
-3. Click reload on COR3 Helper
-4. Reopen popup or refresh game tab
+| Doc | What's in it |
+|---|---|
+| [docs/architecture.md](docs/architecture.md) | Execution contexts, boot order, module lifecycle, cross-world topology |
+| [docs/module-spec.md](docs/module-spec.md) | Module contract; templates for each kind of module (data / automation / game / flow / solver / appearance / UI section) |
+| [docs/messaging.md](docs/messaging.md) | Exhaustive enum of MSG / STORAGE_LOCAL / STORAGE_SYNC / FLOW / CATEGORY / LIMITS with payload shapes and producer/consumer mapping |
+| [docs/pipelines.md](docs/pipelines.md) | Diagrams of auto-jobs state machine, auto-send-merc, auto-choose-decision, NM→SC→SAI startup, daily-ops fetch, alarms, auto-refresh, Logger |
+| [docs/debugging.md](docs/debugging.md) | Live state probes, chrome-devtools-mcp runbook, common issues, smoke-test script |
+| [docs/glossary.md](docs/glossary.md) | Game terms (K/D, SAI, Network Map, etc.), DOM selector reference, Socket.IO frame primer |
+| [plans/todo.md](plans/todo.md) | Cross-session checklist; what was done in the rewrite, what's next |
 
-**Syntax check:**
+## Project layout
+
+```
+cor3-helper/
+├── manifest.json
+├── README.md
+├── CLAUDE.md
+├── docs/
+│   ├── architecture.md   ← layer diagram, boot order, lifecycle
+│   ├── module-spec.md    ← contract + templates
+│   ├── messaging.md      ← all MSG / STORAGE / FLOW
+│   ├── pipelines.md      ← flow diagrams for each pipeline
+│   ├── debugging.md      ← runbook + common issues
+│   └── glossary.md       ← game terms + DOM selectors
+├── plans/
+│   └── todo.md
+└── src/
+    ├── core/             Bus, Store, Logger, Module, Registry, Settings
+    ├── shared/           constants, dom, ws-frames, errors
+    ├── interceptors/     ws-interceptor, http-interceptor, solver-loader
+    ├── modules/
+    │   ├── data/         9 modules — one per WS payload
+    │   ├── automation/   9 modules — timers, auto-jobs, auto-send-merc, …
+    │   ├── game/         network-map, server-connect, sai-navigator, flows-core, 9 flows
+    │   ├── solvers/      decrypt, daily-hack
+    │   └── appearance/   4 CSS/DOM toggles
+    ├── ui/               popup.html + popup.css + components/ + sections/
+    └── entry/            content-early.js, content.js, background.js
+```
+
+## Quick orientation: where does feature X live?
+
+| If you want to... | Look at |
+|---|---|
+| Change how WS frames are parsed | `src/shared/ws-frames.js` |
+| Add a new game-data field to track | new file in `src/modules/data/` + entry in `MSG.WS.*` + entry in `STORAGE_LOCAL.*` |
+| Tweak auto-jobs scheduling | `src/modules/automation/auto-jobs.js` (the big one) |
+| Add a new job type | docs/module-spec.md → "Job flow"; touch `auto-jobs.js`'s `JOB_TYPE_KEYWORDS`, `FLOW_DISPATCH`, `resolveJobParams`; new file in `src/modules/game/flows/` |
+| Adjust the SAI navigation pipeline | `src/modules/game/server-connect.js` (login flow), `src/modules/game/sai-navigator.js` (tab switching, helpers) |
+| Tune the decrypt minimax | `src/modules/solvers/decrypt.js` (algorithm verbatim from legacy) |
+| Add a new popup section | new file in `src/ui/sections/`, `<script>` tag in `src/ui/popup.html`, entry in `TABS` array in `src/ui/shell.js` |
+| Add a new chrome.storage.sync user-pref | enum in `STORAGE_SYNC.*`, UI control in `src/ui/sections/settings.js`, listener in the consuming module |
+| Toggle an appearance feature | `src/modules/appearance/<feature>.js` (CSS injection, MutationObserver patterns) |
+
+## Development workflow
+
+No build step. Vanilla JavaScript. Manifest's `content_scripts.js` array
+loads files in dependency order; modules register on `window.COR3.*`.
+
 ```bash
+# Syntax-check the whole tree
 find src -name '*.js' -exec node --check {} \;
+
+# Reload the extension after a change:
+# chrome://extensions/ → click reload icon → refresh cor3.gg tab
 ```
 
-## Architecture
+## When making changes
 
-```
-┌────────────────────────────────────────────────┐
-│ UI (src/ui/popup.html)                         │
-│  • shell.js: tabs, mode detection              │
-│  • components/: timer, module-card, log-viewer │
-│  • sections/: overview, stash, mercs,          │
-│              auto-jobs, alarms, modules,       │
-│              logs, settings                    │
-├────────────────────────────────────────────────┤
-│ Isolated content world (src/entry/content.js)  │
-│  • 9 data modules (one per WS payload)         │
-│  • 9 automation modules (timers, auto-jobs,    │
-│    auto-send-merc, auto-choose, auto-decrypt,  │
-│    auto-daily-hack, daily-ops, runtime-bridge, │
-│    auto-refresh)                               │
-│  • 4 appearance modules (system-msgs, bg, fog, │
-│    map-fx)                                     │
-├────────────────────────────────────────────────┤
-│ MAIN content world (src/entry/content-early.js)│
-│  • interceptors: ws, http, solver-loader       │
-│  • game core: network-map, server-connect,     │
-│    sai-navigator                               │
-│  • flows-core + 9 flow modules                 │
-│  • 2 solver modules (decrypt, daily-hack)      │
-├────────────────────────────────────────────────┤
-│ Background SW (src/entry/background.js)        │
-│  • keep-alive ping                             │
-│  • expedition polling for auto-features        │
-├────────────────────────────────────────────────┤
-│ CORE (src/core/)                               │
-│  bus · store · logger · module · registry      │
-│  · settings                                    │
-└────────────────────────────────────────────────┘
-```
+1. **Read the relevant doc first.** Especially [pipelines.md](docs/pipelines.md)
+   for anything touching auto-jobs or auto-send-merc.
+2. **Use the constants.** Any new MSG type or storage key must be added
+   to `src/shared/constants.js` first; never inline strings in module code.
+3. **Use `this.track()` for every subscription.** Otherwise `stop()` /
+   reload leaks listeners. See [module-spec.md](docs/module-spec.md).
+4. **Touch the manifest.** Adding a module means adding the file path to
+   the right `content_scripts[i].js` array. Loaded in order; deps must
+   come first.
+5. **Verify in chrome-devtools-mcp.** See [debugging.md](docs/debugging.md)
+   for the probes and smoke test.
 
-## Module Contract
+## Decisions baked into this codebase
 
-Every feature is a class extending `COR3.Module`. See [docs/module-spec.md](docs/module-spec.md) for the full contract.
-
-```js
-class FooModule extends COR3.Module {
-    constructor() {
-        super({
-            id: 'foo',
-            name: 'Foo Feature',
-            category: COR3.constants.CATEGORY.AUTOMATION,
-            dependsOn: ['network-map'],
-            owns: { storageKeys: ['fooSetting'], busTypes: [] },
-        });
-    }
-    async start() { this.track(Bus.window.on('FOO_EVT', () => {/*...*/})); }
-}
-COR3.Registry.register(new FooModule());
-```
-
-## Core primitives (`src/core/`)
-
-| File | Purpose |
-|---|---|
-| `bus.js` | `Bus.window.{post,on}` (postMessage MAIN↔isolated) and `Bus.runtime.{send,on}` (chrome.runtime). Accepts both `{type, payload}` and legacy `{action, ...}` envelopes. |
-| `store.js` | Promise-based `Store.local` / `Store.sync` over chrome.storage. `getOne`, `setOne`, `onChanged`. |
-| `logger.js` | Per-module ring buffer (200 entries) under `chrome.storage.local.cor3_logs`. MAIN-world entries auto-forward via `COR3_LOG_REMOTE` window envelope; isolated-world Logger ingests them. |
-| `module.js` | Base class. `track(unsubscribe)` for auto-cleanup. `info/debug/warn/error` log helpers. |
-| `registry.js` | `register()`, topo-sort by `dependsOn`, `boot()`, `setModuleState(id, partial)` with cascade stop/start. |
-| `settings.js` | Persists `{[id]: {enabled, logsEnabled}}` to `chrome.storage.sync.modules`. |
-
-## Shared utilities (`src/shared/`)
-
-| File | Purpose |
-|---|---|
-| `constants.js` | Single source of truth for `MSG.*`, `STORAGE_LOCAL.*`, `STORAGE_SYNC.*`, `FLOW.*`, `CATEGORY.*`, `LOG_LEVEL.*`, `LIMITS.*`. **Never inline message-type strings.** |
-| `dom.js` | `sleep`, `waitForEl`, `clickEl`, `dblClickEl`, `setReactInputValue`, `findByText`, `requery`, `retry`. |
-| `ws-frames.js` | Socket.IO v4 frame parser/encoder. |
-| `errors.js` | `COR3.errors.logError(source, error, ctx)` + back-compat `cor3LogError/Get/Clear` and stubbed `cor3LogWsMessage`. |
-
-## Cross-world communication
-
-- **MAIN ↔ isolated**: `window.postMessage` via `Bus.window`. Type names from `MSG.*`.
-- **Popup → content script**: `chrome.tabs.sendMessage(tab.id, {action, ...})`. The runtime-bridge module forwards each known action to MAIN via Bus.
-- **SW → content script**: `chrome.tabs.sendMessage(tab.id, {action})`.
-- **Storage as pub/sub**: `Store.local.onChanged` / `Store.sync.onChanged`.
-- **Logger trace**: `Bus.setTrace(fn)` — Logger automatically traces all bus traffic under module id `bus`.
-
-## Decisions locked in for this rewrite
-
-**Dropped:**
+**Dropped (not migrated):**
 - 6-theme system → single cor3-style theme
-- Custom decision modifier sliders → `riskThreshold` (0–10) + fixed formula
-- Version-mismatch banner (GitHub poll)
-- Archived expeditions tab
-- Standalone WS message debug log (`cor3_ws_messages`) — replaced by centralized Logger
+- Custom decision modifier sliders → `riskThreshold` (0..10) + fixed formula
+- Version-mismatch GitHub banner
+- Archived expeditions UI tab (WS event still relayed; storage key still written)
+- Standalone WS message debug log → centralized Logger
 
-**Preserved:** Auto-jobs (9 flow types), Auto-send/choose merc, Auto-choose decision, Auto-refresh, Auto-decrypt, Auto-daily-hack, multi-alarms, side-panel + pop-out modes, game-appearance toggles, bugged-jobs blacklist, server priority list, bearer-token capture.
+**Preserved with care:**
+- Auto-jobs full state machine (idle/accepting/solving/completing) with
+  3 watchdogs, K/D blacklist (parsed from timer text + 5 min buffer),
+  bugged-job 2 h TTL, server priorities, debug confirmation gate
+- All 9 job flow types: file_decryption, ip_injection, ip_cleanup,
+  file_upload, log_deletion, log_download, file_elimination, data_download,
+  decrypt_extract
+- Decrypt minimax algorithm — verbatim port from legacy
+- Daily-hack pattern detection (System Log Integrity + Signal Hack)
+- Auto-send-merc with cheapest-AVAILABLE selection + stash-full re-enable
+- Multi-alarm system (alarms tick every second, audio via Web Audio API)
+- Pop-out window mode (`?mode=popout`)
 
-## Storage Keys
+## Known limitations / next-session priorities
 
-All keys enumerated in [src/shared/constants.js](src/shared/constants.js). Highlights:
+See [plans/todo.md](plans/todo.md) for the full list. High-impact:
 
-**Local (game data + runtime):**
-- Data: `expeditionsData`, `expeditionDecisions`, `marketData`, `darkMarketData`, `darkMarketAvailable`, `stashData`, `mercenariesData`, `expeditionConfigData`, `mercConfigData`, `dailyOpsData`, `dailyRewardsData`, `bearerToken`, `webVersion`, `systemVersion`
-- Auto-jobs runtime: `autoJobsState`, `autoJobsQueue`, `autoJobsLog`, `buggedJobIds`, `autoJobsPendingConfirm`, `autoJobsConfirmResult`, `networkMapServers`
-- New: **`cor3_logs`** — `{ [moduleId]: [{ts, level, msg, ctx}, …] }` (200 per module)
+1. **Cross-world Module Manager state sync.** Master switches in the UI
+   only affect the isolated/SW/popup contexts. MAIN-world Registry doesn't
+   subscribe to `chrome.storage.sync.modules` (no `chrome.*` access). Fix
+   = `Settings.onChange` listener in `src/entry/content.js` that posts
+   `Bus.window` envelopes; corresponding `Bus.window.on` in
+   `src/entry/content-early.js` calls `Registry.setModuleState`.
+2. **`__cor3Dump()` has no isolated-world handler.** F12 helper still
+   posts `COR3_REQ_DUMP` but nobody listens. Add a handler in
+   `auto-jobs.js` or a dedicated debug module.
+3. **Per-job-type UI toggles.** `autoJobsSettings.enabledJobTypes` is
+   honored but no UI controls. Add to Auto-Jobs section.
+4. **`debugTriggerJobType`** legacy debug feature: not migrated. Pre-trigger
+   one job of a given type from the popup for testing.
 
-**Sync (user prefs):**
-- `selectedTheme`, `alarms`, `autoSendMerc`, `autoJobsSettings`, `serverPriorities`, `autoRefresh`, `autoDecryptEnabled`, `autoDailyHackEnabled`, `disableSystemMessages`, `disableBackground`, `disableNetworkFog`, `disableMapFxEnabled`
-- New: **`autoChooseEnabled`**, **`riskThreshold`** (replaces `decisionModifiers`)
-- New: **`modules`** — `{ [moduleId]: {enabled, logsEnabled} }` (Module Manager state)
+## Module ID reference
 
-## Known patterns & constraints
+Quick list of every registered module ID and its world:
 
-- **Socket.IO v4 frames**: WS messages start with `"42"`. Use `COR3.wsFrames.parseFrame(raw)`.
-- **K/D detection**: A `MaintenanceTimer` containing a `[data-sentry-component="TimerIcon"]` SVG indicates K/D — emit `COR3_JOB_KD_DETECTED`. Plain text-only timer = cooldown, not K/D.
-- **Server unreachable**: `network-map` posts `COR3_SERVER_UNREACHABLE` when Connect button reappears OR `window.__serverPathFailed` is set by WS interceptor (no-path-to-server). Auto-jobs blacklists the server for 30 min (or longer if K/D in chain).
-- **Virtual-scroll re-query**: After IP-list deletes in SAI Transit, re-query the scroll container — React replaces the DOM. Use `COR3.dom.requery()`.
-- **React inputs**: Always use `COR3.dom.setReactInputValue(el, value)` — direct `el.value =` doesn't trigger React onChange.
-- **Bugged-job skip**: Timed-out jobs are written to `buggedJobIds` with 2h TTL (`LIMITS.BUGGED_JOB_TTL_MS`).
-- **Auto-jobs state TTL**: `autoJobsState` is restored on reload only if its `updatedAt` is younger than `LIMITS.AUTOJOBS_STATE_TTL_MS` (5 min).
+**MAIN content_scripts (world: 'MAIN'):**
+- `network-map`, `server-connect`, `sai-navigator`, `flows-core` — game core
+- `flow-file-decryption`, `flow-ip-injection`, `flow-ip-cleanup`,
+  `flow-file-upload`, `flow-log-deletion`, `flow-log-download`,
+  `flow-file-elimination`, `flow-data-download`, `flow-decrypt-extract`
+- `solver-decrypt`, `solver-daily-hack`
 
-## Adding a new module
+**Isolated content_scripts:**
+- `auth`, `expeditions`, `decisions`, `market`, `dark-market`, `stash`,
+  `mercenaries`, `merc-config`, `expedition-config` — data
+- `timers`, `auto-refresh`, `auto-send-merc`, `auto-choose-decision`,
+  `auto-decrypt`, `auto-daily-hack`, `daily-ops`, `auto-jobs`,
+  `runtime-bridge` — automation
+- `appearance-system-messages`, `appearance-background`,
+  `appearance-network-fog`, `appearance-map-fx` — appearance
 
-1. Create `src/modules/<category>/<id>.js` with the IIFE pattern (see `docs/module-spec.md`).
-2. If isolated-world: append the file path to `manifest.json → content_scripts[1].js` (after core/, before `entry/content.js`).
-3. If MAIN-world: append to `content_scripts[0].js` (after core/, before `entry/content-early.js`).
-4. If background: append to `background.scripts` (Firefox) — Chrome SW uses importScripts in `src/entry/background.js`.
-5. If popup: add `<script>` tag to `src/ui/popup.html` and a `mount(el)` method on `COR3.ui.<id>`.
-6. New storage keys → register in `src/shared/constants.js`.
-7. New bus types → register in `src/shared/constants.js`.
-
-## Debugging via chrome-devtools-mcp
-
-`.claude/.mcp.json` and `.vscode/mcp.json` register the chrome-devtools-mcp server. From a Claude session you can:
-- Open the cor3.gg tab via the MCP browser
-- Run `window.COR3.Registry.list()` in either MAIN or ISOLATED world to see registered modules
-- Read `chrome.storage.local.cor3_logs` directly
-- Verify storage keys, check live state without round-tripping the popup
-
-## Game layer detail
-
-```
-network-map  ←  server-connect  ←  sai-navigator  ←  flows-core
-                                                       │
-                                                       └─→ 9 flow modules
-solver-decrypt    (independent — listens for COR3_START_DECRYPT_SOLVER)
-solver-daily-hack (independent — listens for COR3_START_DAILY_HACK)
-```
-
-Helpers exposed on `window.COR3.game.*`:
-- `COR3.game.networkMap.{findServerItemByName, checkServerKD, listServersOnKD, ensureNetworkMapOpen, openServerMarket, scrapeAndPostServers, SEL}`
-- `COR3.game.serverConnect.{connect, getSaiForServer}`
-- `COR3.game.sai.{findOrOpenSai, navigateToSection, waitForSaiContent, addIpViaModal, downloadsWatcher, find* row helpers, SEL}`
-- `COR3.game.flows.{isWatching, setWatching, sendDone, sendTimeout, userLog, startFlow}`
-
-## Auto-jobs orchestrator (state machine)
-
-States: `idle` → `accepting` → `solving` → `completing` → `idle`
-
-| Watchdog | Threshold | Action |
-|---|---|---|
-| `accepting` stuck | 60s | reset to idle, drop bulk, drain queue |
-| `solving` stuck | 3 min | bug job, abort flow, reset to idle, next from queue after 3s |
-| `completing` stuck | 45s | reset to idle, refresh market |
-| K/D blacklist | 2h | parsed from `MaintenanceTimer` text |
-| Bugged-job blacklist | 2h | timed-out job IDs skipped on next scan |
-| Cooldown after timeout | 20s | no new accepts |
-
-**Resume on reload**: `autoJobsState.status === 'solving'` (with `jobId` set) ⇒ re-dispatch START_*_FLOW after `JOB_MANAGER_READY`.
-
-**Resume in-progress (TAKEN jobs from market data)**: `tryResumeInProgress()` runs after every market refresh; pulls TAKEN jobs back into the queue if they're not bugged and not in the queue already.
-
-## Limitations / future work
-
-- **Cross-world Module Manager state sync**: master switches only affect the isolated/SW/popup contexts. MAIN-world Registry doesn't subscribe to `chrome.storage.sync.modules` because it has no chrome.* APIs. To fully control MAIN modules from UI, add a Bus.window broadcast from isolated entry to MAIN on settings change. (See `plans/todo.md`.)
-- **`debugTriggerJobType`** legacy debug feature: not exposed in new UI. Add a per-type test button to the Auto-Jobs tab if needed.
-- **Per-job-type toggle UI**: `autoJobsSettings.enabledJobTypes` is honored by the orchestrator but no UI controls exist yet.
+Plus synthetic ID `bus` (used by Logger to record traced bus traffic) and
+`registry` (used by Registry's own warn/error logs).

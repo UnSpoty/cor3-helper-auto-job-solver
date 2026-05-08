@@ -1,8 +1,138 @@
 # COR3 Helper — Cross-Session Todo
 
-Этот файл — единый чеклист переработки расширения. Обновляется на каждом чекпоинте между сессиями. Полный план: `C:\Users\Admin\.claude\plans\glistening-beaming-dawn.md`.
+Этот файл — единый чеклист между сессиями. **Раздел "Next session"** ниже —
+основное место, куда смотреть при возвращении в проект. Под ним — история
+переработки (Phases 1–6) для контекста.
 
-## Phase 1 — Foundation ✅ (current session)
+Полный изначальный план: `C:\Users\Admin\.claude\plans\glistening-beaming-dawn.md`.
+
+---
+
+## Next session — start here
+
+### Setup
+
+- [ ] Подключить chrome-devtools-mcp (уже зарегистрирован в `.claude/.mcp.json`):
+    ```
+    npx -y chrome-devtools-mcp@latest
+    ```
+    Должен запуститься как MCP-сервер. Проверить — спросить у меня "открой cor3.gg".
+- [ ] Перезагрузить расширение в `chrome://extensions/` если давно не загружали — посмотреть есть ли parse-errors на новом коде.
+- [ ] Открыть cor3.gg → DevTools console; ожидаем:
+    - `[COR3] WebSocket interceptor installed (modular)`
+    - `[COR3] HTTP interceptor installed`
+    - `[COR3.entry/content-early] MAIN-world boot complete — 16 modules`
+
+### High-priority items
+
+#### 1. Cross-world Module Manager state sync (~30 lines)
+
+MAIN-world Registry не реагирует на изменения `chrome.storage.sync.modules`,
+потому что у MAIN нет `chrome.*`. Toggle в UI Module Manager сохраняется,
+но не останавливает MAIN-модули до перезагрузки.
+
+**Fix:** в `src/entry/content.js` после `Registry.boot()` добавить:
+```js
+Settings.onChange((id, next) => {
+    Bus.window.post('COR3_MODULE_STATE_CHANGE', { id, state: next });
+});
+```
+В `src/entry/content-early.js` (после `Registry.boot()`) добавить:
+```js
+Bus.window.on('COR3_MODULE_STATE_CHANGE', ({ id, state }) => {
+    Registry.setModuleState(id, state);
+});
+```
+Также добавить `'COR3_MODULE_STATE_CHANGE'` в `MSG.*` (можно в новую группу
+`MSG.SYS` или подгруппу) — никаких inline строк.
+
+Verify через chrome-devtools-mcp: переключить switch в Module Manager →
+проверить что `Registry.get(id).started` поменялся.
+
+#### 2. Restore `__cor3Dump()` debug helper
+
+В новой архитектуре `window.__cor3Dump()` посылает `COR3_REQ_DUMP`, но
+никто не слушает. Добавить handler в `auto-jobs.js` или в отдельный
+debug-модуль:
+
+```js
+this.track(Bus.window.on('COR3_REQ_DUMP', () => {
+    console.group('[AJ] STATE DUMP');
+    console.log('autoJobsState:', state);
+    console.log('autoJobsQueue:', queue);
+    console.log('buggedJobIds:', buggedJobs);
+    console.log('kdSkipServers:', [...kdSkipServers.entries()]);
+    console.log('settings:', settings);
+    console.groupEnd();
+}));
+```
+
+#### 3. Per-job-type UI toggles
+
+`autoJobsSettings.enabledJobTypes` уже работает в orchestrator'е, но в UI
+этих контролов нет. Добавить sub-section в `src/ui/sections/auto-jobs.js`
+(после Sources card, перед Queue):
+
+```js
+container.appendChild(el('div', 'section-title', 'Job types'));
+const types = el('div', 'card');
+for (const [id, label] of [
+    ['file_decryption', 'File Decryption'],
+    ['ip_injection', 'IP Injection'],
+    ['ip_cleanup', 'IP Cleanup'],
+    ['data_upload', 'File Upload'],
+    ['log_deletion', 'Log Deletion'],
+    ['log_download', 'Log Download'],
+    ['file_elimination', 'File Elimination'],
+    ['data_download', 'Data Download'],
+    ['decrypt_extract', 'Decrypt & Extract'],
+]) {
+    // toggle row reading/writing settings.enabledJobTypes[id]
+}
+```
+
+#### 4. `debugTriggerJobType` legacy feature
+
+Старый popup имел кнопку "trigger one of these jobs now" — для тестирования.
+В новой архитектуре auto-jobs `debugMode` toggle есть, но нет UI чтобы
+запустить конкретный job по типу. Добавить в Auto-Jobs section debug
+panel — кнопки "Trigger file_decryption", "Trigger ip_injection" и т.д.
+
+Реализация: расширить runtime-bridge:
+```js
+this.track(Bus.runtime.on('debugTriggerJobType', (payload) => {
+    // …port from legacy content.js debugTriggerJobType handler…
+}));
+```
+
+### Medium-priority items
+
+- [ ] **`pinnedTimers`** — старая sync-key, не используется в новом UI. Решить: удалить из `STORAGE_SYNC.*` или добавить pinned-timer фичу обратно.
+- [ ] **`selectedTheme`** — те же. Дропнули 6 тем, но ключ остался.
+- [ ] **`COR3_WS_LOG`** envelope — interceptor его всё ещё эмитит, но никто не консьюмит. Удалить из interceptor для скорости.
+- [ ] **WS_ARCHIVED_EXPEDITIONS** — UI tab дропнут, но WS event ещё парсится и хранится в `archivedExpeditionsData`. Удалить из interceptor если уверены.
+- [ ] **`scripting`** permission — добавлен только для Module Manager. Если cross-world sync (item 1) сделает Module Manager не нужным `executeScript`, можно убрать.
+
+### Low-priority / nice-to-have
+
+- [ ] **Server-priorities UI.** `chrome.storage.sync.serverPriorities` уже учитывается auto-jobs orchestrator'ом, но UI для редактирования нет. Сейчас редактируется только через DevTools.
+- [ ] **`COR3.dom.findContainsText`** — определена в `dom.js`, но не используется. Удалить или начать использовать.
+- [ ] **Notebook-friendly storage inspection.** Маленький `src/ui/sections/storage.js` для просмотра/редактирования произвольных storage keys без F12.
+- [ ] **Per-flow timeout customization.** Сейчас magic numbers (90 s minigame, 60 s file-search) разбросаны по flow модулям. Вынести в `LIMITS.*`.
+
+### Refactor opportunities (если будет время)
+
+- **Auto-jobs.js (~600 строк)** — самый крупный модуль. Можно вынести
+  scanning/accepting/executing в sub-модули, но текущая монолитность
+  оправдана сильной связью state machine. Не трогать без необходимости.
+- **Manifest content_scripts.** 33 файла в isolated, 29 в MAIN — лоадер
+  работает, но если хочется bundling, можно добавить esbuild build step
+  и сократить manifest до 4 entry-файлов. Trade-off: build step против
+  "vanilla JS" принципа.
+
+---
+
+## History — Phase 1 ✅
 
 - [x] Создать каталоги `src/core/`, `src/shared/`, `docs/`, `plans/`
 - [x] `src/shared/constants.js` — все MSG/STORAGE/FLOW в одном месте
