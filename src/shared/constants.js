@@ -65,6 +65,10 @@
             STOP_DECRYPT: 'COR3_STOP_DECRYPT_SOLVER',
             STOP_DAILY_HACK: 'COR3_STOP_DAILY_HACK',
             DAILY_HACK_LOG: 'COR3_DAILY_HACK_LOG',
+            // Daily Ops one-shot solver (Game Center module). Replaces the
+            // legacy auto-daily-hack toggle.
+            START_DAILY_OPS: 'COR3_START_DAILY_OPS',
+            DAILY_OPS_LOG: 'COR3_DAILY_OPS_LOG',
         },
 
         // Job-flow dispatch (isolated → MAIN job-manager)

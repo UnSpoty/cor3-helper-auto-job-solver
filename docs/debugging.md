@@ -239,6 +239,59 @@ Manually trigger:
 window.postMessage({ type: 'COR3_FETCH_DAILY_OPS' }, '*');
 ```
 
+The card reads `daily.currentStreak` (the field name returned by the
+server). If you see "streak 0" but the in-game streak is non-zero, you're
+on a build older than the May 2026 fix that switched away from `daily.streak`.
+
+### "Solve button does nothing / hangs / submits but no reward"
+
+The Solve button on the Daily Ops Overview card sends `solveDailyOps` →
+isolated `automation/daily-ops.js` → `Bus.window.post(MSG.SOLVER.START_DAILY_OPS)`
+→ MAIN `solver-daily-ops`. To watch each step live, filter the cor3.gg
+DevTools console by `[solver-daily-ops]` (Logger module id) and look in
+`STORAGE_LOCAL.DAILY_HACK_LOG` for the user-facing trail. Common symptoms:
+
+- **Nothing happens after click** — the runtime message didn't reach
+  isolated. Reload the cor3.gg tab; the popup may have been opened before
+  the content script booted.
+- **`Game Center tab not found`** — the dock-tab heuristic
+  (`KNOWN_TAB_NAMES` exclusion) failed. Run in DevTools:
+  ```js
+  document.querySelectorAll('[data-component-name^="TabBarItem-"]')
+      .forEach(it => console.log(it.dataset.componentName));
+  ```
+  If Game Center has a clean name (not a UUID), update `KNOWN_TAB_NAMES`
+  in `src/modules/solvers/daily-ops.js`.
+- **`Daily Ops card not found`** — the card description heuristic
+  (`/\bdaily\b/i`) failed. The card description is English brand text
+  ("Daily objective terminal …") and changes very rarely.
+- **`waiting for connection (Start)…` followed by `connection still down`** —
+  socket.io is mid-reconnect. The site itself has a flap on noisy networks
+  (status bar shows "СОЕДИНЕНИЕ РАЗОРВАНО" / "ПОВТОРИТЬ"). The solver
+  waits up to 8 s, then proceeds best-effort. If the puzzle window opens
+  but the click doesn't register server-side, retry from a stable session.
+- **`no server feedback (WS hiccup?)`** — submit clicked, but
+  `awaitSubmitFeedback()` saw neither success nor failure text within 5 s.
+  Likely WS dropped between Submit and ack. Refresh and retry; the puzzle
+  state is server-authoritative.
+- **Wrong encoding picked (signal puzzles)** — `chooseEncoding()` falls
+  back to binary on a tie when no `.input-hint` is present. Check
+  `console.debug` for `pre-encoding analysis: …`. If both Morse and
+  Binary decode validly without a hint, it's ambiguous; the heuristic is
+  documented in the function body.
+- **Log puzzle: `no error-type-button for: <label>`** — `ERROR_LABELS`
+  is hardcoded English. If cor3.gg ever localizes those button texts,
+  rewrite `findErrorTypeButton()` to match by data-attribute or position
+  rather than `textContent`.
+
+WS readiness probes (exposed by ws-interceptor) are usable from the F12
+console for diagnosis:
+
+```js
+__cor3IsWsReady()              // boolean
+await __cor3WaitForWs(8000)    // resolves true when active socket is OPEN
+```
+
 ### "Logger entries from MAIN-world modules don't appear in popup"
 
 The cross-world bridge is in `src/entry/content.js`:

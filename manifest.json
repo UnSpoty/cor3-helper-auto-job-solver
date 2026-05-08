@@ -73,6 +73,7 @@
         "src/modules/game/flows/decrypt-extract.js",
         "src/modules/solvers/decrypt.js",
         "src/modules/solvers/daily-hack.js",
+        "src/modules/solvers/daily-ops.js",
         "src/entry/content-early.js"
       ],
       "run_at": "document_start",

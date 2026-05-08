@@ -10,6 +10,65 @@
 
 ## Recently shipped — May 2026
 
+### Daily Ops solve (one-shot, post-Game-Center move)
+
+cor3.gg переселил Daily Ops из тулбара в окно Game Center, и старый
+"Auto daily-hack" toggle (passive watcher над `.pulse-timeline`) перестал
+быть работоспособным — паззл рендерится только после явной навигации в
+Game Center → Daily Ops → Start. Заменили toggle на одноразовую кнопку
+"Solve" в Overview карточке Daily Ops.
+
+Что прибавилось:
+
+- **`src/modules/solvers/daily-ops.js`** (MAIN) — оркестратор. Общий
+  начальный пайплайн (`ensureGameCenterOpen` → `ensureDailyOpsOpen` →
+  WS gate → `clickStartButton` → puzzle window → generic `^Get \w+`
+  intro click → optional `.play-button`), затем `detectPuzzleType()`
+  роутит в один из двух солверов:
+  - **Signal Decode** — `chooseEncoding` пробует 4-bit binary и 5-bit
+    morse, сверяется с `.input-hint` "Code length: N digits", вводит
+    через `setReactInputValue(.code-input, code)`, кликает
+    `.submit-button` под WS gate.
+  - **System Log Integrity** — порт `analyzeLogLine` + `ERROR_LABELS`
+    из легаси `solver-daily-hack.js`. Чекбокс на 2 худших строках,
+    `.confirm-button`, итерация `.error-analysis-block` с
+    `.fix-error-button` + `.error-type-button` per-issue, финальный
+    submit (новое — Daily Ops оборачивает легаси-паззл и ждёт явного
+    submit для зачёта).
+- **`__cor3IsWsReady()` + `__cor3WaitForWs(ms)`** в ws-interceptor —
+  гейтят клик на Start и Submit. socket.io флапает на сетевом шуме;
+  без гейта клик ушёл бы в "пустоту" пока активный сокет в reconnect.
+- **`awaitSubmitFeedback()`** — до 5 с слушает `.game-container` на
+  `verified|reward|credits|success` (ok) или `failed|invalid|incorrect|
+  try again` (fail). Если ничего — пишет в UI-лог "no server feedback
+  (WS hiccup?)" чтобы пользователь сразу понимал природу проблемы.
+- **MSG.SOLVER.START_DAILY_OPS / .DAILY_OPS_LOG** — новые константы.
+  `automation/daily-ops.js` форвардит popup `solveDailyOps` в MAIN,
+  и зеркалит `DAILY_OPS_LOG` в `STORAGE_LOCAL.DAILY_HACK_LOG` (тот же
+  ключ, что показывает Overview-карточка). На `solved:` префикс ещё
+  и автоматически перевызывает `fetchOps()` через 1.5 с — карточка
+  сразу флипает с "pending" на "claimed".
+- **Overview UI** — заменили tooggle "Auto daily-hack" на кнопку
+  "Solve". Refresh теперь в одном ряду с Solve. Карточка читает
+  `daily.currentStreak` (бывший легаси-баг — читалось `daily.streak`,
+  и потому фронт всегда показывал "streak 0").
+- **WS log spam** — четыре `console.log` в ws-interceptor (`Tracking
+  WebSocket`, `Active socket changed`, `WS connected`, `WS closed`)
+  демотнуты в `console.debug`. Сами реконнекты — поведение socket.io
+  при сетевом шуме, не от нашего расширения.
+
+Локально-нейтральные селекторы: всё через `data-component-name` /
+`data-sentry-component` или стабильные CSS-классы. English-keyword
+couplings минимальны: `daily` (description карточки), `get` (intro
+кнопка), `morse`/`binary` (encoding опции), `verified|reward|…`
+(success heuristic), и легаси `ERROR_LABELS` (отдельно помечены как
+locale-fragile).
+
+End-to-end проверено через chrome-devtools-mcp на живой странице:
+solver на Replay-режиме прошёл Signal-задачу до `DECODE STATUS:
+VERIFIED, +525 Credits` (Morse `6458797498`, Morse `5733161629`,
+Binary `4533115764` — три прогона).
+
 ### UI restructure (later in the same day)
 
 Сократили вкладки с 8 до 5 и переразложили контент по

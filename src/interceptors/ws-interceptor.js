@@ -73,14 +73,18 @@
             const ws = new target(...args);
             const url = args[0] || '';
             if (url.includes('cor3') || url.includes('corie')) {
-                console.log('[COR3] Tracking WebSocket:', url);
+                // socket.io reconnects flap on every transport hiccup — the
+                // log was firing N times a minute. Demoted to console.debug
+                // so it's still inspectable in DevTools (verbose level) but
+                // doesn't fill the default console.
+                console.debug('[COR3] Tracking WebSocket:', url);
                 ws.__cor3Url = url;
                 trackedSockets.push(ws);
 
                 ws.addEventListener('message', (event) => {
                     try {
                         if (activeSocket !== ws) {
-                            console.log('[COR3] Active socket changed to:', ws.__cor3Url);
+                            console.debug('[COR3] Active socket changed to:', ws.__cor3Url);
                             activeSocket = ws;
                         }
                         socketLastActivity.set(ws, Date.now());
@@ -89,7 +93,7 @@
                 });
 
                 ws.addEventListener('open', () => {
-                    console.log('[COR3] WS connected — scheduling initial data fetch');
+                    console.debug('[COR3] WS connected — scheduling initial data fetch');
                     setTimeout(() => {
                         if (tokenExpiredFlag || pendingRetryOps.length > 0) {
                             setTimeout(runPendingRetries, 2000);
@@ -99,7 +103,7 @@
                 });
 
                 ws.addEventListener('close', () => {
-                    console.log('[COR3] WS closed');
+                    console.debug('[COR3] WS closed');
                     const idx = trackedSockets.indexOf(ws);
                     if (idx !== -1) trackedSockets.splice(idx, 1);
                     socketLastActivity.delete(ws);
@@ -524,6 +528,24 @@
     };
 
     root.__cor3KeepAlive = function () { /* no-op marker */ };
+
+    // WS readiness probes — used by solvers that need to gate UI actions
+    // (e.g. Daily Ops Start/Submit) on a live socket. socket.io flaps under
+    // network noise; without these gates a click can land while the server
+    // hasn't seen the reconnect yet, and the action silently fails.
+    root.__cor3IsWsReady = function () {
+        return !!(activeSocket && activeSocket.readyState === OrigWebSocket.OPEN);
+    };
+    root.__cor3WaitForWs = function (timeoutMs) {
+        const deadline = Date.now() + (timeoutMs || 8000);
+        return new Promise((resolve) => {
+            if (root.__cor3IsWsReady()) return resolve(true);
+            const id = setInterval(() => {
+                if (root.__cor3IsWsReady()) { clearInterval(id); resolve(true); }
+                else if (Date.now() >= deadline) { clearInterval(id); resolve(false); }
+            }, 200);
+        });
+    };
 
     // F12 helper for live debugging
     root.__cor3Dump = function () {

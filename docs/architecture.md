@@ -50,7 +50,8 @@ and the runtime API. They communicate over `window.postMessage`.
 │  • game core: network-map, server-connect,     │
 │    sai-navigator                               │
 │  • flows-core + 9 flow modules                 │
-│  • 2 solver modules (decrypt, daily-hack)      │
+│  • 3 solver modules (decrypt, daily-hack,      │
+│    daily-ops — Game Center one-shot)           │
 ├────────────────────────────────────────────────┤
 │ Background SW  (src/entry/background.js)       │
 │  • keep-alive ping                             │
@@ -90,8 +91,9 @@ The order matters: core primitives must exist before modules use them.
 17. src/modules/game/flows/_shared.js
 18-26. src/modules/game/flows/*      ← 9 flow modules
 27. src/modules/solvers/decrypt.js
-28. src/modules/solvers/daily-hack.js
-29. src/entry/content-early.js       ← Registry.boot()
+28. src/modules/solvers/daily-hack.js   ← legacy standalone-page solver
+29. src/modules/solvers/daily-ops.js    ← one-shot Game Center solver
+30. src/entry/content-early.js       ← Registry.boot()
 ```
 
 ### Isolated content_scripts (`content_scripts[1]`, isolated world, `run_at: document_idle`)

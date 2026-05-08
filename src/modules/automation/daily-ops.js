@@ -1,9 +1,12 @@
 // src/modules/automation/daily-ops.js
-// Daily ops fetcher. Triggered by:
+// Daily ops fetcher + solve trigger. Triggered by:
 //   • COR3_FETCH_DAILY_OPS postMessage (fired by interceptor on WS open)
 //   • chrome.runtime fetchDailyOps action (popup refresh button)
+//   • chrome.runtime solveDailyOps action (popup "Solve" button) — forwards
+//     to MAIN-world solver-daily-ops via COR3_START_DAILY_OPS envelope
 // Uses bearerToken from chrome.storage.local. Stores response in
-// chrome.storage.local.dailyOpsData.
+// chrome.storage.local.dailyOpsData. Relays solver log lines from MAIN
+// world into chrome.storage.local.dailyHackLog (reused; UI shows it).
 
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
@@ -73,6 +76,29 @@
                 const data = await fetchOps(this);
                 return data ? { data } : { error: 'fetch failed' };
             }));
+
+            // Popup "Solve" button → kick the MAIN-world solver
+            this.track(Bus.runtime.on('solveDailyOps', () => {
+                Bus.window.post(C.MSG.SOLVER.START_DAILY_OPS, null);
+                return { success: true };
+            }));
+
+            // Relay solver log lines into the legacy daily-hack log key so the
+            // popup's existing log viewer keeps working.
+            this.track(Bus.window.on(C.MSG.SOLVER.DAILY_OPS_LOG, (env) => {
+                if (!env || !env.message) return;
+                Store.local.set({
+                    [C.STORAGE_LOCAL.DAILY_HACK_LOG]: env.message,
+                    [C.STORAGE_LOCAL.DAILY_HACK_LOG_AT]: Date.now(),
+                });
+                // Also re-fetch ops state once the solver claims a reward, so
+                // the popup card flips from "Start" to "Replay" without the
+                // user pressing Refresh.
+                if (/^solved:/i.test(env.message)) {
+                    setTimeout(() => fetchOps(this), 1500);
+                }
+            }));
+
             this.info('daily-ops ready');
         }
     }

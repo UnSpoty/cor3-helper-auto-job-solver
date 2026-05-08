@@ -1,11 +1,13 @@
 // src/ui/sections/overview.js
 // Main dashboard. Aggregates everything that's "at-a-glance" useful:
-//   • Daily Ops card — timer + Auto daily-hack toggle (toggle lives WITH
-//     the timer because they're thematically the same thing)
+//   • Daily Ops card — timer + one-shot "Solve" button + Refresh on the
+//     same row (Daily Ops moved into the Game Center window, so a watcher
+//     toggle no longer makes sense; the user clicks Solve when they want
+//     to claim/replay)
 //   • Markets cards (home + dark) — each card carries its own Auto-refresh
 //     toggle (was a separate "Auto-refresh markets" section; merged in to
 //     keep market controls together with the market they affect)
-//   • Auto solvers — Auto-decrypt only (auto-daily-hack moved to Daily Ops)
+//   • Auto solvers — Auto-decrypt only
 //   • Game appearance — system messages, background, network fog, map FX
 //   • Alarms (collapsible <details>, default open) — list + add form
 //   • Versions footer (web / system)
@@ -65,13 +67,14 @@
         container.innerHTML = '';
 
         const [
-            daily, market, dark, darkAvail,
+            daily, dailyLog, market, dark, darkAvail,
             web, sys,
-            autoRefresh, autoDecrypt, autoDailyHack,
+            autoRefresh, autoDecrypt,
             disableSystemMessages, disableBackground, disableNetworkFog, disableMapFx,
             alarms, exps,
         ] = await Promise.all([
             Store.local.getOne(C.STORAGE_LOCAL.DAILY_OPS),
+            Store.local.getOne(C.STORAGE_LOCAL.DAILY_HACK_LOG),
             Store.local.getOne(C.STORAGE_LOCAL.MARKET),
             Store.local.getOne(C.STORAGE_LOCAL.DARK_MARKET),
             Store.local.getOne(C.STORAGE_LOCAL.DARK_MARKET_AVAILABLE, true),
@@ -79,7 +82,6 @@
             Store.local.getOne(C.STORAGE_LOCAL.SYSTEM_VERSION, '?'),
             Store.sync.getOne(C.STORAGE_SYNC.AUTO_REFRESH, { home_jobs: false, dark_jobs: false }),
             Store.sync.getOne(C.STORAGE_SYNC.AUTO_DECRYPT_ENABLED, false),
-            Store.sync.getOne(C.STORAGE_SYNC.AUTO_DAILY_HACK_ENABLED, false),
             Store.sync.getOne(C.STORAGE_SYNC.DISABLE_SYSTEM_MESSAGES, false),
             Store.sync.getOne(C.STORAGE_SYNC.DISABLE_BACKGROUND, false),
             Store.sync.getOne(C.STORAGE_SYNC.DISABLE_NETWORK_FOG, false),
@@ -94,27 +96,35 @@
         container.appendChild(el('div', 'section-title', 'Daily Ops'));
         const dailyCard = el('div', 'card');
         if (daily && daily.nextTaskTime) {
+            // Timer first, then the "next reset · streak N · claimed/pending"
+            // metadata under it. Was reversed before — label sat to the left
+            // of the timer, which read as "Next reset · streak 0  8h 35m".
+            const streak = daily.currentStreak ?? daily.streak ?? 0;
+            const claimed = daily.hasClaimedToday ? 'claimed' : 'pending';
+            const headRow = el('div', 'card-row');
             const t = uiComponents.timer.create(daily.nextTaskTime);
             timerInstances.push(t);
-            const row = el('div', 'card-row');
-            row.appendChild(el('span', 'card-label', `Next reset · streak ${daily.streak || 0}`));
-            row.appendChild(t.el);
-            dailyCard.appendChild(row);
+            headRow.appendChild(el('span', 'card-label', 'Next reset'));
+            headRow.appendChild(t.el);
+            dailyCard.appendChild(headRow);
+            dailyCard.appendChild(el('div', 'muted sm', `streak ${streak} · ${claimed}`));
         } else {
             dailyCard.appendChild(el('div', 'muted sm', 'No daily ops data yet.'));
         }
-        // Auto-daily-hack lives here, with the timer it's solving for.
-        const dhRow = el('div', 'card-row mt-sm');
-        dhRow.innerHTML = `
-            <span class="card-label">Auto daily-hack</span>
-            <label class="switch"><input type="checkbox" ${autoDailyHack ? 'checked' : ''}><span class="switch-slider"></span></label>
-        `;
-        dhRow.querySelector('input').addEventListener('change', (e) =>
-            Store.sync.setOne(C.STORAGE_SYNC.AUTO_DAILY_HACK_ENABLED, e.target.checked));
-        dailyCard.appendChild(dhRow);
-        const dailyRefresh = el('button', 'btn small mt-sm', 'Refresh');
+        // Action row: Solve (one-shot) + Refresh on the same line. The old
+        // "Auto daily-hack" toggle was removed — the puzzle is now nested
+        // inside the Game Center window, so a watch loop can't react to it
+        // without first navigating; a single "Solve" click does the whole
+        // open → start → decode → submit chain.
+        const dailyActions = el('div', 'row gap-sm mt-sm');
+        const solveBtn = el('button', 'btn small', 'Solve');
+        solveBtn.addEventListener('click', () => sendToContent('solveDailyOps'));
+        dailyActions.appendChild(solveBtn);
+        const dailyRefresh = el('button', 'btn small', 'Refresh');
         dailyRefresh.addEventListener('click', () => sendToContent('fetchDailyOps'));
-        dailyCard.appendChild(dailyRefresh);
+        dailyActions.appendChild(dailyRefresh);
+        dailyCard.appendChild(dailyActions);
+        if (dailyLog) dailyCard.appendChild(el('div', 'muted xs mt-sm', escape(String(dailyLog))));
         container.appendChild(dailyCard);
 
         // ─── Markets ──────────────────────────────────────────────────
@@ -162,7 +172,7 @@
         container.appendChild(marketCard('Home Market', market, true, false));
         container.appendChild(marketCard('Dark Market', dark, darkAvail, true));
 
-        // ─── Auto solvers (auto-decrypt only — auto-daily-hack lives in Daily Ops) ──
+        // ─── Auto solvers ─────────────────────────────────────────────
         container.appendChild(el('div', 'section-title', 'Auto solvers'));
         container.appendChild(appearanceToggle('Auto-decrypt', C.STORAGE_SYNC.AUTO_DECRYPT_ENABLED, autoDecrypt));
 
@@ -271,7 +281,8 @@
         mount(container) {
             unsubs.push(Store.local.onChanged((changes) => {
                 if (!container.classList.contains('active')) return;
-                if (changes[C.STORAGE_LOCAL.DAILY_OPS] || changes[C.STORAGE_LOCAL.MARKET] ||
+                if (changes[C.STORAGE_LOCAL.DAILY_OPS] || changes[C.STORAGE_LOCAL.DAILY_HACK_LOG] ||
+                    changes[C.STORAGE_LOCAL.MARKET] ||
                     changes[C.STORAGE_LOCAL.DARK_MARKET] || changes[C.STORAGE_LOCAL.EXPEDITIONS] ||
                     changes[C.STORAGE_LOCAL.WEB_VERSION] || changes[C.STORAGE_LOCAL.SYSTEM_VERSION]) {
                     render(container);
@@ -282,7 +293,6 @@
                 if (changes[C.STORAGE_SYNC.ALARMS]
                     || changes[C.STORAGE_SYNC.AUTO_REFRESH]
                     || changes[C.STORAGE_SYNC.AUTO_DECRYPT_ENABLED]
-                    || changes[C.STORAGE_SYNC.AUTO_DAILY_HACK_ENABLED]
                     || changes[C.STORAGE_SYNC.DISABLE_SYSTEM_MESSAGES]
                     || changes[C.STORAGE_SYNC.DISABLE_BACKGROUND]
                     || changes[C.STORAGE_SYNC.DISABLE_NETWORK_FOG]

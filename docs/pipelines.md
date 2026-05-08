@@ -379,19 +379,21 @@ Helpers exposed:
 Triggered three ways:
 
 1. **WS connect** — interceptor's `__cor3InitialFetch()` posts `COR3_FETCH_DAILY_OPS`.
-2. **Popup refresh** — Overview tab's "Refresh" button → `chrome.tabs.sendMessage({action: 'fetchDailyOps'})` → runtime-bridge → `daily-ops.js`.
-3. **Background polling** — none; only the SW expedition polling exists.
+2. **Popup refresh** — Overview tab's "Refresh" button → `chrome.tabs.sendMessage({action: 'fetchDailyOps'})` → `daily-ops.js`.
+3. **Post-solve** — when `SOLVER.DAILY_OPS_LOG` carries a line starting with `solved:`, `daily-ops.js` schedules a `fetchOps()` 1.5 s later so the streak/claimed badge flips automatically.
 
 ```
 fetchOps():
-    token = await Store.local.bearerToken
+    token = await Store.local.bearerToken      // already prefixed "Bearer …"
     if !token: return null
     GET https://svc-corie.cor3.gg/api/user-daily-claim
         Authorization: <token>
 
     if 200 ok:
         Store.local.set({
-            dailyOpsData: response,
+            dailyOpsData: response,            // {currentStreak, nextTaskTime,
+                                               //  hasClaimedToday, difficulty,
+                                               //  streakBonus, currentGameId}
             dailyOpsUpdatedAt: now,
             dailyOpsError: null,
         })
@@ -407,7 +409,111 @@ fetchRewards(token):
 ```
 
 The popup Overview tab subscribes to `dailyOpsData` and `dailyRewardsData`
-storage changes; UI updates instantly.
+storage changes; UI updates instantly. Field name is **`currentStreak`** —
+the legacy code read `daily.streak` and got `undefined`, which is why the
+card sat on "streak 0" forever before May 2026.
+
+---
+
+## 5a. Daily Ops solve (one-shot)
+
+Triggered by the **Solve** button on the Overview Daily Ops card. Replaces
+the legacy "Auto daily-hack" toggle: the puzzle now lives inside the Game
+Center window, so a passive watcher can't react to it without first
+navigating — a single click does the whole open → start → decode → submit
+chain.
+
+```
+popup.overview "Solve" click
+   ↓ chrome.tabs.sendMessage({action:'solveDailyOps'})
+isolated automation/daily-ops.js
+   ↓ Bus.window.post(MSG.SOLVER.START_DAILY_OPS)
+MAIN solver-daily-ops.runOnce(mod):
+
+    // ── Common entry ────────────────────────────────────────
+    if (!DailyOpsMainScreen present):           // already-open shortcut —
+        ensureGameCenterOpen():                 // a stray puzzle window
+            click TabBarItem-<UUID>             // hides GameCenterApplication;
+            wait GameCenterApplication          // re-clicking would toggle
+        ensureDailyOpsOpen():                   // the wrong thing
+            find .game-center-card whose
+                .game-center-card-description
+                contains the English brand
+                keyword "daily"
+            click it
+            wait DailyOpsMainScreen
+    waitForWsReady('Start')                     // up to 8 s for socket.io
+                                                 // to come back from a
+                                                 // mid-reconnect flap
+    click DailyOpsStartButton                   // server registers session
+
+    // ── Puzzle window opens ─────────────────────────────────
+    wait .game-container || GameWaitingScreen
+    click any enabled "Get …" button            // /^get \w+/i (English)
+    if .game-container .play-button:
+        click it                                // renders .pulse-timeline
+
+    // ── Route ───────────────────────────────────────────────
+    type = .pulse-timeline → 'signal'
+        || (.log-entries|.log-entry|…) → 'log'
+
+    // ── Signal Decode flow ──────────────────────────────────
+    pulses = readPulses()                       // S/L per .pulse-group
+    pick = chooseEncoding(pulses):              // try both, pick the one
+        morse 5-bit (LLLLL=0 … LLLLS=9)         // that yields valid 0-9
+        binary 4-bit (SSSS=0 … LSSL=9)          // and pulses.length % size==0
+                                                 // tie-break by .input-hint
+                                                 // "Code length: N digits"
+    click .next-button                          // SELECT ENCODING
+    click .encoding-option matching pick.encoding (text contains 'morse'/'binary')
+    click .next-button                          // DECODE SIGNAL
+    re-read pulses on decode page (cleaner)
+    setReactInputValue(.code-input, code)
+    waitForWsReady('Submit')
+    click .submit-button
+    awaitSubmitFeedback():                      // up to 5 s of:
+        verified|reward|credits|success → 'ok'  //  → solved log
+        failed|invalid|incorrect|try again → 'fail'
+        else → 'no server feedback (WS hiccup?)'
+
+    // ── System Log Integrity flow (port from legacy daily-hack.js) ──
+    parse .log-entry text per analyzeLogLine() → issues = [TIME?, TYPE?,
+        MISSING_SECTOR?, MISSING_STATUS?, SECTOR_BAD?, STATUS_BAD?]
+    click checkbox on the 2 worst entries
+    click .confirm-button
+    for each .error-analysis-block:
+        click .fix-error-button
+        click matching .error-type-button per ERROR_LABELS[issue]
+                                                 // exact-text match on
+                                                 // English error labels —
+                                                 // localization will break
+                                                 // this; warn-and-continue
+    waitForWsReady('Submit')
+    click .submit-button (or text-fallback /submit|confirm|complete/i)
+    awaitSubmitFeedback()
+```
+
+**Locale-neutral selectors only:** all DOM lookups go through
+`data-component-name` / `data-sentry-component` attributes or stable CSS
+classes. The only English-keyword couplings are the brand strings `daily`
+(card description), `get` (intro button), `morse` / `binary` (encoding
+option labels), `verified|reward|…` (success heuristic), and the legacy
+`ERROR_LABELS` strings (which the legacy solver hardcoded — flagged as
+locale-fragile in `solveLogIntegrity`).
+
+**WS readiness gate:** `__cor3IsWsReady()` and `__cor3WaitForWs(ms)` are
+exposed by the WS interceptor and consumed before each click that
+round-trips to the server (Start, Submit). If the active socket is in
+mid-reconnect, the click would land server-blind and the puzzle would
+hang on a DOM update that never arrives. Gate retries for up to 8 s, then
+proceeds best-effort with a UI-log warning so the user knows why the
+solve didn't register.
+
+**Solver log:** `SOLVER.DAILY_OPS_LOG` envelopes are mirrored into
+`STORAGE_LOCAL.DAILY_HACK_LOG` (legacy key — reused so the Overview card
+shows the last solver line); `solved:` prefixed messages additionally
+reschedule a `fetchOps()` 1.5 s later so the card flips from "pending" to
+"claimed" without the user pressing Refresh.
 
 ---
 

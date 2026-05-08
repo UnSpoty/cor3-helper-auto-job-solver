@@ -125,7 +125,15 @@ find src -name '*.js' -exec node --check {} \;
   file_upload, log_deletion, log_download, file_elimination, data_download,
   decrypt_extract
 - Decrypt minimax algorithm — verbatim port from legacy
-- Daily-hack pattern detection (System Log Integrity + Signal Hack)
+- Daily-hack pattern detection (System Log Integrity + Signal Hack) —
+  carried into the new `solver-daily-ops` (Game Center one-shot) which
+  added: full DOM navigation (open Game Center → open Daily Ops card →
+  Start), generic `^Get \w+` intro click, puzzle-type routing,
+  `setReactInputValue` + submit click, WS-readiness gates around Start
+  and Submit (`__cor3IsWsReady` / `__cor3WaitForWs`), and a
+  post-submit `awaitSubmitFeedback()` that scans for verified/reward/fail
+  text within 5 s. The legacy `solver-daily-hack` module is kept dormant
+  for the (now-removed) "Auto daily-hack" toggle path.
 - Auto-send-merc with cheapest-AVAILABLE selection + stash-full re-enable
 - Multi-alarm system (alarms tick every second, audio via Web Audio API)
 - Pop-out window mode (`?mode=popout`)
@@ -157,7 +165,7 @@ Quick list of every registered module ID and its world:
 - `flow-file-decryption`, `flow-ip-injection`, `flow-ip-cleanup`,
   `flow-file-upload`, `flow-log-deletion`, `flow-log-download`,
   `flow-file-elimination`, `flow-data-download`, `flow-decrypt-extract`
-- `solver-decrypt`, `solver-daily-hack`
+- `solver-decrypt`, `solver-daily-hack` (legacy, dormant), `solver-daily-ops` (new, one-shot via popup Solve button)
 
 **Isolated content_scripts:**
 - `auth`, `expeditions`, `decisions`, `market`, `dark-market`, `stash`,

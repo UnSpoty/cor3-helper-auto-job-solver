@@ -109,12 +109,14 @@ Direction: bidirectional. `START_*` and `STOP_*` are isolated → MAIN; `DAILY_H
 |---|---|---|---|
 | `SOLVER.START_DECRYPT` | `COR3_START_DECRYPT_SOLVER` | `null` | starts the watcher in `solver-decrypt` (config-hack minigame). Idempotent. |
 | `SOLVER.STOP_DECRYPT` | `COR3_STOP_DECRYPT_SOLVER` | `null` | sets `window.__solverAbort=true`. |
-| `SOLVER.STOP_DAILY_HACK` | `COR3_STOP_DAILY_HACK` | `null` | sets `window.__dailyHackAbort=true`. |
-| `SOLVER.DAILY_HACK_LOG` | `COR3_DAILY_HACK_LOG` | `{ message }` | solver pushes a single-line summary, e.g. `Signal Hack → Type: MORSE, Value: 2459`. Stored in `STORAGE_LOCAL.DAILY_HACK_LOG`. |
+| `SOLVER.STOP_DAILY_HACK` | `COR3_STOP_DAILY_HACK` | `null` | sets `window.__dailyHackAbort=true`. **Legacy** — used by the standalone-page daily-hack watcher; the new Daily Ops in-Game-Center solver doesn't loop. |
+| `SOLVER.DAILY_HACK_LOG` | `COR3_DAILY_HACK_LOG` | `{ message }` | legacy solver summary, e.g. `Signal Hack → Type: MORSE, Value: 2459`. Still routed into `STORAGE_LOCAL.DAILY_HACK_LOG`. |
+| `SOLVER.START_DAILY_OPS` | `COR3_START_DAILY_OPS` | `null` | one-shot trigger for `solver-daily-ops` (MAIN). Posted by `automation/daily-ops.js` when the popup sends `solveDailyOps`. The solver navigates Game Center → Daily Ops → Start, detects puzzle type (signal vs log), and submits. |
+| `SOLVER.DAILY_OPS_LOG` | `COR3_DAILY_OPS_LOG` | `{ message }` | progress + result lines from `solver-daily-ops` (`starting…`, `signal puzzle`, `solved: 2534627653 (binary)`, `no server feedback (WS hiccup?)`, …). `automation/daily-ops.js` mirrors them into `STORAGE_LOCAL.DAILY_HACK_LOG` so the Overview card can show the last line; success messages also retrigger a REST refetch so the streak/claimed badge flips without a Refresh click. |
 
 ### Off-enum
 
-- `COR3_START_DAILY_HACK` — solver start. Currently emitted by `auto-daily-hack.js` directly as a string (intentionally not in MSG enum so legacy popups can still trigger it).
+- `COR3_START_DAILY_HACK` — legacy solver start (toggle-driven). Currently dormant: the toggle was removed in the May 2026 UI restructure when Daily Ops moved into Game Center; the new flow uses `SOLVER.START_DAILY_OPS` instead. Kept routable so any pre-existing `autoDailyHackEnabled=true` storage state still bootstraps the legacy watcher.
 
 ---
 
@@ -177,7 +179,7 @@ or both.
 | `mercenariesData` | `Merc[] \| {mercenaries: Merc[]}` | `data/mercenaries.js` | + `mercenariesUpdatedAt`. |
 | `mercConfigData` | `{[mercId]: {totalCost, riskScore, ...}}` | `data/merc-config.js` | merged per-merc; + `mercConfigUpdatedAt`. |
 | `expeditionConfigData` | `{locations: [...]}` | `data/expedition-config.js` | + `expeditionConfigUpdatedAt`. |
-| `dailyOpsData` | `{nextTaskTime, streak, …}` | `automation/daily-ops.js` | + `dailyOpsUpdatedAt`. |
+| `dailyOpsData` | `{nextTaskTime, currentStreak, hasClaimedToday, difficulty, streakBonus, currentGameId}` | `automation/daily-ops.js` | + `dailyOpsUpdatedAt`. Field name is `currentStreak`, not `streak` — the legacy UI bug ("streak 0" forever) was reading the wrong key. |
 | `dailyOpsError` | `'token_expired' \| null` | `automation/daily-ops.js` | + `dailyOpsErrorUpdatedAt`. |
 | `dailyRewardsData` | `Reward[]` | `data/auth.js` (via `MSG.AUTH.DAILY_REWARDS`) | streak bonus calc. |
 
@@ -217,7 +219,7 @@ or both.
 
 | Key | Shape | Owner |
 |---|---|---|
-| `dailyHackLog` | string | `auto-daily-hack.js` |
+| `dailyHackLog` | string | `auto-daily-hack.js` (legacy) + `automation/daily-ops.js` (new — relays `SOLVER.DAILY_OPS_LOG`) |
 | `dailyHackLogUpdatedAt` | number | same |
 
 ### Logger / errors
@@ -239,7 +241,7 @@ or both.
 | `serverPriorities` | `{[serverName]: number}` | `{}` | `auto-jobs.js` (used by queue sort; UI for editing not built yet) |
 | `autoSendMerc` | `{enabled, autoChooseMerc, mercenaryId, mercenaryName, disabledReason}` | `{enabled:false, autoChooseMerc:true}` | `auto-send-merc.js`, mercenaries section |
 | `autoDecryptEnabled` | bool | `false` | `auto-decrypt.js` |
-| `autoDailyHackEnabled` | bool | `false` | `auto-daily-hack.js` |
+| `autoDailyHackEnabled` | bool | `false` | `auto-daily-hack.js` (legacy — toggle removed from UI; key kept for storage compat). The new flow is the popup's "Solve" one-shot button on the Daily Ops card. |
 | `autoRefresh` | `{home_jobs: bool, dark_jobs: bool}` | `{home:false, dark:false}` | `auto-refresh.js` |
 | `autoChooseEnabled` | bool | `false` | `auto-choose-decision.js` |
 | `riskThreshold` | `0..10` | `5` | `auto-choose-decision.js`. Score = `loot - risk*((10-threshold)/5)`. |
@@ -288,7 +290,7 @@ Used by Module Manager UI for grouping. Each module declares one in its
 | `CATEGORY.DATA` | `data` | 9 data modules |
 | `CATEGORY.AUTOMATION` | `automation` | timers, auto-refresh, auto-jobs, auto-send-merc, auto-choose-decision, auto-decrypt, auto-daily-hack, daily-ops |
 | `CATEGORY.GAME` | `game` | network-map, server-connect, sai-navigator, flows-core, 9 flows |
-| `CATEGORY.SOLVER` | `solver` | solver-decrypt, solver-daily-hack |
+| `CATEGORY.SOLVER` | `solver` | solver-decrypt, solver-daily-hack, solver-daily-ops |
 | `CATEGORY.APPEARANCE` | `appearance` | 4 appearance modules |
 | `CATEGORY.UI` | `ui` | (UI sections aren't Modules — they live in popup context separately) |
 
