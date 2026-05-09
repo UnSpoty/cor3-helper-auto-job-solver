@@ -29,6 +29,14 @@
         // selectors that broke with the same refactor.
         CONNECT_BTN_NEW: '[data-onboarding-300-id="ServerInfoPanelConnectButton"]',
         LOGIN_BTN_NEW:   '[data-onboarding-300-id="ServerInfoPanelLoginButton"]',
+        // Empty Active Access path: the login panel renders SaiNoTools
+        // instead of an empty SaiActiveAccess, with a sibling SaiHackTools
+        // section listing the available hack modules (Porter-lite r4 etc.).
+        // Clicking a hack-tool row opens IceWallBreakApplication, which the
+        // ice-wall solver then breaks; on success cor3.gg fills in active
+        // access and the normal click-first-row path takes over.
+        HACK_TOOLS:    '[data-sentry-component="SaiHackTools"]',
+        ICE_WALL_APP:  '[data-sentry-component="IceWallBreakApplication"]',
     };
 
     function getSaiForServer(serverName) {
@@ -135,24 +143,97 @@
         // chevron icon used to be a stable selector (ArrowRightIcon); now
         // we walk SaiPanelListStyled and click its first row. The list mounts
         // empty during the React skeleton phase, so wait for it to populate.
-        const loginPanel = await dom.waitForEl(SEL.LOGIN_PANEL, { timeout: 5_000 });
+        // If active access is empty, fall back to running a hack tool (the
+        // ice-wall solver breaks the resulting minigame); after success the
+        // active-access list populates and we click the new entry.
+        let loginPanel = await dom.waitForEl(SEL.LOGIN_PANEL, { timeout: 5_000 });
         if (loginPanel) {
-            const list = await dom.waitForEl(
-                () => loginPanel.querySelector(`${SEL.ACTIVE_ACCESS} ${SEL.ACCESS_LIST}`),
-                { timeout: 5_000 }
-            );
-            const firstRow = list?.firstElementChild;
+            let firstRow = await waitForActiveAccessRow(loginPanel, 5_000);
+            if (!firstRow) {
+                // No standing active access — try the hack-tool path.
+                Bus.window.post(MSG.JOB.LOG, { msg: `Server "${serverName}" has no Active Access — attempting hack-tool path`, level: 'info' });
+                const hacked = await runHackToolForAccess(loginPanel, serverName, log);
+                if (hacked) {
+                    // The login panel may have been re-mounted after the
+                    // hack window closed — re-query rather than reusing a
+                    // possibly-detached node ref.
+                    loginPanel = document.querySelector(SEL.LOGIN_PANEL) || loginPanel;
+                    // Backend granted access; the active-access list takes a
+                    // beat to mount after the hack window closes.
+                    firstRow = await waitForActiveAccessRow(loginPanel, 8_000);
+                }
+            }
             if (firstRow) {
                 dom.clickEl(firstRow);
                 await dom.sleep(700);
                 log('info', `Clicked Active Access entry for "${serverName}"`);
             } else {
-                Bus.window.post(MSG.JOB.LOG, { msg: `SAI login: no Active Access entry for "${serverName}" — solver will fail`, level: 'warn' });
+                Bus.window.post(MSG.JOB.LOG, { msg: `SAI login: no Active Access entry for "${serverName}" after hack attempt — solver will fail`, level: 'warn' });
             }
         }
 
         Bus.window.post(MSG.JOB.LOG, { msg: `Connected to server: "${serverName}"`, level: 'ok' });
         return true;
+    }
+
+    // Wait up to timeoutMs for SaiActiveAccess > SaiPanelListStyled to have
+    // at least one row. Returns the first row, or null on timeout.
+    async function waitForActiveAccessRow(loginPanel, timeoutMs) {
+        const list = await dom.waitForEl(
+            () => loginPanel.querySelector(`${SEL.ACTIVE_ACCESS} ${SEL.ACCESS_LIST}`),
+            { timeout: timeoutMs }
+        );
+        return list?.firstElementChild || null;
+    }
+
+    // Click the first available hack tool, then wait for the resulting
+    // IceWallBreakApplication to (a) appear and (b) close — the close edge
+    // is the auto-ice-wall solver's success signal. Returns true if the
+    // window cycled cleanly, false on any timeout.
+    //
+    // Caveat: relies on auto-ice-wall being enabled. The Auto-Jobs UI
+    // already gates START on it, so by the time this runs we're in
+    // a session where the solver is active.
+    async function runHackToolForAccess(loginPanel, serverName, log) {
+        const hackTools = loginPanel.querySelector(SEL.HACK_TOOLS);
+        if (!hackTools) {
+            log('warn', `No SaiHackTools panel for "${serverName}"`);
+            return false;
+        }
+        const hackList = hackTools.querySelector(SEL.ACCESS_LIST);
+        const firstTool = hackList?.firstElementChild;
+        if (!firstTool) {
+            log('warn', `No hack tools available for "${serverName}"`);
+            return false;
+        }
+        const toolName = (firstTool.textContent || '').trim().split(/\s+/).slice(0, 3).join(' ');
+        Bus.window.post(MSG.JOB.LOG, { msg: `Triggering hack tool "${toolName || '?'}" on "${serverName}"`, level: 'info' });
+        dom.clickEl(firstTool);
+
+        // Wait for ice-wall window to mount.
+        const iceApp = await dom.waitForEl(SEL.ICE_WALL_APP, { timeout: 8_000 });
+        if (!iceApp) {
+            log('warn', `Ice wall window did not appear for "${serverName}"`);
+            return false;
+        }
+        Bus.window.post(MSG.JOB.LOG, { msg: 'Ice wall opened — waiting for solver…', level: 'info' });
+
+        // Wait for it to close. 120 s ceiling — the solver itself is much
+        // faster than that, but we want headroom for slow rendering /
+        // partial-board phases / WS hiccups.
+        const deadline = Date.now() + 120_000;
+        while (Date.now() < deadline && !root.__jobManagerAbort) {
+            if (!document.querySelector(SEL.ICE_WALL_APP)) {
+                // Grace period for the active-access list to repopulate.
+                await dom.sleep(1000);
+                Bus.window.post(MSG.JOB.LOG, { msg: `Ice wall solved on "${serverName}"`, level: 'ok' });
+                return true;
+            }
+            await dom.sleep(500);
+        }
+        log('warn', `Ice wall did not close in 120 s for "${serverName}"`);
+        Bus.window.post(MSG.JOB.LOG, { msg: `Ice wall timeout on "${serverName}" — give up`, level: 'warn' });
+        return false;
     }
 
     // ─── Module ───────────────────────────────────────────────────────────
