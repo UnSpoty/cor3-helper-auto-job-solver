@@ -121,12 +121,68 @@
         }
     }
 
+    function renderServerPriorities(host, nmServers, priorities) {
+        host.innerHTML = '';
+        const wrap = document.createElement('details');
+        wrap.className = 'collapsible';
+        wrap.open = false;
+        const skipCount = Object.values(priorities || {}).filter((v) => v === 'skip').length;
+        const summary = document.createElement('summary');
+        summary.className = 'section-title';
+        summary.textContent = `Server priorities${skipCount > 0 ? ` · ${skipCount} skipped` : ''}`;
+        wrap.appendChild(summary);
+
+        const card = el('div', 'card');
+        card.appendChild(el('div', 'muted xs', 'Toggle Skip on a server to keep auto-jobs from accepting jobs that target it. Useful for hub servers — a K/D timer on a hub blocks the path to everything downstream of it.'));
+
+        const rescanRow = el('div', 'row gap-sm mt-sm');
+        const rescanBtn = el('button', 'btn small', 'Rescan');
+        rescanBtn.addEventListener('click', async () => {
+            const tab = await getCor3Tab();
+            if (tab) chrome.tabs.sendMessage(tab.id, { action: 'rescanNetworkMap' }).catch(() => {});
+        });
+        rescanRow.appendChild(rescanBtn);
+        rescanRow.appendChild(el('span', 'muted xs', `${(nmServers || []).length} known`));
+        card.appendChild(rescanRow);
+
+        const list = el('div', 'mt-sm');
+        if (!nmServers || nmServers.length === 0) {
+            list.appendChild(el('div', 'muted sm', 'No servers known yet — click Rescan after opening Network Map at least once.'));
+        } else {
+            for (const name of [...nmServers].sort()) {
+                const skipped = priorities[name] === 'skip';
+                const row = el('div', 'card-row mt-sm');
+                row.innerHTML = `
+                    <span class="${skipped ? 'muted sm' : 'sm'}">${escape(name)}</span>
+                    <label class="switch" title="Skip — never accept jobs for this server">
+                        <input type="checkbox" data-server="${escape(name)}" ${skipped ? 'checked' : ''}>
+                        <span class="switch-slider"></span>
+                    </label>
+                `;
+                list.appendChild(row);
+            }
+            list.addEventListener('change', async (e) => {
+                if (!e.target.dataset.server) return;
+                const cur = (await Store.sync.getOne(C.STORAGE_SYNC.SERVER_PRIORITIES, {})) || {};
+                const name = e.target.dataset.server;
+                if (e.target.checked) cur[name] = 'skip';
+                else delete cur[name];
+                await Store.sync.setOne(C.STORAGE_SYNC.SERVER_PRIORITIES, cur);
+            });
+        }
+        card.appendChild(list);
+        wrap.appendChild(card);
+        host.appendChild(wrap);
+    }
+
     async function render(container) {
-        const [settings, state, queue, bugged] = await Promise.all([
+        const [settings, state, queue, bugged, nmServers, priorities] = await Promise.all([
             Store.sync.getOne(C.STORAGE_SYNC.AUTOJOBS_SETTINGS, DEFAULT_SETTINGS),
             Store.local.getOne(C.STORAGE_LOCAL.AUTOJOBS_STATE, { status: 'idle' }),
             Store.local.getOne(C.STORAGE_LOCAL.AUTOJOBS_QUEUE, []),
             Store.local.getOne(C.STORAGE_LOCAL.BUGGED_JOBS, {}),
+            Store.local.getOne(C.STORAGE_LOCAL.NM_SERVERS, []),
+            Store.sync.getOne(C.STORAGE_SYNC.SERVER_PRIORITIES, {}),
         ]);
 
         // Tear down a previous logViewer if we're re-rendering — its storage
@@ -138,14 +194,16 @@
         const headerHost = el('div');
         const sourcesHost = el('div');
         const queueHost = el('div');
-        const logHost = el('div');
+        const prioHost = el('div');
         container.appendChild(headerHost);
         container.appendChild(sourcesHost);
         container.appendChild(queueHost);
+        container.appendChild(prioHost);
 
         renderHeader(headerHost, settings, state);
         renderSources(sourcesHost, settings);
         renderQueue(queueHost, queue, bugged);
+        renderServerPriorities(prioHost, nmServers, priorities || {});
 
         // Activity log — Logger ring filtered to module='auto-jobs'. The
         // logViewer subscribes to cor3_logs storage changes itself, so we
@@ -167,10 +225,13 @@
                 if (!container.classList.contains('active')) return;
                 if (changes[C.STORAGE_LOCAL.AUTOJOBS_STATE] ||
                     changes[C.STORAGE_LOCAL.AUTOJOBS_QUEUE] ||
-                    changes[C.STORAGE_LOCAL.BUGGED_JOBS]) render(container);
+                    changes[C.STORAGE_LOCAL.BUGGED_JOBS] ||
+                    changes[C.STORAGE_LOCAL.NM_SERVERS]) render(container);
             });
             unsub2 = Store.sync.onChanged((changes) => {
-                if (changes[C.STORAGE_SYNC.AUTOJOBS_SETTINGS] && container.classList.contains('active')) render(container);
+                if (!container.classList.contains('active')) return;
+                if (changes[C.STORAGE_SYNC.AUTOJOBS_SETTINGS] ||
+                    changes[C.STORAGE_SYNC.SERVER_PRIORITIES]) render(container);
             });
             render(container);
         },

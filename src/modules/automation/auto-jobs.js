@@ -310,6 +310,12 @@
                 if (['ip_injection','ip_cleanup','data_upload','log_deletion','log_download','file_elimination','data_download','decrypt_extract'].includes(type)) {
                     const srvName = extractServerFromJob(job);
                     if (srvName) {
+                        // User skip — persistent, set via popup. Used to keep
+                        // hub servers off-limits so K/D timers don't accidentally
+                        // sever the path to downstream servers.
+                        if (serverPriorities[srvName] === 'skip') continue;
+                        // Transient K/D skip — set by onKdDetected /
+                        // onServerUnreachable, expires automatically.
                         const expiry = kdSkipServers.get(srvName);
                         if (expiry) {
                             if (Date.now() < expiry) continue;
@@ -411,6 +417,11 @@
                 if (!type) continue;
                 if (settings.enabledJobTypes && settings.enabledJobTypes[type] === false) continue;
                 if (buggedJobs[job.id]) continue;
+                // Honour user skip list here too — if a TAKEN job lives on a
+                // skipped server, don't auto-resume it. The user clicked Skip
+                // for a reason; respect that even for in-flight jobs.
+                const srvName = extractServerFromJob(job);
+                if (srvName && serverPriorities[srvName] === 'skip') continue;
                 out.push({ ...job, marketId: mid, type });
             }
         }
