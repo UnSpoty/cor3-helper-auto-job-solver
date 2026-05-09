@@ -411,35 +411,62 @@
         const conns   = Array.isArray(data.connections) ? data.connections : [];
         if (!servers) return null;
 
-        const adj = {};
+        // Build TWO adjacency maps: visible edges only, and all edges
+        // including the hidden "gateway" ones (e.g. RM7-E1SCP <-> D4RK RM7CE
+        // is isHidden:true even when the user is currently on D4RK). The
+        // visible map gives the "normal" depth used to sort priority; the
+        // all-edges map makes sure we can still reach side-network servers
+        // (D4RK, SRM7) and show them with finite depth + a viaHidden flag
+        // instead of ∞.
+        const adjVisible = {};
+        const adjAll = {};
         for (const c of conns) {
-            if (c.isHidden) continue;
             const a = c.serverA, b = c.serverB;
             if (!a || !b) continue;
-            (adj[a] = adj[a] || []).push(b);
-            (adj[b] = adj[b] || []).push(a);
+            (adjAll[a] = adjAll[a] || []).push(b);
+            (adjAll[b] = adjAll[b] || []).push(a);
+            if (!c.isHidden) {
+                (adjVisible[a] = adjVisible[a] || []).push(b);
+                (adjVisible[b] = adjVisible[b] || []).push(a);
+            }
         }
-        // HOME marker: serverTypeName === 'Home' OR faction === 'HOME'.
-        const home = servers.find((s) => s && (s.serverTypeName === 'Home' || s.faction === 'HOME'));
-        const depths = {};
-        if (home) {
-            depths[home.id] = 0;
-            const q = [home.id];
+
+        function bfsFrom(rootId, adj) {
+            const out = {};
+            if (!rootId) return out;
+            out[rootId] = 0;
+            const q = [rootId];
             while (q.length) {
                 const cur = q.shift();
                 for (const n of (adj[cur] || [])) {
-                    if (depths[n] === undefined) { depths[n] = depths[cur] + 1; q.push(n); }
+                    if (out[n] === undefined) { out[n] = out[cur] + 1; q.push(n); }
                 }
             }
+            return out;
         }
+
+        // HOME marker: serverTypeName === 'Home' OR faction === 'HOME'.
+        const home = servers.find((s) => s && (s.serverTypeName === 'Home' || s.faction === 'HOME'));
+        const depthsVisible = bfsFrom(home?.id, adjVisible);
+        const depthsAll     = bfsFrom(home?.id, adjAll);
+
         return {
             home: home ? home.serverName : null,
             homeId: home ? home.id : null,
             currentEndpointId: data.currentEndpointId || null,
+            // Timestamp so UI can show last-refresh time (helps confirm the
+            // Refresh button actually fired even when topology didn't change).
+            updatedAt: Date.now(),
             servers: servers.map((s) => ({
                 id: s.id,
                 name: s.serverName,
-                depth: depths[s.id] ?? null,
+                // depth: visible-edge BFS if reachable, else fall back to
+                // all-edges BFS (so D4RK/SRM still show a finite number).
+                depth: depthsVisible[s.id] ?? depthsAll[s.id] ?? null,
+                // viaHidden: true when the only path from HOME goes through
+                // a gateway edge marked isHidden by the server (D4RK side
+                // network etc.). UI can use this for visual distinction.
+                viaHidden: depthsVisible[s.id] === undefined && depthsAll[s.id] !== undefined,
                 faction: s.faction,
                 cluster: s.serverCluster,
                 marketId: s.marketId || null,

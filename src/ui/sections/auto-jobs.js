@@ -307,7 +307,11 @@
             if (tab) chrome.tabs.sendMessage(tab.id, { action: 'rescanNetworkMap' }).catch(() => {});
         });
         rescanRow.appendChild(rescanBtn);
-        rescanRow.appendChild(el('span', 'muted xs', `${targetable.length} known${nmGraph?.home ? ` · home: ${escape(nmGraph.home)}` : ''}`));
+        // Last-refresh timestamp gives the user feedback that Refresh did
+        // fire even when the topology didn't actually change between calls.
+        const updatedAt = nmGraph?.updatedAt ? new Date(nmGraph.updatedAt).toLocaleTimeString() : null;
+        rescanRow.appendChild(el('span', 'muted xs',
+            `${targetable.length} known${nmGraph?.home ? ` · home: ${escape(nmGraph.home)}` : ''}${updatedAt ? ` · refreshed ${updatedAt}` : ''}`));
         card.appendChild(rescanRow);
 
         const list = el('div', 'mt-sm');
@@ -325,7 +329,20 @@
             });
             for (const s of sorted) {
                 const skipped = priorities[s.name] === 'skip';
-                const depthBadge = Number.isFinite(s.depth) ? `<span class="pill idle" title="BFS depth from Home">${s.depth}</span>` : `<span class="pill warn" title="No path from Home — ${escape(s.faction || '')}">∞</span>`;
+                let depthBadge;
+                if (Number.isFinite(s.depth)) {
+                    if (s.viaHidden) {
+                        // Side-network server reachable only via a hidden
+                        // gateway edge (D4RK / SRM7). Distinct visual so
+                        // the user knows the depth count crosses a faction
+                        // boundary that requires set.endpoint preflight.
+                        depthBadge = `<span class="pill warn" title="Reachable via hidden gateway edge — ${escape(s.faction || '?')} side network">${s.depth}*</span>`;
+                    } else {
+                        depthBadge = `<span class="pill idle" title="BFS depth from Home">${s.depth}</span>`;
+                    }
+                } else {
+                    depthBadge = `<span class="pill warn" title="No path from Home — ${escape(s.faction || '')}">∞</span>`;
+                }
                 const row = el('div', 'card-row mt-sm');
                 row.innerHTML = `
                     <span class="row gap-sm">
