@@ -200,18 +200,19 @@
                 }
             }
             if (firstRow) {
-                const rowText = (firstRow.textContent || '').trim().slice(0, 60);
-                const rowAttached = !!firstRow.isConnected;
-                dbg(`step 6 — clicking access row "${rowText}" attached=${rowAttached}`);
-                dom.clickEl(firstRow);
-                await dom.sleep(700);
-
-                // Post-click probe: did anything appear?
-                const apps = Array.from(document.querySelectorAll(SEL.SAI_APP));
-                const titles = apps.map(a => `"${a.querySelector(SEL.SAI_TITLE)?.textContent?.trim() || ''}"`);
-                dbg(`step 6 post-click — SAI apps now: ${apps.length === 0 ? 'none' : titles.join(', ')}`);
-
-                log('info', `Clicked Active Access entry for "${serverName}"`);
+                // Click + verify with retry. cor3.gg occasionally swallows the
+                // first click on a freshly-mounted access row (animation-frame
+                // timing? React fiber re-render mid-handler?) — the row visibly
+                // highlights but no SAI window opens. Re-clicking after a brief
+                // pause typically opens it, so we try up to 3 times before
+                // giving up (findOrOpenSai's 15 s wait is a separate safety
+                // net for the rare "SAI opens late after first click" case).
+                const opened = await clickAccessRowUntilSaiOpens(loginPanel, serverName, dbg, log);
+                if (opened) {
+                    log('info', `SAI opened for "${serverName}"`);
+                } else {
+                    Bus.window.post(MSG.JOB.LOG, { msg: `SAI did not open after ${SAI_CLICK_MAX_ATTEMPTS} click attempts on "${serverName}"`, level: 'warn' });
+                }
             } else {
                 dbg('step 6 FAIL — no row to click after hack attempt');
                 Bus.window.post(MSG.JOB.LOG, { msg: `SAI login: no Active Access entry for "${serverName}" after hack attempt — solver will fail`, level: 'warn' });
@@ -230,6 +231,49 @@
             { timeout: timeoutMs }
         );
         return list?.firstElementChild || null;
+    }
+
+    // ─── Active-Access click + SAI-open verification ─────────────────────
+    // SAI is the success signal we actually care about; the access-row click
+    // is only the means. Retry up to MAX_ATTEMPTS times if SAI doesn't appear
+    // within PER_ATTEMPT_MS — the row sometimes goes "click absorbed but no
+    // SAI" and re-clicking is the documented workaround.
+    const SAI_CLICK_MAX_ATTEMPTS  = 3;
+    const SAI_CLICK_PER_ATTEMPT_MS = 4_000;
+
+    async function clickAccessRowUntilSaiOpens(loginPanel, serverName, dbg, log) {
+        for (let attempt = 1; attempt <= SAI_CLICK_MAX_ATTEMPTS; attempt++) {
+            // Re-find the row each iteration: a failed click sometimes leaves
+            // the list re-rendered, and the previous reference is detached.
+            const row = (loginPanel.querySelector(`${SEL.ACTIVE_ACCESS} ${SEL.ACCESS_LIST}`) || {}).firstElementChild
+                     || await waitForActiveAccessRow(loginPanel, 1_500);
+            if (!row) {
+                dbg(`step 6.${attempt} FAIL — no access row available to click`);
+                return false;
+            }
+            const rowText = (row.textContent || '').trim().slice(0, 60);
+            dbg(`step 6.${attempt} — clicking access row "${rowText}"`);
+            dom.clickEl(row);
+
+            // Poll for SAI to appear. cor3.gg usually opens within ~700 ms;
+            // we give 4 s of slack for slow clients / lag spikes before
+            // declaring this attempt failed.
+            const deadline = Date.now() + SAI_CLICK_PER_ATTEMPT_MS;
+            while (Date.now() < deadline && !root.__jobManagerAbort) {
+                const sai = getSaiForServer(serverName);
+                if (sai) {
+                    dbg(`step 6.${attempt} ok — SAI opened`);
+                    return true;
+                }
+                await dom.sleep(250);
+            }
+            dbg(`step 6.${attempt} — SAI did not open in ${SAI_CLICK_PER_ATTEMPT_MS}ms${attempt < SAI_CLICK_MAX_ATTEMPTS ? ', retrying' : ''}`);
+            // Brief grace before retrying so any in-flight click / animation
+            // settles. Without this the second click can land on the same
+            // mid-render row and get swallowed too.
+            if (attempt < SAI_CLICK_MAX_ATTEMPTS) await dom.sleep(800);
+        }
+        return false;
     }
 
     // Click the first available hack tool, then wait for the resulting

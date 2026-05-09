@@ -492,31 +492,78 @@
     // wsSend + room management
     // ──────────────────────────────────────────────────────────────────────
     function humanDelay() { return 400 + Math.floor(Math.random() * 500); }
+    // Local delay primitive — also used by the room-join chain further
+    // below (originally declared there). Hoisted up here so the paced
+    // wsSend can reference it without a TDZ surprise.
+    const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
-    function wsSend(msg) {
-        if (activeSocket && activeSocket.readyState === OrigWebSocket.OPEN) {
-            activeSocket.send(msg);
-            return true;
-        }
-        let bestSocket = null;
-        let bestTime = 0;
+    // ─── Outbound rate limiter ────────────────────────────────────────
+    // socket.io's pipeline drops frames silently under bursts (observed:
+    // 4-5 frames within ~50 ms intermittently disappear with no error
+    // event). Pacing every wsSend with a minimum spacing protects the
+    // hot paths: requestMarketRefresh fires HOME+DARK+SRM almost
+    // simultaneously; __cor3InitialFetch fires NM + MARKET + DARK + SRM
+    // within ~1.1 s; the bulk-accept loop flips set.endpoint repeatedly.
+    //
+    // The synchronous return value of wsSend stays true if a socket is
+    // available (immediate or queued); false only when there's literally
+    // no open socket. Most callers use the bool to gate retry-on-failure
+    // — a queued send that later fails is rare enough to let the per-
+    // module watchdogs (auto-jobs accept watchdog, etc.) catch it.
+    const MIN_SEND_SPACING_MS = 200;
+    let lastSendAt = 0;
+    let pendingSendQueue = Promise.resolve();
+
+    function pickOpenSocket() {
+        if (activeSocket && activeSocket.readyState === OrigWebSocket.OPEN) return activeSocket;
+        let best = null, bestTime = 0;
         for (const ws of trackedSockets) {
             if (ws.readyState === OrigWebSocket.OPEN) {
                 const t = socketLastActivity.get(ws) || 0;
-                if (t > bestTime) { bestTime = t; bestSocket = ws; }
+                if (t > bestTime) { bestTime = t; best = ws; }
             }
         }
-        if (bestSocket) {
-            activeSocket = bestSocket;
-            bestSocket.send(msg);
+        return best;
+    }
+
+    function wsSend(msg) {
+        const sock = pickOpenSocket();
+        if (!sock) {
+            console.warn('[COR3] No active WebSocket — message not sent');
+            return false;
+        }
+        const now = Date.now();
+        const wait = Math.max(0, lastSendAt + MIN_SEND_SPACING_MS - now);
+        if (wait === 0) {
+            // Free pass — quiet period, send immediately.
+            lastSendAt = now;
+            activeSocket = sock;
+            sock.send(msg);
             return true;
         }
-        console.warn('[COR3] No active WebSocket — message not sent');
-        return false;
+        // Reserve our slot now so concurrent calls space behind us instead
+        // of all computing the same wait==X and stacking at the same time.
+        lastSendAt = now + wait;
+        const reservedSock = sock;
+        pendingSendQueue = pendingSendQueue.then(async () => {
+            await delay(wait);
+            // Socket may have closed during the wait; fall back to any
+            // other open one. If nothing is open, drop silently — caller
+            // already got `true` and any module-level watchdog will
+            // notice the missing response.
+            const target = (reservedSock.readyState === OrigWebSocket.OPEN)
+                ? reservedSock : pickOpenSocket();
+            if (target) {
+                activeSocket = target;
+                target.send(msg);
+            } else {
+                console.warn('[COR3] Paced send dropped — socket closed mid-queue');
+            }
+        }).catch(() => {});
+        return true;
     }
 
     const joinedRooms = new Set();
-    const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
     function leaveRoom(room) {
         if (!joinedRooms.has(room)) return false;
