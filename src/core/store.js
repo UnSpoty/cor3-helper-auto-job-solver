@@ -28,20 +28,34 @@
     function makeArea(areaName) {
         const area = hasStorage() ? chrome.storage[areaName] : null;
 
-        // Wrap a chrome.storage callback-style call. Resolves with the
-        // callback arg, OR with `fallback` if the call throws synchronously
-        // (extension reload race) or fails with chrome.runtime.lastError.
-        // Never rejects — silent best-effort, callers can keep going.
+        // Wrap a chrome.storage callback-style call. Never rejects.
+        //
+        // Three failure modes to defend against, all triggered when the
+        // extension is reloaded/disabled while a content script is mid-call:
+        //   1. fn(...) throws synchronously (some Chrome builds).
+        //   2. The callback fires, but reading chrome.runtime.lastError
+        //      throws — it's a getter on the now-dead context.
+        //   3. The callback's resolve() runs fine, but ANY downstream code
+        //      that touches chrome.* throws on the same getter.
+        // (1) is caught by the outer try; (2) and (3) need their own try
+        // around the callback body, because Promise executors don't catch
+        // exceptions thrown inside async callbacks they scheduled.
         function safeCall(fn, fallback) {
             return new Promise((resolve) => {
-                try {
-                    fn((arg) => {
-                        // Read lastError to silence the "unchecked" warning
-                        // that Chrome emits when nobody touches it.
-                        const err = chrome.runtime && chrome.runtime.lastError;
+                const onResult = (arg) => {
+                    try {
+                        let err = null;
+                        try { err = chrome.runtime && chrome.runtime.lastError; }
+                        catch (_) { /* lastError getter threw — context gone */ return resolve(fallback); }
                         if (err && isCtxInvalidated(err)) return resolve(fallback);
                         resolve(arg !== undefined ? arg : fallback);
-                    });
+                    } catch (_) {
+                        // anything in the callback body that throws
+                        resolve(fallback);
+                    }
+                };
+                try {
+                    fn(onResult);
                 } catch (e) {
                     if (!isCtxInvalidated(e)) {
                         try { console.warn('[COR3.Store] storage call threw', e); } catch (_) {}

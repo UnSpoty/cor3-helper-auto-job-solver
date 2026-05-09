@@ -22,6 +22,20 @@
     // diagnosing Firefox MV3 load issues.
     console.log('[COR3.entry/content] isolated-world boot starting');
 
+    // Last-resort swallow for "Extension context invalidated" rejections.
+    // Store/Settings/Bus all defend against this on their own, but anything
+    // that touches chrome.* asynchronously (open setTimeouts, in-flight
+    // listeners, third-party callbacks) can still surface it on reload.
+    // Harmless — the next page load gets a fresh content-script context;
+    // we just don't want it cluttering chrome://extensions errors.
+    window.addEventListener('unhandledrejection', (e) => {
+        const reason = e && e.reason;
+        const msg = (reason && (reason.message || String(reason))) || '';
+        if (/Extension context invalidated|context invalidated/i.test(msg)) {
+            e.preventDefault();
+        }
+    });
+
     // Log-bridge: ingest entries forwarded from MAIN-world modules.
     // MAIN-world Logger lacks chrome.storage, so it posts each entry as
     // 'COR3_LOG_REMOTE' via window.postMessage. We unwrap and persist locally.
