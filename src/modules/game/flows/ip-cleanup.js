@@ -41,7 +41,7 @@
         const sai = await SAI.findOrOpenSai(serverName);
         if (!sai) {
             mod.warn(`SAI not found for IP Cleanup server: ${serverName}`);
-            flows.sendTimeout(jobId, marketId);
+            flows.sendTimeout(jobId, marketId, { transient: true });
             flows.setWatching(false);
             return;
         }

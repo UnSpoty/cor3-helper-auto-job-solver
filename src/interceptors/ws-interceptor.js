@@ -770,6 +770,20 @@
     let inflightRemoteFetch = Promise.resolve();
     function fetchRemoteMarketSequence(marketId, serverId) {
         const run = inflightRemoteFetch.then(async () => {
+            // Don't yank the user's endpoint while a flow is mid-stride —
+            // server-connect's click on RM7-E1SCP needs HOME endpoint to
+            // resolve a path; if we set.endpoint(DARK_SERVER) underneath
+            // it the click "succeeds" cosmetically but SAI never opens
+            // (verified by a session log: Log Deletion bugged for 2h
+            // after a 16-s timeout because the dance ran during connect).
+            // Cap the wait at 60 s — long enough for a normal flow to
+            // finish, short enough to not leak the dance forever if
+            // someone forgets to clear the lock.
+            const lockDeadline = Date.now() + 60_000;
+            while (root.__pipelineLocked && Date.now() < lockDeadline) {
+                await sleep(500);
+            }
+
             const saved = currentEndpoint;
             const needPreflight = (saved !== serverId);
             if (needPreflight) {

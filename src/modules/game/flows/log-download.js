@@ -13,7 +13,7 @@
         flows.setWatching(true);
 
         const sai = await SAI.findOrOpenSai(serverName);
-        if (!sai) { flows.sendTimeout(jobId, marketId); flows.setWatching(false); return; }
+        if (!sai) { flows.sendTimeout(jobId, marketId, { transient: true }); flows.setWatching(false); return; }
         if (!await SAI.navigateToSection(sai, SAI.SEL.LOGS)) { flows.sendTimeout(jobId, marketId); flows.setWatching(false); return; }
         if (!await SAI.waitForSaiContent(sai)) { flows.sendTimeout(jobId, marketId); flows.setWatching(false); return; }
 
