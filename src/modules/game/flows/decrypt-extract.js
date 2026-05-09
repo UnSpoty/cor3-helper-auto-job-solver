@@ -43,17 +43,16 @@
                 return;
             }
 
-            const downloadBtn = row.querySelector(SAI.SEL.DOWNLOAD_ICON)?.closest('button');
-            if (!downloadBtn) {
+            // Arm watcher BEFORE clicking download so the new file is
+            // identifiable by diff. clickRowDownload uses position-based
+            // lookup (DownloadIcon data-sentry-component is gone post-refactor).
+            await SAI.downloadsWatcher.arm(10_000);
+            if (!SAI.clickRowDownload(row)) {
                 mod.warn('download button not found');
                 flows.sendTimeout(jobId, marketId);
                 flows.setWatching(false);
                 return;
             }
-
-            // Arm watcher BEFORE clicking download so the new file is identifiable by diff
-            await SAI.downloadsWatcher.arm(10_000);
-            downloadBtn.click();
             mod.info('download triggered, waiting for file in Downloads…');
 
             fileEl = await SAI.downloadsWatcher.waitForNewFile(30_000);

@@ -146,9 +146,6 @@
         // Auto-jobs runtime
         AUTOJOBS_STATE: 'autoJobsState',
         AUTOJOBS_QUEUE: 'autoJobsQueue',
-        AUTOJOBS_LOG: 'autoJobsLog',
-        AUTOJOBS_PENDING_CONFIRM: 'autoJobsPendingConfirm',
-        AUTOJOBS_CONFIRM_RESULT: 'autoJobsConfirmResult',
         BUGGED_JOBS: 'buggedJobIds',
 
         // Solver runtime
@@ -248,7 +245,6 @@
     const LIMITS = {
         LOG_RING_PER_MODULE: 200,    // entries kept per module in cor3_logs
         ERRORS_RING: 200,             // entries in cor3_errors
-        AUTOJOBS_LOG_RING: 100,       // legacy autoJobsLog ring
         BUGGED_JOB_TTL_MS: 2 * 60 * 60 * 1000,  // 2h
         AUTOJOBS_STATE_TTL_MS: 5 * 60 * 1000,   // 5min
     };

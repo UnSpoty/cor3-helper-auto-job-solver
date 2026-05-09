@@ -16,9 +16,19 @@
     const SEL = {
         LOGIN_PANEL: '[data-sentry-element="SaiBottomPanelStyled"][data-sentry-source-file="sai-login.tsx"]',
         ACTIVE_ACCESS: '[data-sentry-component="SaiActiveAccess"]',
-        ARROW_RIGHT_ICON: '[data-sentry-component="ArrowRightIcon"]',
+        // The SaiActiveAccess panel used to mark each access row's chevron
+        // with data-sentry-component="ArrowRightIcon"; the May 2026 cor3.gg
+        // refactor dropped the component label and now renders a plain inline
+        // SVG. The list itself still has stable identifiers though.
+        ACCESS_LIST: '[data-sentry-element="SaiPanelListStyled"]',
         SAI_APP: '[data-sentry-component="ServerAdministrationInterfaceApplication"]',
         SAI_TITLE: '[data-sentry-element="SaiHeaderTitleStyled"]',
+        // Connect / Login buttons — generic Button components now, but the
+        // game ships them with stable onboarding ids (data-onboarding-300-id).
+        // Replaces the previous data-sentry-component="ConnectIcon"/"LoginIcon"
+        // selectors that broke with the same refactor.
+        CONNECT_BTN_NEW: '[data-onboarding-300-id="ServerInfoPanelConnectButton"]',
+        LOGIN_BTN_NEW:   '[data-onboarding-300-id="ServerInfoPanelLoginButton"]',
     };
 
     function getSaiForServer(serverName) {
@@ -70,32 +80,36 @@
             return false;
         }
 
-        // 4. click Connect — skip if Login already visible (already connected)
+        // 4. click Connect — skip if Login already visible (already connected).
+        // Try the new onboarding-id selector first, then fall back to the
+        // legacy data-sentry-component for older builds. Same goes for Login.
+        const queryConnectBtn = () => document.querySelector(SEL.CONNECT_BTN_NEW) || document.querySelector(NM.SEL.CONNECT_BTN);
+        const queryLoginBtn   = () => document.querySelector(SEL.LOGIN_BTN_NEW)   || document.querySelector(NM.SEL.LOGIN_BTN);
         root.__connectStartedAt = Date.now();
-        if (!document.querySelector(NM.SEL.LOGIN_BTN)) {
-            const connectIcon = await dom.waitForEl(NM.SEL.CONNECT_BTN, { timeout: 3_000 });
-            if (connectIcon) {
-                dom.clickEl(connectIcon.closest('button') || connectIcon);
+        if (!queryLoginBtn()) {
+            const connectBtn = await dom.waitForEl(queryConnectBtn, { timeout: 3_000 });
+            if (connectBtn) {
+                dom.clickEl(connectBtn.closest('button') || connectBtn);
                 await dom.sleep(700);
-            } else if (!document.querySelector(NM.SEL.LOGIN_BTN)) {
+            } else if (!queryLoginBtn()) {
                 log('warn', `Connect button not found for "${serverName}"`);
                 return false;
             }
         }
 
         // 5. wait for Login or detect rejection / no-path
-        let loginIcon = null;
+        let loginBtn = null;
         const loginDeadline = Date.now() + 12_000;
         while (Date.now() < loginDeadline && !root.__jobManagerAbort) {
-            loginIcon = document.querySelector(NM.SEL.LOGIN_BTN);
-            if (loginIcon) break;
+            loginBtn = queryLoginBtn();
+            if (loginBtn) break;
             // SAI opened directly (auto-login)
             if (getSaiForServer(serverName)) {
                 log('info', `SAI opened directly after Connect for "${serverName}"`);
                 return true;
             }
             // Connect button reappeared → rejected
-            if (document.querySelector(NM.SEL.CONNECT_BTN)) {
+            if (queryConnectBtn()) {
                 log('warn', `Connect button reappeared — rejected for "${serverName}"`);
                 Bus.window.post(MSG.JOB.SERVER_UNREACHABLE, { serverName });
                 return false;
@@ -110,26 +124,26 @@
             }
             await dom.sleep(200);
         }
-        if (!loginIcon) {
+        if (!loginBtn) {
             log('warn', `Login button did not appear after Connect for "${serverName}"`);
             return false;
         }
-        dom.clickEl(loginIcon.closest('button') || loginIcon);
+        dom.clickEl(loginBtn.closest('button') || loginBtn);
         await dom.sleep(700);
 
-        // 6. login method dialog → click first Active Access entry
-        // Wait on the deepest selector (the arrow inside SaiActiveAccess) to
-        // ride out the React re-render race where the panel mounts with a
-        // login form skeleton before active-access rows appear.
+        // 6. login method dialog → click first Active Access entry. The
+        // chevron icon used to be a stable selector (ArrowRightIcon); now
+        // we walk SaiPanelListStyled and click its first row. The list mounts
+        // empty during the React skeleton phase, so wait for it to populate.
         const loginPanel = await dom.waitForEl(SEL.LOGIN_PANEL, { timeout: 5_000 });
         if (loginPanel) {
-            const arrow = await dom.waitForEl(
-                () => loginPanel.querySelector(`${SEL.ACTIVE_ACCESS} ${SEL.ARROW_RIGHT_ICON}`),
+            const list = await dom.waitForEl(
+                () => loginPanel.querySelector(`${SEL.ACTIVE_ACCESS} ${SEL.ACCESS_LIST}`),
                 { timeout: 5_000 }
             );
-            const row = arrow?.parentElement?.parentElement;
-            if (row) {
-                dom.clickEl(row);
+            const firstRow = list?.firstElementChild;
+            if (firstRow) {
+                dom.clickEl(firstRow);
                 await dom.sleep(700);
                 log('info', `Clicked Active Access entry for "${serverName}"`);
             } else {

@@ -35,15 +35,16 @@
         while (!root.__jobManagerAbort) {
             const row = SAI.findFileRowByName(sai, fileName);
             if (!row) break;
-            const deleteBtn = row.querySelector(SAI.SEL.TRASH_ICON)?.closest('button');
-            if (!deleteBtn) {
+            // Files-tab rows lost their TrashIcon data-sentry-component in
+            // the May 2026 cor3.gg refactor; clickRowRemove finds the
+            // delete button by its position in the action area instead.
+            mod.info(`deleting file #${deletedCount + 1}: ${fileName}`);
+            if (!SAI.clickRowRemove(row)) {
                 mod.warn('delete button not found');
                 flows.sendTimeout(jobId, marketId);
                 flows.setWatching(false);
                 return;
             }
-            mod.info(`deleting file #${deletedCount + 1}: ${fileName}`);
-            deleteBtn.click();
             await dom.sleep(400);
             await SAI.confirmDeleteDialog();
             await dom.sleep(500);

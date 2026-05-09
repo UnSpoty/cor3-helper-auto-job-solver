@@ -14,7 +14,6 @@
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
     const { Module, Bus, Store, Registry, constants: C } = root.COR3;
     const MSG = C.MSG;
-    const FLOW = C.FLOW;
 
     // ─── Constants ────────────────────────────────────────────────────────
     const BUGGED_JOB_TTL_MS = C.LIMITS.BUGGED_JOB_TTL_MS;
@@ -29,11 +28,6 @@
         jobType: null, serverName: null, ips: null, fileCondition: null,
         fileNames: null, logSeqs: null,
     });
-
-    const FILE_BASED_TYPES = new Set([
-        FLOW.FILE_DECRYPTION, FLOW.FILE_UPLOAD || 'data_upload', FLOW.LOG_DELETION,
-        FLOW.LOG_DOWNLOAD, FLOW.FILE_ELIMINATION, FLOW.DATA_DOWNLOAD, FLOW.DECRYPT_EXTRACT,
-    ]);
 
     const JOB_TYPE_KEYWORDS = {
         file_decryption:  ['file decryption',   'file_decryption'],
@@ -60,7 +54,11 @@
     };
 
     // ─── State (in-memory) ───────────────────────────────────────────────
-    let settings = { enabled: false, debugMode: false, markets: { home: true, dark: true }, enabledJobTypes: {} };
+    // Settings shape lives entirely in chrome.storage.sync.autoJobsSettings.
+    // markets.{home,dark,srm} — which markets to scan and accept from.
+    // debugMode was removed in the May 2026 audit (manual gating belongs in
+    // job-types whitelist, not a global pause/confirm — too easy to forget on).
+    let settings = { enabled: false, markets: { home: true, dark: true, srm: true }, enabledJobTypes: {} };
     let serverPriorities = {};
     let state = { ...IDLE_STATE };
     let queue = [];
@@ -88,11 +86,12 @@
     function saveBugged() { Store.local.setOne(C.STORAGE_LOCAL.BUGGED_JOBS, buggedJobs); }
     function saveState() { Store.local.setOne(C.STORAGE_LOCAL.AUTOJOBS_STATE, { ...state, updatedAt: Date.now() }); }
 
-    async function pushUserLog(msg, level = 'info') {
-        const log = (await Store.local.getOne(C.STORAGE_LOCAL.AUTOJOBS_LOG, [])) || [];
-        log.push({ ts: Date.now(), msg, level });
-        if (log.length > C.LIMITS.AUTOJOBS_LOG_RING) log.splice(0, log.length - C.LIMITS.AUTOJOBS_LOG_RING);
-        await Store.local.setOne(C.STORAGE_LOCAL.AUTOJOBS_LOG, log);
+    // User-facing log line. Goes through Logger so the popup's Auto-Jobs tab
+    // can render it via uiComponents.logViewer (filtered to module='auto-jobs')
+    // and the Logs tab picks it up alongside other modules' logs. The legacy
+    // STORAGE_LOCAL.AUTOJOBS_LOG ring is gone — single source of truth.
+    function pushUserLog(msg, level = 'info') {
+        if (modRef) modRef.log(level, msg);
     }
 
     function resetState(reason) {
@@ -122,13 +121,12 @@
         lastMarketRefreshAt = Date.now();
         if (modRef) modRef.debug(`market refresh [${reason || 'manual'}]`);
         Bus.window.post(MSG.GAME.REFRESH_MARKET, null);
-        // Only refresh Dark when the user actually wants Dark jobs picked up.
-        // Each Dark refresh now triggers a set.endpoint preflight in MAIN
-        // (because Dark is unreachable from HOME), which briefly hijacks the
-        // user's network-map endpoint — too disruptive to fire unconditionally.
-        if (settings.markets && settings.markets.dark) {
-            Bus.window.post(MSG.GAME.REFRESH_DARK_MARKET, null);
-        }
+        // Only refresh remote markets when the user actually opted them in.
+        // Each remote refresh triggers a set.endpoint preflight in MAIN (the
+        // markets are unreachable from HOME), which briefly hijacks the
+        // user's network-map endpoint — too disruptive to fire blindly.
+        if (settings.markets && settings.markets.dark) Bus.window.post(MSG.GAME.REFRESH_DARK_MARKET, null);
+        if (settings.markets && settings.markets.srm)  Bus.window.post(MSG.GAME.REFRESH_SRM_MARKET,  null);
     }
 
     // ─── API extractors (canonical — never falls back to DOM) ─────────────
@@ -255,19 +253,27 @@
     }
 
     // ─── Scan + accept ───────────────────────────────────────────────────
-    async function findCandidates() {
-        const result = await Store.local.get([
-            C.STORAGE_LOCAL.MARKET, C.STORAGE_LOCAL.DARK_MARKET, C.STORAGE_LOCAL.DARK_MARKET_AVAILABLE,
-        ]);
-        const marketData = result[C.STORAGE_LOCAL.MARKET];
-        const darkMarketData = result[C.STORAGE_LOCAL.DARK_MARKET];
-        const darkMarketAvailable = result[C.STORAGE_LOCAL.DARK_MARKET_AVAILABLE];
+    // Each market entry: storage data key, availability flag (for remote
+    // markets that can be unreachable), source label (for logs), and the
+    // settings flag in settings.markets.<key>.
+    const MARKETS_FOR_SCAN = [
+        { key: 'home', dataKey: C.STORAGE_LOCAL.MARKET,      availKey: null,                                source: 'home' },
+        { key: 'dark', dataKey: C.STORAGE_LOCAL.DARK_MARKET, availKey: C.STORAGE_LOCAL.DARK_MARKET_AVAILABLE, source: 'dark' },
+        { key: 'srm',  dataKey: C.STORAGE_LOCAL.SRM_MARKET,  availKey: C.STORAGE_LOCAL.SRM_MARKET_AVAILABLE,  source: 'srm'  },
+    ];
 
-        const homeJobsArr = marketData?.jobs;
-        const darkJobsArr = darkMarketData?.jobs;
+    async function findCandidates() {
+        const allKeys = MARKETS_FOR_SCAN.flatMap((m) => m.availKey ? [m.dataKey, m.availKey] : [m.dataKey]);
+        const result = await Store.local.get(allKeys);
+
+        // Prune sentAcceptIds for jobs no longer visible on any market.
         if (sentAcceptIds.size > 0) {
-            const cur = new Set([...(homeJobsArr?.map((j) => j.id) || []), ...(darkJobsArr?.map((j) => j.id) || [])]);
-            for (const id of sentAcceptIds.keys()) if (!cur.has(id)) sentAcceptIds.delete(id);
+            const allIds = new Set();
+            for (const m of MARKETS_FOR_SCAN) {
+                const jobs = result[m.dataKey]?.jobs;
+                if (Array.isArray(jobs)) for (const j of jobs) allIds.add(j.id);
+            }
+            for (const id of sentAcceptIds.keys()) if (!allIds.has(id)) sentAcceptIds.delete(id);
         }
 
         const candidates = [];
@@ -296,13 +302,13 @@
                 candidates.push({ ...job, marketId: mid, source, type });
             }
         }
-        if (settings.markets.home && marketData?.jobs) {
-            const mid = marketData.marketId;
-            if (mid) scan(marketData.jobs, mid, 'home');
-        }
-        if (settings.markets.dark && darkMarketAvailable !== false && darkMarketData?.jobs) {
-            const mid = darkMarketData.marketId;
-            if (mid) scan(darkMarketData.jobs, mid, 'dark');
+
+        for (const m of MARKETS_FOR_SCAN) {
+            if (settings.markets[m.key] === false) continue;
+            if (m.availKey && result[m.availKey] === false) continue;
+            const data = result[m.dataKey];
+            if (!data?.jobs || !data.marketId) continue;
+            scan(data.jobs, data.marketId, m.source);
         }
         return candidates;
     }
@@ -341,30 +347,6 @@
     }
     function sortQueueByPriority() { queue.sort((a, b) => jobPriority(b) - jobPriority(a)); }
 
-    async function waitForUserConfirmation(confirmData, timeoutMs = 300000) {
-        const ts = Date.now();
-        await Store.local.set({
-            [C.STORAGE_LOCAL.AUTOJOBS_PENDING_CONFIRM]: { ...confirmData, ts },
-            [C.STORAGE_LOCAL.AUTOJOBS_CONFIRM_RESULT]: null,
-        });
-        return new Promise((resolve) => {
-            const deadline = ts + timeoutMs;
-            async function check() {
-                const cfr = await Store.local.getOne(C.STORAGE_LOCAL.AUTOJOBS_CONFIRM_RESULT);
-                if (cfr && cfr.requestTs === ts) {
-                    await Store.local.remove([C.STORAGE_LOCAL.AUTOJOBS_PENDING_CONFIRM, C.STORAGE_LOCAL.AUTOJOBS_CONFIRM_RESULT]);
-                    resolve(cfr.approved === true);
-                } else if (Date.now() >= deadline) {
-                    await Store.local.remove(C.STORAGE_LOCAL.AUTOJOBS_PENDING_CONFIRM);
-                    resolve(false);
-                } else {
-                    setTimeout(check, 500);
-                }
-            }
-            check();
-        });
-    }
-
     async function executeNextFromQueue() {
         if (queue.length === 0) {
             if (state.status !== 'idle') resetState('queue-empty');
@@ -390,22 +372,6 @@
         saveState();
         pushUserLog(`━━━ ${job.jobName || job.jobType} [${job.jobType}] ━━━`, 'separator');
 
-        if (settings.debugMode && FILE_BASED_TYPES.has(job.jobType)) {
-            pushUserLog('Debug: waiting for confirmation in popup (5 min)…', 'warn');
-            const ok = await waitForUserConfirmation({
-                jobType: job.jobType, jobName: job.jobName, serverName: job.serverName,
-                fileCondition: job.fileCondition, logSeqs: job.logSeqs || null, ips: job.ips || null,
-            });
-            if (!ok) {
-                pushUserLog('Debug: rejected/timeout — drop (60s cooldown)', 'warn');
-                queue.shift(); saveQueue();
-                cooldownUntil = Date.now() + 60000;
-                resetState();
-                return;
-            }
-            pushUserLog('Debug: confirmed — starting flow', 'ok');
-        }
-
         setTimeout(() => dispatchSolveFlow(job), 500);
     }
 
@@ -415,9 +381,10 @@
         const now = Date.now();
         for (const [id, ts] of completedJobIds) if (now - ts > COMPLETED_JOB_TTL_MS) completedJobIds.delete(id);
 
-        const result = await Store.local.get([
-            C.STORAGE_LOCAL.MARKET, C.STORAGE_LOCAL.DARK_MARKET, C.STORAGE_LOCAL.DARK_MARKET_AVAILABLE,
-        ]);
+        // Read the same set of markets findCandidates reads — keeps SRM
+        // resumes wired alongside Home/Dark for free.
+        const allKeys = MARKETS_FOR_SCAN.flatMap((m) => m.availKey ? [m.dataKey, m.availKey] : [m.dataKey]);
+        const result = await Store.local.get(allKeys);
         function collectTaken(data, mid, out) {
             if (!data || !mid) return;
             for (const job of (data.recentJobs || [])) {
@@ -430,10 +397,16 @@
             }
         }
         const taken = [];
-        const m = result[C.STORAGE_LOCAL.MARKET];
-        const dm = result[C.STORAGE_LOCAL.DARK_MARKET];
-        if (settings.markets.home && m?.market?.id) collectTaken(m, m.market.id, taken);
-        if (settings.markets.dark && result[C.STORAGE_LOCAL.DARK_MARKET_AVAILABLE] !== false && dm?.market?.id) collectTaken(dm, dm.market.id, taken);
+        for (const m of MARKETS_FOR_SCAN) {
+            if (settings.markets[m.key] === false) continue;
+            if (m.availKey && result[m.availKey] === false) continue;
+            const data = result[m.dataKey];
+            // Storage shape is flat now: { marketId, jobs, recentJobs, … }.
+            // Old code read data.market.id (legacy single-payload shape) and
+            // silently dropped every Resume — the bug stayed invisible
+            // because findCandidates already had the new path.
+            if (data?.marketId) collectTaken(data, data.marketId, taken);
+        }
 
         let added = 0;
         for (const job of taken) {
@@ -497,11 +470,10 @@
 
         if (Date.now() < cooldownUntil) return;
 
-        if (!settings.debugMode && queue.length > 0 && state.status === 'idle') {
+        if (queue.length > 0 && state.status === 'idle') {
             executeNextFromQueue();
             return;
         }
-        if (settings.debugMode) return;
         if (state.status !== 'idle') return;
         if (Date.now() - lastMarketRefreshAt > MARKET_REFRESH_INTERVAL_MS) {
             requestMarketRefresh('idle-poll');
@@ -522,8 +494,7 @@
                     storageKeys: [
                         C.STORAGE_SYNC.AUTOJOBS_SETTINGS, C.STORAGE_SYNC.SERVER_PRIORITIES,
                         C.STORAGE_LOCAL.AUTOJOBS_STATE, C.STORAGE_LOCAL.AUTOJOBS_QUEUE,
-                        C.STORAGE_LOCAL.AUTOJOBS_LOG, C.STORAGE_LOCAL.BUGGED_JOBS,
-                        C.STORAGE_LOCAL.AUTOJOBS_PENDING_CONFIRM, C.STORAGE_LOCAL.AUTOJOBS_CONFIRM_RESULT,
+                        C.STORAGE_LOCAL.BUGGED_JOBS,
                     ],
                 },
             });
@@ -572,19 +543,16 @@
                 }
             }));
 
-            // Market arrivals → maybe scan / resume
-            this.track(Bus.window.on(C.MSG.WS.MARKET, () => {
-                if (settings.enabled && !settings.debugMode) {
-                    setTimeout(() => tryResumeInProgress(), 500);
-                    if (state.status === 'idle') setTimeout(tick, 2000);
-                }
-            }));
-            this.track(Bus.window.on(C.MSG.WS.DARK_MARKET, () => {
-                if (settings.enabled && !settings.debugMode) {
-                    setTimeout(() => tryResumeInProgress(), 500);
-                    if (state.status === 'idle') setTimeout(tick, 2000);
-                }
-            }));
+            // Market arrivals → maybe scan / resume. One handler per channel —
+            // any of them can carry a TAKEN job that needs resuming.
+            const onMarketArrival = () => {
+                if (!settings.enabled) return;
+                setTimeout(() => tryResumeInProgress(), 500);
+                if (state.status === 'idle') setTimeout(tick, 2000);
+            };
+            this.track(Bus.window.on(C.MSG.WS.MARKET,      onMarketArrival));
+            this.track(Bus.window.on(C.MSG.WS.DARK_MARKET, onMarketArrival));
+            this.track(Bus.window.on(C.MSG.WS.SRM_MARKET,  onMarketArrival));
 
             // WS_JOB_ACCEPTED handler
             this.track(Bus.window.on(C.MSG.WS.JOB_ACCEPTED, (env) => this.onJobAccepted(env)));
@@ -639,6 +607,7 @@
                     Bus.window.post(C.MSG.GAME.OPEN_MARKET_JOBS, {
                         home: settings.markets.home !== false,
                         dark: settings.markets.dark !== false,
+                        srm:  settings.markets.srm  !== false,
                     });
                     requestMarketRefresh('autojobs-toggle-on');
                 }, 800);
@@ -803,7 +772,8 @@
         onJobManagerReady() {
             jobManagerReady = true;
             this.info('job-manager ready');
-            Store.local.remove([C.STORAGE_LOCAL.AUTOJOBS_PENDING_CONFIRM, C.STORAGE_LOCAL.AUTOJOBS_CONFIRM_RESULT]);
+            // Clean up legacy Debug-mode confirm slots if any older build wrote them
+            Store.local.remove(['autoJobsPendingConfirm', 'autoJobsConfirmResult']);
             if (state.status === 'idle' && queue.length > 0) setTimeout(executeNextFromQueue, 1000);
             if (state.status === 'solving' && state.jobId) {
                 setTimeout(() => {

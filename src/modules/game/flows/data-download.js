@@ -58,12 +58,13 @@
 
         let downloaded = 0;
         for (let idx = 0; idx < rows.length && !root.__jobManagerAbort; idx++) {
-            const downloadBtn = rows[idx].querySelector(SAI.SEL.DOWNLOAD_ICON)?.closest('button');
-            if (!downloadBtn) {
+            // Position-based action lookup — Files-tab DownloadIcon attr is
+            // gone post-refactor; clickRowDownload finds the button by its
+            // position in the row's action area.
+            if (!SAI.clickRowDownload(rows[idx])) {
                 mod.warn(`download button not found for file #${idx + 1}`);
                 continue;
             }
-            downloadBtn.click();
             downloaded++;
             await dom.sleep(500);
         }

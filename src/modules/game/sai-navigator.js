@@ -219,63 +219,85 @@
     }
 
     // ─── Row finders (Logs / Files tabs) ──────────────────────────────────
-    function findRowByIconAndName(sai, sectionSel, iconSel, name) {
+    // The May 2026 cor3.gg refactor stripped data-sentry-component attrs from
+    // the FileIcon SVG inside SaiFiles rows, so the icon-driven finder no
+    // longer works there. We now walk the ScrollArea container directly:
+    // each top-level child div IS a row, no matter which tab. This also
+    // works for SaiLogs (where LogIcon DOES still exist), which lets us
+    // collapse the two finders into one structural helper.
+    function rowsInSection(sai, sectionSel) {
         const section = sai.querySelector(sectionSel);
-        if (!section) return null;
+        if (!section) return [];
+        const scroll = section.querySelector(SEL.SCROLL);
+        if (!scroll) return [];
+        // ScrollArea > inner-wrapper > rows…
+        // The wrapper carries dynamic padding for the scrollbar; rows are its
+        // direct children. Fallback to the ScrollArea itself if the layout
+        // is ever simplified.
+        const wrapper = scroll.querySelector('[data-component-name="ScrollArea"] > div')
+                     || scroll.querySelector('[data-component-name="ScrollArea"]')
+                     || scroll;
+        return Array.from(wrapper.children);
+    }
+
+    function rowText(row) {
+        return [...row.querySelectorAll('span')].map((s) => s.textContent.trim()).filter(Boolean).join(' ');
+    }
+
+    function findRowByName(sai, sectionSel, name) {
         const needle = name ? name.toLowerCase() : null;
         if (!needle) return null;
-        for (const icon of section.querySelectorAll(iconSel)) {
-            const row = icon.parentElement?.parentElement;
-            if (!row || row === section || !section.contains(row)) continue;
-            const text = [...row.querySelectorAll('span')].map((s) => s.textContent.trim()).filter(Boolean).join(' ');
-            if (text.toLowerCase().includes(needle)) return row;
+        for (const row of rowsInSection(sai, sectionSel)) {
+            if (rowText(row).toLowerCase().includes(needle)) return row;
         }
         return null;
     }
 
-    function findLogRowByName(sai, logName) {
-        return findRowByIconAndName(sai, SEL.LOGS, SEL.LOG_ICON, logName);
+    function findAllRowsByName(sai, sectionSel, name) {
+        const needle = name ? name.toLowerCase() : null;
+        if (!needle) return [];
+        const out = [];
+        for (const row of rowsInSection(sai, sectionSel)) {
+            if (rowText(row).toLowerCase().includes(needle)) out.push(row);
+        }
+        return out;
     }
 
-    function findAllLogRowsByName(sai, logName) {
-        const section = sai.querySelector(SEL.LOGS);
-        if (!section) return [];
-        const needle = logName ? logName.toLowerCase() : null;
-        if (!needle) return [];
-        const rows = [];
-        for (const icon of section.querySelectorAll(SEL.LOG_ICON)) {
-            const row = icon.parentElement?.parentElement;
-            if (!row || row === section || !section.contains(row)) continue;
-            const text = [...row.querySelectorAll('span')].map((s) => s.textContent.trim()).filter(Boolean).join(' ');
-            if (text.toLowerCase().includes(needle)) rows.push(row);
-        }
-        return rows;
-    }
+    function findLogRowByName(sai, logName)     { return findRowByName(sai, SEL.LOGS, logName); }
+    function findAllLogRowsByName(sai, logName) { return findAllRowsByName(sai, SEL.LOGS, logName); }
+    function findFileRowByName(sai, fileName)   { return findRowByName(sai, SEL.FILES, fileName); }
+    function findAllFileRowsByName(sai, fileName){ return findAllRowsByName(sai, SEL.FILES, fileName); }
 
     function findLogRowByIndex(sai, logSeq) {
-        const section = sai.querySelector(SEL.LOGS);
-        if (!section) return null;
-        const icons = [...section.querySelectorAll(SEL.LOG_ICON)];
-        if (logSeq >= 0 && logSeq < icons.length) return icons[logSeq].parentElement.parentElement;
-        return null;
+        const rows = rowsInSection(sai, SEL.LOGS);
+        return (logSeq >= 0 && logSeq < rows.length) ? rows[logSeq] : null;
     }
 
-    function findFileRowByName(sai, fileName) {
-        return findRowByIconAndName(sai, SEL.FILES, SEL.FILE_ICON, fileName);
+    // Each Logs / Files row ends in an action area with a fixed pair of
+    // buttons: [download, delete]. The legacy code clicked these by hunting
+    // for DownloadIcon / TrashIcon data-sentry-components inside the row;
+    // those attrs survive on Logs but were stripped from Files. Position-
+    // based lookup is stable across both tabs.
+    //
+    // Returns null if the row has no action area (e.g. user scrolled past
+    // the visible window — virtualised list).
+    function rowActionButtons(row) {
+        // Action area is the last child div of the row; it contains 2 <button>s.
+        const action = row?.lastElementChild;
+        const buttons = action ? action.querySelectorAll('button') : [];
+        return buttons.length >= 2 ? { download: buttons[0], remove: buttons[1] } : null;
     }
-
-    function findAllFileRowsByName(sai, fileName) {
-        const section = sai.querySelector(SEL.FILES);
-        if (!section) return [];
-        const rows = [];
-        for (const icon of section.querySelectorAll(SEL.FILE_ICON)) {
-            const nameCell = icon.parentElement;
-            const text = (nameCell.querySelector('span') || {}).textContent || '';
-            if (fileName && text.trim().toLowerCase().includes(fileName.toLowerCase())) {
-                rows.push(nameCell.parentElement);
-            }
-        }
-        return rows;
+    function clickRowDownload(row) {
+        const btns = rowActionButtons(row);
+        if (!btns) return false;
+        dom.clickEl(btns.download);
+        return true;
+    }
+    function clickRowRemove(row) {
+        const btns = rowActionButtons(row);
+        if (!btns) return false;
+        dom.clickEl(btns.remove);
+        return true;
     }
 
     async function findFileInDownloads(fileName, timeoutMs = 5_000) {
@@ -318,12 +340,18 @@
         hasServerAccess,
         addIpViaModal,
         confirmDeleteDialog,
-        findRowByIconAndName,
+        // Generic row helpers (work on Logs and Files tabs alike — see
+        // rowsInSection comment for why this is structural now).
+        rowsInSection,
+        findRowByName,
+        findAllRowsByName,
         findLogRowByName,
         findAllLogRowsByName,
         findLogRowByIndex,
         findFileRowByName,
         findAllFileRowsByName,
         findFileInDownloads,
+        clickRowDownload,
+        clickRowRemove,
     };
 })();

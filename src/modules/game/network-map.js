@@ -130,11 +130,17 @@
         const deadline = Date.now() + timeoutMs;
 
         if (serverName) {
-            const connectBtn = document.querySelector(SEL.CONNECT_BTN);
+            // Try the new onboarding-id selector first, fall back to the legacy
+            // data-sentry-component for older builds. See server-connect.js for
+            // the full reasoning behind the May 2026 cor3.gg refactor.
+            const queryConnect = () =>
+                document.querySelector('[data-onboarding-300-id="ServerInfoPanelConnectButton"]') ||
+                document.querySelector(SEL.CONNECT_BTN);
+            const connectBtn = queryConnect();
             if (connectBtn) {
                 dom.clickEl(connectBtn.closest('button') || connectBtn);
                 while (Date.now() < deadline && !root.__jobManagerAbort) {
-                    if (!document.querySelector(SEL.CONNECT_BTN)) break;
+                    if (!queryConnect()) break;
                     await dom.sleep(400);
                 }
                 await dom.sleep(500);
