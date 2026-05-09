@@ -161,6 +161,69 @@
         return (+m[1]) * 60 + (+m[2]);
     }
 
+    // ─── Overlay: highlight the matched apex + sub-triangle ──────────────
+    // The puzzle isn't accepting our synthetic clicks (yet), so the most
+    // useful thing the solver can do is SHOW WHERE TO CLICK. We append an
+    // SVG overlay <g> inside the WallBoard's render group so it inherits
+    // the same coordinate space as the glyphs themselves.
+    //
+    // Each glyph's bounding triangle path is roughly a 60×54 isoceles
+    // triangle with vertices at (~1.7, 53), (~60.7, 53), (~31.2, 2)
+    // (relative to its translate origin). For a 3-row sub-triangle
+    // (apex + row 1 [Y+54] + row 2 [Y+108]), the bottom-left cell is at
+    // (apex.x - 63, apex.y + 108) and the bottom-right is at
+    // (apex.x + 63, apex.y + 108).
+    const OVERLAY_ID = 'cor3-icewall-overlay';
+    const APEX_TRI_W = 60.7, APEX_TRI_H = 51, APEX_TRI_TOP_X = 31.2, APEX_TRI_TOP_Y = 2;
+
+    function clearOverlay() {
+        const wall = document.querySelector(SEL.WALL);
+        if (!wall) return;
+        const old = wall.querySelector('#' + OVERLAY_ID);
+        if (old) old.remove();
+    }
+
+    function drawOverlay(apex) {
+        const wall = document.querySelector(SEL.WALL);
+        if (!wall) return;
+        clearOverlay();
+        // The board glyphs sit inside <g transform="translate(12, 12)"> —
+        // append the overlay there so coordinates match.
+        const renderG = wall.querySelector(':scope > g') || wall;
+        const ns = 'http://www.w3.org/2000/svg';
+        const overlay = document.createElementNS(ns, 'g');
+        overlay.setAttribute('id', OVERLAY_ID);
+        overlay.setAttribute('pointer-events', 'none');
+
+        // Big outline: 3-row sub-triangle bounds (apex top, bottom-row corners)
+        const topX = apex.x + APEX_TRI_TOP_X;
+        const topY = apex.y + APEX_TRI_TOP_Y;
+        const blX  = apex.x - 63 + 1.7;
+        const blY  = apex.y + 108 + 53;
+        const brX  = apex.x + 63 + APEX_TRI_W;
+        const brY  = blY;
+        const bigPath = document.createElementNS(ns, 'path');
+        bigPath.setAttribute('d', `M ${topX} ${topY} L ${blX} ${blY} L ${brX} ${brY} Z`);
+        bigPath.setAttribute('fill', '#FFB857');
+        bigPath.setAttribute('fill-opacity', '0.10');
+        bigPath.setAttribute('stroke', '#FFB857');
+        bigPath.setAttribute('stroke-width', '3');
+        bigPath.setAttribute('stroke-linejoin', 'round');
+        overlay.appendChild(bigPath);
+
+        // Inner accent: outline the apex cell itself in a brighter shade
+        const apexPath = document.createElementNS(ns, 'path');
+        apexPath.setAttribute('transform', `translate(${apex.x}, ${apex.y})`);
+        apexPath.setAttribute('d', 'M60.6914 53.0305 H1.73242 L31.21 1.99927 Z');
+        apexPath.setAttribute('fill', '#FFB857');
+        apexPath.setAttribute('fill-opacity', '0.45');
+        apexPath.setAttribute('stroke', '#FFFFFF');
+        apexPath.setAttribute('stroke-width', '2');
+        overlay.appendChild(apexPath);
+
+        renderG.appendChild(overlay);
+    }
+
     // ─── Click attempt ───────────────────────────────────────────────────
     /**
      * Best-effort click on the apex cell. We try four escalating tactics:
@@ -229,13 +292,14 @@
      */
     async function solveOnce(mod) {
         const startTime = Date.now();
-        let lastApexKey = null;
+        let lastDrawnApexKey = null;
+        let lastClickedApexKey = null;
 
         while (!root.__iceWallAbort) {
             if (!document.querySelector(SEL.APP)) { mod.info('puzzle window closed'); return true; }
             const c = readCounter();
-            if (c && c.current >= c.total) { mod.info(`solved: ${c.current}/${c.total}`); return true; }
-            if (Date.now() - startTime > 180_000) { mod.warn('safety timeout (180s)'); return false; }
+            if (c && c.current >= c.total) { mod.info(`solved: ${c.current}/${c.total}`); clearOverlay(); return true; }
+            if (Date.now() - startTime > 180_000) { mod.warn('safety timeout (180s)'); clearOverlay(); return false; }
 
             const candidates = findApexCandidates();
             if (candidates.length === 0) {
@@ -251,15 +315,27 @@
 
             const apex = candidates[0];
             const apexKey = `${apex.x},${apex.y}`;
-            // De-dupe — don't re-click the same apex within one round
-            const counterCur = readCounter();
-            if (apexKey === lastApexKey) {
+
+            // Always keep the overlay in sync with the current best guess —
+            // even if we already clicked, the visual indicator helps the
+            // user hand-click while click dispatch is unresolved.
+            if (apexKey !== lastDrawnApexKey) {
+                drawOverlay(apex);
+                lastDrawnApexKey = apexKey;
+                mod.info(`overlay drawn at apex (${apex.x}, ${apex.y})`);
+            }
+
+            // De-dupe clicks within one round (apex stays the same until
+            // the counter ticks; clicking again would be wasted work).
+            if (apexKey === lastClickedApexKey) {
                 await dom.sleep(300);
                 continue;
             }
+
+            const counterCur = readCounter();
             mod.info(`match: apex (${apex.x}, ${apex.y}) — counter ${counterCur?.current}/${counterCur?.total}, allLit=${apex.allLit}`);
             await attemptClick(apex.group, mod);
-            lastApexKey = apexKey;
+            lastClickedApexKey = apexKey;
 
             // Wait up to 4s for the counter to tick over (= server accepted)
             const ticked = await dom.waitFor(() => {
@@ -267,16 +343,19 @@
                 return cc && counterCur && cc.current > counterCur.current ? cc : null;
             }, { timeout: 4000 });
             if (!ticked) {
-                mod.warn(`counter did not advance after click — likely click dispatch was ignored (event.isTrusted check?)`);
-                // Wait a bit so we don't spam re-clicks while the puzzle
-                // potentially regenerates its target.
-                await dom.sleep(2000);
-                lastApexKey = null;
+                mod.warn(`counter did not advance after click — likely click dispatch was ignored (event.isTrusted check?). Hand-click the highlighted apex.`);
+                // Wait longer before another auto-attempt so we don't spam
+                // and so the user has time to hand-click.
+                await dom.sleep(3000);
+                lastClickedApexKey = null;
             } else {
                 mod.info(`counter advanced: ${ticked.current}/${ticked.total}`);
-                lastApexKey = null;
+                lastClickedApexKey = null;
+                lastDrawnApexKey = null;     // force redraw for next round
+                clearOverlay();
             }
         }
+        clearOverlay();
         return false;
     }
 
@@ -302,6 +381,7 @@
             while (!root.__iceWallAbort && document.querySelector(SEL.APP)) {
                 await dom.sleep(400);
             }
+            clearOverlay();
             if (!root.__iceWallAbort) mod.debug('puzzle closed, watching for next one');
         }
 
