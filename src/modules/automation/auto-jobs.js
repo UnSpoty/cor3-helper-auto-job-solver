@@ -16,7 +16,9 @@
     const MSG = C.MSG;
 
     // ─── Constants ────────────────────────────────────────────────────────
-    const BUGGED_JOB_TTL_MS = C.LIMITS.BUGGED_JOB_TTL_MS;
+    const BUGGED_JOB_TTL_MS = C.LIMITS.BUGGED_JOB_TTL_MS;        // 2h, hard bug
+    const SOFT_BUG_TTL_MS   = 15 * 60 * 1000;                    // transient: DOM-not-ready style
+    const COMPLETE_ERR_BUG_TTL_MS = 30 * 60 * 1000;              // server rejected complete
     const STATE_TTL_MS      = C.LIMITS.AUTOJOBS_STATE_TTL_MS;
     const SENT_ACCEPT_TTL_MS = 3 * 60 * 1000;
     const COMPLETED_JOB_TTL_MS = 2 * 60 * 1000;
@@ -79,7 +81,8 @@
     let completingStartedAt = 0;
     let lastMarketRefreshAt = 0;
     let jobManagerReady = false;
-    let modRef = null; // back-ref so helpers can log
+    let modRef = null;             // back-ref so helpers can log
+    let lastEnabledApplied = false; // edge-detection state for handleEnabledChange
 
     // ─── Storage glue ────────────────────────────────────────────────────
     function saveQueue() { Store.local.setOne(C.STORAGE_LOCAL.AUTOJOBS_QUEUE, queue); }
@@ -102,11 +105,27 @@
         saveState();
     }
 
-    function bugJob(jobId, name, reason) {
+    // Bug a job so the scanner skips it. Default TTL is BUGGED_JOB_TTL_MS
+    // (2h) — appropriate for "this job is genuinely broken in a way we can
+    // detect but not fix" cases. Pass a shorter ttlMs for transient failures
+    // (DOM not ready, list virtualised away, server-side state shuffle) —
+    // those are likely to recover and the user shouldn't have to wait 2h to
+    // see the job retried.
+    function bugJob(jobId, name, reason, ttlMs) {
         if (!jobId) return;
-        buggedJobs[jobId] = { ts: Date.now(), name: name || 'Unknown' };
+        const entry = { ts: Date.now(), name: name || 'Unknown' };
+        if (ttlMs && ttlMs !== BUGGED_JOB_TTL_MS) entry.ttl = ttlMs;
+        buggedJobs[jobId] = entry;
         saveBugged();
-        if (modRef) modRef.warn(`bugged ${jobId} "${name || '?'}" — ${reason}`);
+        if (modRef) {
+            const ttlMin = Math.round((ttlMs || BUGGED_JOB_TTL_MS) / 60000);
+            modRef.warn(`bugged ${jobId} "${name || '?'}" — ${reason} (${ttlMin}m)`);
+        }
+    }
+    function isBuggedActive(entry) {
+        if (!entry) return false;
+        const ttl = entry.ttl || BUGGED_JOB_TTL_MS;
+        return (Date.now() - (entry.ts || entry)) < ttl;
     }
 
     function parseKDTimerMs(timerText) {
@@ -285,8 +304,7 @@
                 const sentTs = sentAcceptIds.get(job.id);
                 if (sentTs && Date.now() - sentTs < SENT_ACCEPT_TTL_MS) continue;
                 if (buggedJobs[job.id]) {
-                    const e = buggedJobs[job.id];
-                    if (Date.now() - (e.ts || e) < BUGGED_JOB_TTL_MS) continue;
+                    if (isBuggedActive(buggedJobs[job.id])) continue;
                     delete buggedJobs[job.id];
                 }
                 if (['ip_injection','ip_cleanup','data_upload','log_deletion','log_download','file_elimination','data_download','decrypt_extract'].includes(type)) {
@@ -521,10 +539,9 @@
                 }
             }
             if (local[C.STORAGE_LOCAL.BUGGED_JOBS]) {
-                const now = Date.now();
                 buggedJobs = {};
                 for (const [id, e] of Object.entries(local[C.STORAGE_LOCAL.BUGGED_JOBS])) {
-                    if (now - (e.ts || e) < BUGGED_JOB_TTL_MS) buggedJobs[id] = e;
+                    if (isBuggedActive(e)) buggedJobs[id] = e;
                 }
             }
             if (Array.isArray(local[C.STORAGE_LOCAL.AUTOJOBS_QUEUE])) {
@@ -596,21 +613,29 @@
         }
 
         handleEnabledChange() {
+            // Edge-detect: this gets called multiple times for the same toggle
+            // event (popup writes chrome.storage.sync AND posts a runtime
+            // toggleAutoJobs message — both reach us via separate listeners),
+            // and re-firing the side effects would double the market-refresh
+            // call, race the network-map open, etc. Only act on actual
+            // false → true / true → false transitions.
+            if (settings.enabled === lastEnabledApplied) return;
+            lastEnabledApplied = settings.enabled;
+
             if (settings.enabled) {
                 if (!monitorIntervalId) {
                     monitorIntervalId = setInterval(tick, TICK_INTERVAL_MS);
                     tryResumeInProgress();
                 }
                 Bus.window.post(C.MSG.JOB.AUTOJOBS_ACTIVE_CHANGED, { active: true });
-                setTimeout(() => {
-                    Bus.window.post(C.MSG.GAME.OPEN_NETWORK_MAP, null);
-                    Bus.window.post(C.MSG.GAME.OPEN_MARKET_JOBS, {
-                        home: settings.markets.home !== false,
-                        dark: settings.markets.dark !== false,
-                        srm:  settings.markets.srm  !== false,
-                    });
-                    requestMarketRefresh('autojobs-toggle-on');
-                }, 800);
+                // Removed the autojobs-toggle-on OPEN_NETWORK_MAP / OPEN_MARKET_JOBS
+                // posts — they raced ensureNetworkMapOpen with itself ("Network
+                // Map failed to open in time" 4× on every toggle) and yanked the
+                // user's NM/Market panels open without them asking. Each flow's
+                // findOrOpenSai already opens NM lazily when it actually needs
+                // a server, and market data flows in via WS regardless of
+                // whether the panels are visible.
+                setTimeout(() => requestMarketRefresh('autojobs-toggle-on'), 800);
             } else {
                 if (monitorIntervalId) { clearInterval(monitorIntervalId); monitorIntervalId = null; }
                 queue = []; bulkPendingJobs = []; bulkSentOrder = []; bulkAcceptCount = 0; bulkAcceptTotal = 0;
@@ -687,13 +712,21 @@
 
         onJobCompleted(env) {
             if (state.status !== 'completing') return;
+            const completedJobId = state.jobId;
             if (env.error) {
                 const errMsg = typeof env.error === 'string' ? env.error : (env.error?.message || JSON.stringify(env.error));
                 pushUserLog('Complete failed: ' + errMsg, 'error');
+                if (completedJobId) {
+                    // Server rejected our complete — bug the job so the next
+                    // scan doesn't immediately re-pick it. Use a 30-min TTL
+                    // (not the default 2h) because some "conditions-not-met"
+                    // errors stem from transient state (logSeqs reshuffled
+                    // server-side, server tally lag, etc.) and clear up.
+                    bugJob(completedJobId, state.jobName || state.jobType, `complete failed: ${errMsg}`, COMPLETE_ERR_BUG_TTL_MS);
+                }
             } else {
                 pushUserLog('Job completed!', 'ok');
             }
-            const completedJobId = state.jobId;
             if (completedJobId) completedJobIds.set(completedJobId, Date.now());
             resetState();
             const qi = queue.findIndex((j) => j.jobId === completedJobId);
@@ -718,7 +751,12 @@
             if (state.status !== 'solving') return;
             const timedOut = state.jobId;
             if (timedOut) {
-                bugJob(timedOut, state.jobName || state.jobType || 'Unknown', 'minigame timeout');
+                // Flows that gave up on a probably-recoverable condition (env.transient)
+                // get a 15-min skip; "real" timeouts (decryption blew its 90s
+                // limit, etc.) get the default 2h hard bug.
+                const ttl = env.transient ? SOFT_BUG_TTL_MS : undefined;
+                bugJob(timedOut, state.jobName || state.jobType || 'Unknown',
+                       env.transient ? 'transient timeout' : 'minigame timeout', ttl);
                 pushUserLog(`Timeout: "${state.jobName || state.jobType}" — bugged, skipping`, 'warn');
                 const qi = queue.findIndex((j) => j.jobId === timedOut);
                 if (qi !== -1) { queue.splice(qi, 1); saveQueue(); }

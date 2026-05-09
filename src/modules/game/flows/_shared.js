@@ -21,8 +21,21 @@
     function sendDone(jobId, marketId) {
         Bus.window.post(MSG.JOB.MINIGAME_DONE, { jobId, marketId });
     }
-    function sendTimeout(jobId, marketId) {
-        Bus.window.post(MSG.JOB.MINIGAME_TIMEOUT, { jobId, marketId });
+    /**
+     * Signal the orchestrator that this flow couldn't finish.
+     * @param {string}  jobId
+     * @param {string}  marketId
+     * @param {object} [opts]
+     * @param {boolean}[opts.transient=false] — flow gave up on a probably-
+     *   recoverable condition (DOM not ready yet, list virtualised, server
+     *   lag) rather than a definitive failure. Orchestrator buggs the job
+     *   with a shorter TTL so the user doesn't have to wait 2h to retry
+     *   something that may already work the next time the scan runs.
+     */
+    function sendTimeout(jobId, marketId, opts = {}) {
+        const env = { jobId, marketId };
+        if (opts.transient) env.transient = true;
+        Bus.window.post(MSG.JOB.MINIGAME_TIMEOUT, env);
     }
     function userLog(msg, level = 'info') {
         Bus.window.post(MSG.JOB.LOG, { msg, level });

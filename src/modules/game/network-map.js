@@ -225,7 +225,15 @@
 
             // UI Lock: capture-phase click handler that blocks Close-App on
             // NetworkMapApplication / SAI while a flow runs or auto-jobs is on.
+            //
+            // Only acts on user-driven clicks (e.isTrusted === true). The
+            // flow's own programmatic SAI cleanup (closeAllSaiTerminals) uses
+            // dom.clickEl → dispatchEvent, which produces non-trusted events;
+            // letting those through removes the spurious "Cannot close SAI
+            // terminal — pipeline is running" warning that fired on every
+            // single flow startup.
             const onClick = (e) => {
+                if (!e.isTrusted) return;
                 if (!root.__pipelineLocked && !root.__autoJobsActive) return;
                 const closeBtn = e.target.closest(SEL.CLOSE_APP);
                 if (!closeBtn) return;

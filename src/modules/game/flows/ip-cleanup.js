@@ -17,6 +17,23 @@
         return ipSpan.parentElement?.parentElement || null;
     }
 
+    // Wait up to timeoutMs for a row matching targetIp to render. The Transit
+    // list is React-virtualised and the post-Connect render takes a beat to
+    // settle; the previous one-shot lookup mistakenly aborted jobs whose IPs
+    // hadn't appeared yet, then bugged them for 2h.
+    async function waitForIpRow(sai, targetIp, timeoutMs = 5_000) {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline && !root.__jobManagerAbort) {
+            const scroll = sai.querySelector(SAI.SEL.SCROLL);
+            if (scroll) {
+                const row = findIpRow(scroll, targetIp);
+                if (row) return row;
+            }
+            await dom.sleep(300);
+        }
+        return null;
+    }
+
     async function run(jobId, marketId, serverName, ips, mod) {
         if (flows.isWatching()) return;
         flows.setWatching(true);
@@ -54,12 +71,13 @@
         const missingIps = [];
         for (const ip of ips) {
             if (root.__jobManagerAbort) break;
-            const currentScroll = await dom.waitForEl(() => sai.querySelector(SAI.SEL.SCROLL), { timeout: 5_000 });
-            if (!currentScroll) { mod.warn('scroll lost after delete'); break; }
 
-            const row = findIpRow(currentScroll, ip);
+            // Poll for the row instead of one-shot lookup; the Transit list
+            // is virtualised and the React mount can lag a few hundred ms
+            // behind the connect→tab-switch sequence.
+            const row = await waitForIpRow(sai, ip, 5_000);
             if (!row) {
-                mod.warn(`IP not in list (virtualized?): ${ip}`);
+                mod.warn(`IP not in list after 5s: ${ip}`);
                 missingIps.push(ip);
                 continue;
             }
@@ -78,8 +96,12 @@
         if (root.__jobManagerAbort) { flows.setWatching(false); return; }
 
         if (missingIps.length > 0) {
-            flows.userLog(`IP Cleanup: ${missingIps.length}/${ips.length} target IP(s) not in DOM (${missingIps.join(', ')}) — aborting`, 'error');
-            flows.sendTimeout(jobId, marketId);
+            // Transient: the IPs may simply not be in the rendered slice of a
+            // virtualised list, or server-side state lagged behind. Mark the
+            // timeout transient so the orchestrator buggs it for 15 min, not
+            // 2 h — next scan will likely succeed.
+            flows.userLog(`IP Cleanup: ${missingIps.length}/${ips.length} target IP(s) not in DOM (${missingIps.join(', ')}) — retry later`, 'warn');
+            flows.sendTimeout(jobId, marketId, { transient: true });
         } else if (deletedCount === ips.length) {
             mod.info(`IP Cleanup done — ${deletedCount} IPs deleted`);
             flows.sendDone(jobId, marketId);
