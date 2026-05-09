@@ -575,6 +575,84 @@ call `chrome.tabs.sendMessage` with `testAlarm` / `stopAlarm` types.
 
 ---
 
+## 6a. Market job-board fetch
+
+cor3.gg split the market API in May 2026. The legacy single
+`market.get.options` request used to return `{ market, jobs, recentJobs,
+nextJobsResetAt }` in one response. The new server splits responsibilities:
+
+| Action | What it returns | Used by us? |
+|---|---|---|
+| `market.get.options` | `{ market: { id, marketName, sectionFlags }, reputation, userCredits }` — metadata only | No — UI doesn't need it |
+| `market.get.lots` | `{ lots: [HARDWARE items] }` — buy section | No |
+| `market.get.jobs` | `{ jobs, recentJobs, nextJobsResetAt }` — the job board | **Yes** |
+
+Triggered by:
+
+1. **WS connect** — `__cor3InitialFetch()` calls `__cor3RequestMarket()` then
+   `__cor3RequestDarkMarket()` 1 s later.
+2. **Popup Refresh** — Overview card → `sendToContent('refreshMarket')` →
+   `runtime-bridge` → `MSG.GAME.REFRESH_MARKET` → MAIN → same call.
+3. **Auto-refresh** — `automation/auto-refresh.js` ticks the timer and
+   posts the same envelope when `nextJobsResetAt` crosses zero.
+
+```
+__cor3RequestMarket():
+    sendGetJobs(HOME_MARKET_ID)
+
+__cor3RequestDarkMarket():
+    wsSend network-map.set.endpoint  → DARK_SERVER_ID
+    setTimeout 1500ms:
+        sendGetJobs(DARK_MARKET_ID)
+
+sendGetJobs(marketId):
+    pendingMarketJobsRequests.push({ marketId, sentAt })
+    wsSend market.get.jobs (data: { marketId })
+```
+
+The response carries no `marketId` echo, so attribution is FIFO via
+`pendingMarketJobsRequests`. Entries auto-expire after 30 s to prevent
+queue growth on dropped requests.
+
+```
+on incoming market.get.jobs:
+    pending = popPendingMarketJobsRequest()      // FIFO
+    if pending.marketId === DARK_MARKET_ID:
+        post MSG.WS.DARK_MARKET, { market: { marketId, jobs, recentJobs, nextJobsResetAt } }
+    else:
+        post MSG.WS.MARKET,      { market: { marketId, jobs, recentJobs, nextJobsResetAt } }
+
+on incoming market.get.options or market.get.lots:
+    swallow (we don't fetch these proactively, but the cor3.gg client
+    does when the user opens Market manually — we don't want them
+    polluting marketData)
+```
+
+Storage shape ends up flat:
+
+```
+chrome.storage.local.marketData = {
+    marketId,        // home or dark UUID
+    jobs,            // Job[]
+    recentJobs,      // Job[] (recently-completed)
+    nextJobsResetAt  // ISO timestamp
+}
+```
+
+The legacy `marketData.market.id` path is gone. `auto-jobs.js` now reads
+`marketData.marketId` directly.
+
+UUIDs (static per cor3.gg deployment, captured by inspecting the WS
+frames the site sends when the user opens Market via Network Map):
+
+```
+HOME_MARKET_ID = '019d3ea4-85bd-7389-904d-8f7c85841134'
+DARK_MARKET_ID = '019d3ea4-85bd-7389-904d-908ba9194aa0'
+DARK_SERVER_ID = '019d29c5-4b37-79bf-b23e-304d8ea03c15'   // for set.endpoint
+```
+
+---
+
 ## 7. Auto-refresh markets
 
 Tick every second. When a market's reset timer crosses zero AND the user

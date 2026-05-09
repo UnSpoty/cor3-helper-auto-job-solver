@@ -32,8 +32,7 @@
                     [C.STORAGE_LOCAL.DARK_MARKET_AVAILABLE]: true,
                     [C.STORAGE_LOCAL.DARK_MARKET_AT]: Date.now(),
                 });
-                const jobCount = env.market && env.market.market && Array.isArray(env.market.market.jobs)
-                    ? env.market.market.jobs.length : 0;
+                const jobCount = Array.isArray(env.market?.jobs) ? env.market.jobs.length : 0;
                 this.debug('dark market frame', { jobs: jobCount });
             }));
             this.track(Bus.window.on(C.MSG.WS.DARK_MARKET_UNREACHABLE, (env) => {

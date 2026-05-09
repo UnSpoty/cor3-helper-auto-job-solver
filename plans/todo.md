@@ -10,6 +10,38 @@
 
 ## Recently shipped — May 2026
 
+### Markets — get.jobs split
+
+cor3.gg переехал с одного `market.get.options` на три отдельных action'а:
+`get.options` (только метаданные/репутация), `get.lots` (HARDWARE
+секции «Рынок»), и `get.jobs` (собственно работы). Старый интерсептор
+парсил только `get.options`-овский shape `{market, jobs, recentJobs,
+nextJobsResetAt}` — поскольку `jobs` оттуда исчезли, в `marketData`
+оседал объект без работ, а UI показывал пусто.
+
+Что прибавилось/поменялось:
+
+- **`__cor3RequestMarket()` / `__cor3RequestDarkMarket()`** теперь
+  шлют `market.get.jobs` (а не `get.options`). Dark по-прежнему сначала
+  `network-map.set.endpoint` → через 1500мс `get.jobs`.
+- **FIFO-роутинг ответов** — ответ на `get.jobs` не несёт `marketId`,
+  поэтому `pendingMarketJobsRequests` queue хранит `{marketId, sentAt}`
+  на каждый отправленный запрос; на ответ pop-аем oldest. Auto-expire
+  через 30 сек для дропнутых запросов.
+- **Storage shape поплоский** — `marketData = {marketId, jobs,
+  recentJobs, nextJobsResetAt}`. Старая обёртка `marketData.market`
+  убрана. `auto-jobs.js` обновлён читать `marketData.marketId` (две
+  точки в `findCandidates()`).
+- **`get.options` / `get.lots` ответы swallow-аются** (без forward в
+  `MSG.WS.MARKET`) — сайт сам шлёт их когда юзер открывает Market UI
+  вручную, не хотим засорять storage метаданными которые нам не нужны.
+- **UUID не менялись**, захардкожены в interceptor: `HOME_MARKET_ID`,
+  `DARK_MARKET_ID`, `DARK_SERVER_ID`.
+
+End-to-end проверено: 7 работ распарсились в новый плоский shape,
+`nextJobsResetAt` через ~5h45m, поля `id, name, jobType, conditions,
+rewardCredits, deposit, corporation, relatedServers` присутствуют.
+
 ### Daily Ops solve (one-shot, post-Game-Center move)
 
 cor3.gg переселил Daily Ops из тулбара в окно Game Center, и старый

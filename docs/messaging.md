@@ -21,7 +21,7 @@ modules (auto-jobs, auto-send-merc).
 |---|---|---|---|
 | `WS.EXPEDITIONS` | `COR3_WS_EXPEDITIONS` | `{ expeditions: Expedition[] }` | full expedition list. Empty array used to clear pending decisions on launch. |
 | `WS.DECISIONS` | `COR3_WS_DECISIONS` | `{ decisions: Decision[] }` | derived from `expeditions[].messages[].decisionOptions`. |
-| `WS.MARKET` | `COR3_WS_MARKET` | `{ market: { market: {...}, jobs: Job[], recentJobs: Job[] } }` | home market only (id `019d3ea4-…-8f7c85841134`). |
+| `WS.MARKET` | `COR3_WS_MARKET` | `{ market: { marketId, jobs: Job[], recentJobs: Job[], nextJobsResetAt } }` | home market only (id `019d3ea4-…-8f7c85841134`). Built from the response to `market.get.jobs` (the May 2026 split — see below). |
 | `WS.DARK_MARKET` | `COR3_WS_DARK_MARKET` | `{ market: same shape }` | dark market (id `019d3ea4-…-908ba9194aa0`). |
 | `WS.DARK_MARKET_UNREACHABLE` | `COR3_WS_DARK_MARKET_UNREACHABLE` | `{ error, serverId }` | emitted when `network-map.set.endpoint` returns `no-path-to-server`. Sets `darkMarketAvailable=false`; also sets `window.__serverPathFailed = Date.now()` for connect-step fast-fail. |
 | `WS.STASH` | `COR3_WS_STASH` | `{ stash: { items, currentUsage, maxCapacity } }` | inventory snapshot. |
@@ -172,7 +172,7 @@ or both.
 |---|---|---|---|
 | `expeditionsData` | `Expedition[]` | `data/expeditions.js` | + `expeditionsDataUpdatedAt: number`. |
 | `expeditionDecisions` | `Decision[]` | `data/decisions.js` | full replace on every WS push (server sends empty array on launch). |
-| `marketData` | `{market, jobs, recentJobs, nextJobsResetAt}` | `data/market.js` | + `marketDataUpdatedAt`. |
+| `marketData` | `{marketId, jobs, recentJobs, nextJobsResetAt}` | `data/market.js` | + `marketDataUpdatedAt`. **Flat shape** — the legacy `data.market.{...}` wrapper is gone since cor3.gg split the API into `get.options` (metadata) and `get.jobs` (board); we only fetch `get.jobs`. |
 | `darkMarketData` | same | `data/dark-market.js` | + `darkMarketDataUpdatedAt`. |
 | `darkMarketAvailable` | `boolean` | `data/dark-market.js` | flips false on `WS.DARK_MARKET_UNREACHABLE`. |
 | `stashData` | `{items, currentUsage, maxCapacity}` | `data/stash.js` | + `stashDataUpdatedAt`. |

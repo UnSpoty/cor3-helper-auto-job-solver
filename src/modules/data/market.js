@@ -26,8 +26,9 @@
                     [C.STORAGE_LOCAL.MARKET]: env.market,
                     [C.STORAGE_LOCAL.MARKET_AT]: Date.now(),
                 });
-                const jobCount = env.market && env.market.market && Array.isArray(env.market.market.jobs)
-                    ? env.market.market.jobs.length : 0;
+                // env.market is now the flat shape from get.jobs:
+                // { marketId, jobs, recentJobs, nextJobsResetAt }
+                const jobCount = Array.isArray(env.market?.jobs) ? env.market.jobs.length : 0;
                 this.debug('market frame', { jobs: jobCount });
             }));
         }

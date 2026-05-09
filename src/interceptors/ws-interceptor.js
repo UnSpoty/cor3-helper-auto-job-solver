@@ -284,17 +284,34 @@
                 post(MSG.WS.JOB_COMPLETED, { data: payload.data, error: payload.error || null });
                 return;
             }
-            if (payload.data) {
-                const mkt = payload.data.market;
-                if (mkt && mkt.marketName) {
-                    if (mkt.id === '019d3ea4-85bd-7389-904d-908ba9194aa0') {
-                        post(MSG.WS.DARK_MARKET, { market: payload.data });
-                    } else {
-                        post(MSG.WS.MARKET, { market: payload.data });
-                        root.__cor3LastMarketId = mkt.id;
-                    }
+            // get.jobs (new endpoint, replaces get.options for fetching the
+            // job board). Response shape: payload.data = { jobs, recentJobs,
+            // nextJobsResetAt } — the old payload.data.market wrapper is
+            // gone. We attribute the response to home/dark by FIFO-popping
+            // our pending-request queue (responses come in send-order on
+            // the same socket).
+            if (action === 'get.jobs' && payload.data) {
+                const pending = popPendingMarketJobsRequest();
+                const marketId = pending?.marketId;
+                const out = {
+                    marketId,
+                    jobs: Array.isArray(payload.data.jobs) ? payload.data.jobs : [],
+                    recentJobs: Array.isArray(payload.data.recentJobs) ? payload.data.recentJobs : [],
+                    nextJobsResetAt: payload.data.nextJobsResetAt || null,
+                };
+                if (marketId === DARK_MARKET_ID) {
+                    post(MSG.WS.DARK_MARKET, { market: out });
+                } else {
+                    post(MSG.WS.MARKET, { market: out });
+                    root.__cor3LastMarketId = marketId || HOME_MARKET_ID;
                 }
+                return;
             }
+            // get.options still arrives (cor3.gg sends it alongside get.jobs
+            // when the user opens the market UI manually) — it carries
+            // marketName, reputation, userCredits. We don't currently use
+            // those, so swallow without forwarding to keep storage clean.
+            if (action === 'get.options') return;
             return;
         }
 
@@ -494,16 +511,40 @@
         return true;
     };
 
+    // Market UUIDs are static per cor3.gg deployment. Captured by inspecting
+    // the WS frames the site sends when the user opens Market manually.
+    const HOME_MARKET_ID = '019d3ea4-85bd-7389-904d-8f7c85841134';
+    const DARK_MARKET_ID = '019d3ea4-85bd-7389-904d-908ba9194aa0';
+    const DARK_SERVER_ID = '019d29c5-4b37-79bf-b23e-304d8ea03c15';
+
+    // get.jobs response carries no marketId echo, so we FIFO-attribute by
+    // request order. Entries auto-expire after 30 s to prevent the queue
+    // from growing if a request gets dropped.
+    const pendingMarketJobsRequests = [];
+    function pushPendingMarketJobsRequest(marketId) {
+        pendingMarketJobsRequests.push({ marketId, sentAt: Date.now() });
+    }
+    function popPendingMarketJobsRequest() {
+        const cutoff = Date.now() - 30_000;
+        while (pendingMarketJobsRequests.length && pendingMarketJobsRequests[0].sentAt < cutoff) {
+            pendingMarketJobsRequests.shift();
+        }
+        return pendingMarketJobsRequests.shift() || null;
+    }
+
+    function sendGetJobs(marketId) {
+        pushPendingMarketJobsRequest(marketId);
+        return wsSend('42["event",{"event":{"name":"market","action":"get.jobs"},"data":{"marketId":"' + marketId + '"}}]');
+    }
+
     root.__cor3RequestMarket = function () {
-        wsSend('42["event",{"event":{"name":"market","action":"get.options"},"data":{"marketId":"019d3ea4-85bd-7389-904d-8f7c85841134"}}]');
+        sendGetJobs(HOME_MARKET_ID);
         return true;
     };
 
     root.__cor3RequestDarkMarket = function () {
-        wsSend('42["event",{"event":{"name":"network-map","action":"set.endpoint"},"data":{"serverId":"019d29c5-4b37-79bf-b23e-304d8ea03c15"}}]');
-        setTimeout(() => {
-            wsSend('42["event",{"event":{"name":"market","action":"get.options"},"data":{"marketId":"019d3ea4-85bd-7389-904d-908ba9194aa0"}}]');
-        }, 1500);
+        wsSend('42["event",{"event":{"name":"network-map","action":"set.endpoint"},"data":{"serverId":"' + DARK_SERVER_ID + '"}}]');
+        setTimeout(() => sendGetJobs(DARK_MARKET_ID), 1500);
         return true;
     };
 

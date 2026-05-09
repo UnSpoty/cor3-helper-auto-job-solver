@@ -291,11 +291,11 @@
             }
         }
         if (settings.markets.home && marketData?.jobs) {
-            const mid = marketData.market && marketData.market.id;
+            const mid = marketData.marketId;
             if (mid) scan(marketData.jobs, mid, 'home');
         }
         if (settings.markets.dark && darkMarketAvailable !== false && darkMarketData?.jobs) {
-            const mid = darkMarketData.market && darkMarketData.market.id;
+            const mid = darkMarketData.marketId;
             if (mid) scan(darkMarketData.jobs, mid, 'dark');
         }
         return candidates;
