@@ -60,6 +60,8 @@
             OPEN_MARKET_JOBS: 'COR3_OPEN_MARKET_JOBS',
             REQUEST_NM_SERVERS: 'COR3_REQUEST_NM_SERVERS',
             NM_SERVERS: 'COR3_NM_SERVERS',
+            REQUEST_NM_MAP: 'COR3_REQUEST_NM_MAP',
+            NM_GRAPH: 'COR3_NM_GRAPH',
         },
 
         // Solver lifecycle (MAIN ↔ isolated)
@@ -141,7 +143,9 @@
         LAUNCH_ERROR: 'expeditionLaunchError',
 
         // Network Map runtime
-        NM_SERVERS: 'networkMapServers',
+        NM_SERVERS: 'networkMapServers',  // legacy: name array (DOM-scraped)
+        NM_GRAPH:   'networkMapGraph',    // canonical: { home, currentEndpointId, servers:[{id,name,depth,faction,…}] }
+                                          //              from network-map.get.map WS response (BFS-depth)
 
         // Auto-jobs runtime
         AUTOJOBS_STATE: 'autoJobsState',

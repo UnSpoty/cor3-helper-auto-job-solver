@@ -121,7 +121,7 @@
         }
     }
 
-    function renderServerPriorities(host, nmServers, priorities) {
+    function renderServerPriorities(host, nmGraph, priorities) {
         host.innerHTML = '';
         const wrap = document.createElement('details');
         wrap.className = 'collapsible';
@@ -133,29 +133,46 @@
         wrap.appendChild(summary);
 
         const card = el('div', 'card');
-        card.appendChild(el('div', 'muted xs', 'Toggle Skip on a server to keep auto-jobs from accepting jobs that target it. Useful for hub servers — a K/D timer on a hub blocks the path to everything downstream of it.'));
+        card.appendChild(el('div', 'muted xs',
+            'Each server shows its BFS depth (hops from Home). Auto-jobs runs deeper servers first by default — keeps K/D timers off the hubs. Toggle Skip to refuse jobs for a server entirely.'));
+
+        const allServers = (nmGraph && Array.isArray(nmGraph.servers)) ? nmGraph.servers : [];
+        const targetable = allServers.filter((s) => s.name && s.name !== nmGraph?.home);
 
         const rescanRow = el('div', 'row gap-sm mt-sm');
-        const rescanBtn = el('button', 'btn small', 'Rescan');
+        const rescanBtn = el('button', 'btn small', 'Refresh graph');
         rescanBtn.addEventListener('click', async () => {
             const tab = await getCor3Tab();
             if (tab) chrome.tabs.sendMessage(tab.id, { action: 'rescanNetworkMap' }).catch(() => {});
         });
         rescanRow.appendChild(rescanBtn);
-        rescanRow.appendChild(el('span', 'muted xs', `${(nmServers || []).length} known`));
+        rescanRow.appendChild(el('span', 'muted xs', `${targetable.length} known${nmGraph?.home ? ` · home: ${escape(nmGraph.home)}` : ''}`));
         card.appendChild(rescanRow);
 
         const list = el('div', 'mt-sm');
-        if (!nmServers || nmServers.length === 0) {
-            list.appendChild(el('div', 'muted sm', 'No servers known yet — click Rescan after opening Network Map at least once.'));
+        if (targetable.length === 0) {
+            list.appendChild(el('div', 'muted sm', 'No graph data yet — click Refresh graph (the extension fetches it automatically on connect; this button is for manual re-sync after maintenance).'));
         } else {
-            for (const name of [...nmServers].sort()) {
-                const skipped = priorities[name] === 'skip';
+            // Sort by depth ascending (shallowest at the top of the visible
+            // list = closest to home), with name as tiebreaker. This is a
+            // display order; the runtime priority is opposite (deepest first).
+            const sorted = [...targetable].sort((a, b) => {
+                const da = Number.isFinite(a.depth) ? a.depth : 999;
+                const db = Number.isFinite(b.depth) ? b.depth : 999;
+                if (da !== db) return da - db;
+                return (a.name || '').localeCompare(b.name || '');
+            });
+            for (const s of sorted) {
+                const skipped = priorities[s.name] === 'skip';
+                const depthBadge = Number.isFinite(s.depth) ? `<span class="pill idle" title="BFS depth from Home">${s.depth}</span>` : `<span class="pill warn" title="No path from Home — ${escape(s.faction || '')}">∞</span>`;
                 const row = el('div', 'card-row mt-sm');
                 row.innerHTML = `
-                    <span class="${skipped ? 'muted sm' : 'sm'}">${escape(name)}</span>
+                    <span class="row gap-sm">
+                        ${depthBadge}
+                        <span class="${skipped ? 'muted sm' : 'sm'}">${escape(s.name)}</span>
+                    </span>
                     <label class="switch" title="Skip — never accept jobs for this server">
-                        <input type="checkbox" data-server="${escape(name)}" ${skipped ? 'checked' : ''}>
+                        <input type="checkbox" data-server="${escape(s.name)}" ${skipped ? 'checked' : ''}>
                         <span class="switch-slider"></span>
                     </label>
                 `;
@@ -176,12 +193,12 @@
     }
 
     async function render(container) {
-        const [settings, state, queue, bugged, nmServers, priorities] = await Promise.all([
+        const [settings, state, queue, bugged, nmGraph, priorities] = await Promise.all([
             Store.sync.getOne(C.STORAGE_SYNC.AUTOJOBS_SETTINGS, DEFAULT_SETTINGS),
             Store.local.getOne(C.STORAGE_LOCAL.AUTOJOBS_STATE, { status: 'idle' }),
             Store.local.getOne(C.STORAGE_LOCAL.AUTOJOBS_QUEUE, []),
             Store.local.getOne(C.STORAGE_LOCAL.BUGGED_JOBS, {}),
-            Store.local.getOne(C.STORAGE_LOCAL.NM_SERVERS, []),
+            Store.local.getOne(C.STORAGE_LOCAL.NM_GRAPH, null),
             Store.sync.getOne(C.STORAGE_SYNC.SERVER_PRIORITIES, {}),
         ]);
 
@@ -203,7 +220,7 @@
         renderHeader(headerHost, settings, state);
         renderSources(sourcesHost, settings);
         renderQueue(queueHost, queue, bugged);
-        renderServerPriorities(prioHost, nmServers, priorities || {});
+        renderServerPriorities(prioHost, nmGraph, priorities || {});
 
         // Activity log — Logger ring filtered to module='auto-jobs'. The
         // logViewer subscribes to cor3_logs storage changes itself, so we
@@ -226,7 +243,7 @@
                 if (changes[C.STORAGE_LOCAL.AUTOJOBS_STATE] ||
                     changes[C.STORAGE_LOCAL.AUTOJOBS_QUEUE] ||
                     changes[C.STORAGE_LOCAL.BUGGED_JOBS] ||
-                    changes[C.STORAGE_LOCAL.NM_SERVERS]) render(container);
+                    changes[C.STORAGE_LOCAL.NM_GRAPH]) render(container);
             });
             unsub2 = Store.sync.onChanged((changes) => {
                 if (!container.classList.contains('active')) return;

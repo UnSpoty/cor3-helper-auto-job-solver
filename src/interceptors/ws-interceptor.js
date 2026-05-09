@@ -391,8 +391,62 @@
                     post('COR3_WS_ENDPOINT_RESULT', { success: !payload.error, data: payload.data });
                 }
             }
+            // get.map: full topology (servers + adjacency). cor3.gg fires it
+            // when the user opens the Network Map panel; we also send it
+            // ourselves on initial fetch so the depth-priority feature works
+            // before the user has opened NM. We BFS from HOME to attach a
+            // depth to each server, then post a flat NM_GRAPH envelope to
+            // isolated for storage. Used by auto-jobs to deprioritise hub
+            // servers (low depth = closer to home = K/D'ing it cuts more).
+            if (payload.event.action === 'get.map' && payload.data) {
+                const enriched = computeNmGraph(payload.data);
+                if (enriched) post(MSG.GAME.NM_GRAPH, enriched);
+            }
             return;
         }
+    }
+
+    function computeNmGraph(data) {
+        const servers = Array.isArray(data.servers) ? data.servers : null;
+        const conns   = Array.isArray(data.connections) ? data.connections : [];
+        if (!servers) return null;
+
+        const adj = {};
+        for (const c of conns) {
+            if (c.isHidden) continue;
+            const a = c.serverA, b = c.serverB;
+            if (!a || !b) continue;
+            (adj[a] = adj[a] || []).push(b);
+            (adj[b] = adj[b] || []).push(a);
+        }
+        // HOME marker: serverTypeName === 'Home' OR faction === 'HOME'.
+        const home = servers.find((s) => s && (s.serverTypeName === 'Home' || s.faction === 'HOME'));
+        const depths = {};
+        if (home) {
+            depths[home.id] = 0;
+            const q = [home.id];
+            while (q.length) {
+                const cur = q.shift();
+                for (const n of (adj[cur] || [])) {
+                    if (depths[n] === undefined) { depths[n] = depths[cur] + 1; q.push(n); }
+                }
+            }
+        }
+        return {
+            home: home ? home.serverName : null,
+            homeId: home ? home.id : null,
+            currentEndpointId: data.currentEndpointId || null,
+            servers: servers.map((s) => ({
+                id: s.id,
+                name: s.serverName,
+                depth: depths[s.id] ?? null,
+                faction: s.faction,
+                cluster: s.serverCluster,
+                marketId: s.marketId || null,
+                canSetEndpoint: !!s.canSetEndpoint,
+                isInMaintenance: !!s.isInMaintenance,
+            })),
+        };
     }
 
     function cascadeMercConfigure() {
@@ -662,6 +716,14 @@
         return wsSend('42["event",{"event":{"name":"network-map","action":"set.endpoint"},"data":{"serverId":"' + serverId + '"}}]');
     }
 
+    root.__cor3RequestNetworkMap = function () {
+        // Returns the full topology { servers, connections, currentEndpointId,
+        // hackTools }. Doesn't change endpoint or open any UI panel — pure
+        // data fetch. Response is BFS-processed in handleWsMessage and
+        // posted as MSG.GAME.NM_GRAPH.
+        return wsSend('42["event",{"event":{"name":"network-map","action":"get.map"}}]');
+    };
+
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
     // Remote markets (Dark, SRM7-M) require the user's current network-map
@@ -729,6 +791,7 @@
         initialFetchDone = true;
         console.log('[COR3] Running initial data fetch');
         post('COR3_FETCH_DAILY_OPS', null); // legacy daily-ops fetch trigger
+        root.__cor3RequestNetworkMap();      // build the depth graph (no UI side effects)
         root.__cor3RequestMarket();
         // Dark and SRM both go through inflightRemoteFetch which serialises
         // them — kicking both off back-to-back is safe; the second waits for
@@ -799,6 +862,7 @@
         'COR3_REQUEST_MARKET': () => root.__cor3RequestMarket(),
         'COR3_REQUEST_DARK_MARKET': () => root.__cor3RequestDarkMarket(),
         'COR3_REQUEST_SRM_MARKET': () => root.__cor3RequestSrmMarket(),
+        [MSG.GAME.REQUEST_NM_MAP]: () => root.__cor3RequestNetworkMap(),
         [MSG.GAME.REFRESH_MARKET]: () => root.__cor3RefreshMarket(),
         [MSG.GAME.REFRESH_DARK_MARKET]: () => root.__cor3RefreshDarkMarket(),
         [MSG.GAME.REFRESH_SRM_MARKET]: () => root.__cor3RefreshSrmMarket(),

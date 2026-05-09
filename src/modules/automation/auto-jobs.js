@@ -62,6 +62,11 @@
     // job-types whitelist, not a global pause/confirm — too easy to forget on).
     let settings = { enabled: false, markets: { home: true, dark: true, srm: true }, enabledJobTypes: {} };
     let serverPriorities = {};
+    // Map serverName → depth (BFS hops from HOME). Filled when WS network-map.
+    // get.map response arrives via onNmGraph. Deeper = higher priority in
+    // jobPriority — leaves first, hubs last, so K/D timers don't stack on
+    // path-critical servers.
+    const nmDepths = new Map();
     let state = { ...IDLE_STATE };
     let queue = [];
     let buggedJobs = {};
@@ -365,9 +370,19 @@
 
     // ─── Execute ─────────────────────────────────────────────────────────
     function jobPriority(job) {
+        // file_decryption jobs (no server, just a file in Downloads) and any
+        // jobs lacking a serverName always run first — nothing they do can
+        // affect the network-map K/D state.
         if (!job.serverName || job.jobType === 'file_decryption') return Number.POSITIVE_INFINITY;
+        // Manual numeric override wins. ('skip' is filtered upstream and
+        // shouldn't reach here, but if it does, treat as far below default.)
         const p = serverPriorities[job.serverName];
-        return Number.isFinite(p) ? p : 0;
+        if (Number.isFinite(p)) return p;
+        // Default: BFS depth from HOME. Deeper = higher priority so we drain
+        // leaf servers before stacking K/D timers on the hubs they depend on.
+        // Falls back to 0 for any server we don't have a depth for yet.
+        const d = nmDepths.get(job.serverName);
+        return Number.isFinite(d) ? d : 0;
     }
     function sortQueueByPriority() { queue.sort((a, b) => jobPriority(b) - jobPriority(a)); }
 
@@ -558,6 +573,14 @@
             if (Array.isArray(local[C.STORAGE_LOCAL.AUTOJOBS_QUEUE])) {
                 queue = local[C.STORAGE_LOCAL.AUTOJOBS_QUEUE].filter((j) => !buggedJobs[j.jobId]);
             }
+            // Seed nmDepths from persisted graph so depth-priority sort works
+            // before the first WS get.map response after reload.
+            const persistedGraph = await Store.local.getOne(C.STORAGE_LOCAL.NM_GRAPH, null);
+            if (persistedGraph && Array.isArray(persistedGraph.servers)) {
+                for (const s of persistedGraph.servers) {
+                    if (s.name && Number.isFinite(s.depth)) nmDepths.set(s.name, s.depth);
+                }
+            }
         }
 
         async start() {
@@ -591,6 +614,7 @@
             this.track(Bus.window.on(C.MSG.JOB.KD_DETECTED, (env) => this.onKdDetected(env)));
             this.track(Bus.window.on(C.MSG.JOB.SERVER_UNREACHABLE, (env) => this.onServerUnreachable(env)));
             this.track(Bus.window.on(C.MSG.GAME.NM_SERVERS, (env) => this.onNmServers(env)));
+            this.track(Bus.window.on(C.MSG.GAME.NM_GRAPH,   (env) => this.onNmGraph(env)));
             this.track(Bus.window.on('COR3_JOB_MANAGER_READY', () => this.onJobManagerReady()));
             this.track(Bus.window.on(C.MSG.JOB.LOG, (env) => pushUserLog(env.msg, env.level || 'info')));
 
@@ -604,7 +628,11 @@
                 return { success: true };
             }));
             this.track(Bus.runtime.on('rescanNetworkMap', () => {
-                Bus.window.post(C.MSG.GAME.REQUEST_NM_SERVERS, null);
+                // Prefer the WS data path: no UI side-effects (doesn't open NM
+                // panel for the user, doesn't hijack focus). The legacy DOM
+                // scrape (REQUEST_NM_SERVERS) still works as a fallback for
+                // older builds, but we don't trigger it from the popup anymore.
+                Bus.window.post(C.MSG.GAME.REQUEST_NM_MAP, null);
                 return { success: true };
             }));
             this.track(Bus.runtime.on('clearBuggedJobs', () => {
@@ -816,6 +844,27 @@
                 await Store.local.setOne(C.STORAGE_LOCAL.NM_SERVERS, merged);
                 this.debug(`nm servers updated: ${merged.length}`);
             }
+        }
+
+        // Canonical topology arriving from WS network-map.get.map.
+        // Replaces nmDepths in memory + persists the full graph to storage
+        // so the popup can render depth badges without re-querying. Also
+        // mirrors server names into NM_SERVERS for legacy callers (timer
+        // labels, places that still expect a flat name array).
+        async onNmGraph(env) {
+            if (!env || !Array.isArray(env.servers)) return;
+            nmDepths.clear();
+            for (const s of env.servers) {
+                if (s.name && Number.isFinite(s.depth)) nmDepths.set(s.name, s.depth);
+            }
+            await Store.local.set({
+                [C.STORAGE_LOCAL.NM_GRAPH]: env,
+                [C.STORAGE_LOCAL.NM_SERVERS]: env.servers
+                    .map((s) => s.name)
+                    .filter((n) => n && n !== env.home)  // exclude HOME from the targetable list
+                    .sort(),
+            });
+            this.debug(`nm graph updated: ${env.servers.length} servers, max depth ${Math.max(0, ...env.servers.map((s) => s.depth || 0))}`);
         }
 
         onJobManagerReady() {
