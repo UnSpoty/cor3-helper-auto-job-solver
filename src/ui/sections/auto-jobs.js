@@ -121,6 +121,132 @@
         }
     }
 
+    // Mirror of auto-jobs.js JOB_TYPE_KEYWORDS so the UI can label rows
+    // without round-tripping to the orchestrator. Keep in sync; if a new job
+    // type is added, copy it here too — small enough that DRYing this through
+    // a shared module isn't worth the IIFE-load-order complication.
+    const UI_JOB_TYPE_KEYWORDS = {
+        file_decryption:  ['file decryption',   'file_decryption'],
+        ip_cleanup:       ['ip cleanup',         'ip_cleanup'],
+        ip_injection:     ['ip injection',       'ip_injection'],
+        log_deletion:     ['log deletion',       'log_deletion'],
+        log_download:     ['log download',       'log_download'],
+        file_elimination: ['file elimination',   'file_elimination'],
+        data_download:    ['data download',      'data_download'],
+        data_upload:      ['data upload',        'data_upload'],
+        decrypt_extract:  ['decrypt & extract',  'decrypt and extract', 'decrypt_extract'],
+    };
+    function detectJobType(job) {
+        const name = (job.name || job.category || '').toLowerCase();
+        for (const [type, keywords] of Object.entries(UI_JOB_TYPE_KEYWORDS)) {
+            if (keywords.some((kw) => name.includes(kw))) return type;
+        }
+        return null;
+    }
+    function jobServer(job) {
+        const rs = job.relatedServers;
+        if (Array.isArray(rs) && rs[0]) return rs[0].serverName || rs[0].name || null;
+        if (typeof rs === 'string') return rs;
+        return null;
+    }
+
+    // Build a single available-jobs row. State chips:
+    //   • "queued" — already accepted into autoJobsQueue
+    //   • "running" — current state.jobId
+    //   • "skip" — server is in serverPriorities[name]==='skip'
+    //   • "bug" — job id in buggedJobs (still TTL'd)
+    //   • "off" — market disabled OR job-type disabled
+    function jobRow(job, source, ctx) {
+        const type = detectJobType(job);
+        const server = jobServer(job);
+        const depth = (server && ctx.nmDepths[server] != null) ? ctx.nmDepths[server] : null;
+
+        const tags = [];
+        let dim = false;
+        if (!ctx.marketEnabled) { tags.push('off'); dim = true; }
+        if (type && ctx.enabledJobTypes && ctx.enabledJobTypes[type] === false) { tags.push('off'); dim = true; }
+        if (server && ctx.priorities[server] === 'skip') { tags.push('skip'); dim = true; }
+        if (ctx.buggedJobs[job.id]) { tags.push('bug'); dim = true; }
+        if (ctx.queuedIds.has(job.id)) tags.push('queued');
+        if (ctx.runningJobId === job.id) tags.push('running');
+
+        const depthBadge = (depth != null)
+            ? `<span class="pill idle" title="BFS depth from Home">${depth}</span>`
+            : (server ? `<span class="pill warn" title="Off-tree (separate sub-network)">∞</span>` : '');
+        const reward = Number.isFinite(job.rewardCredits) ? `${job.rewardCredits} CR` : '';
+        const tagHtml = tags.length
+            ? '<span class="row gap-sm">' + tags.map((t) => `<span class="pill ${t === 'running' ? 'active' : t === 'queued' ? 'idle' : 'warn'}">${t}</span>`).join('') + '</span>'
+            : '';
+
+        const row = el('div', 'job-card' + (dim ? ' disabled' : ''));
+        row.innerHTML = `
+            <div class="row gap-sm">
+                ${depthBadge}
+                <span class="job-name">${escape(job.name || 'Unknown')}</span>
+                ${tagHtml}
+            </div>
+            <div class="job-meta">${server ? escape(server) : '—'}${reward ? ' · ' + escape(reward) : ''} · <span class="muted xs">${escape(source)}</span></div>
+        `;
+        return row;
+    }
+
+    function renderAvailableJobs(host, marketsData, settings, priorities, buggedJobs, queue, state, nmGraph) {
+        host.innerHTML = '';
+        // marketsData = [{ key, label, data, enabled }, ...]
+        const totalShown = marketsData.reduce((n, m) => n + (m.data?.jobs?.length || 0), 0);
+        host.appendChild(el('div', 'section-title', `Available jobs (${totalShown})`));
+        if (totalShown === 0) {
+            host.appendChild(el('div', 'empty', 'No jobs visible on any market.'));
+            return;
+        }
+
+        // Lookup tables shared across rows
+        const nmDepths = {};
+        if (nmGraph && Array.isArray(nmGraph.servers)) {
+            for (const s of nmGraph.servers) {
+                if (s.name && Number.isFinite(s.depth)) nmDepths[s.name] = s.depth;
+            }
+        }
+        const queuedIds = new Set((queue || []).map((j) => j.jobId));
+        const runningJobId = state?.jobId || null;
+        const ctx = {
+            nmDepths,
+            priorities: priorities || {},
+            buggedJobs: buggedJobs || {},
+            queuedIds,
+            runningJobId,
+            enabledJobTypes: settings?.enabledJobTypes || {},
+            marketEnabled: true,  // overwritten per market below
+        };
+
+        for (const m of marketsData) {
+            const jobs = m.data?.jobs || [];
+            if (jobs.length === 0) continue;
+
+            const card = el('div', 'card' + (m.enabled ? '' : ' disabled'));
+            const header = el('div', 'card-row');
+            header.innerHTML = `
+                <span class="card-label">${escape(m.label)}${m.enabled ? '' : ' · disabled'}</span>
+                <span class="muted sm">${jobs.length} job(s)</span>
+            `;
+            card.appendChild(header);
+
+            const marketCtx = { ...ctx, marketEnabled: m.enabled };
+            // Sort within a market: queued first, then by depth descending
+            // (deepest first — matches orchestrator's jobPriority ordering).
+            const sorted = [...jobs].sort((a, b) => {
+                const aQ = queuedIds.has(a.id) ? 1 : 0;
+                const bQ = queuedIds.has(b.id) ? 1 : 0;
+                if (aQ !== bQ) return bQ - aQ;
+                const da = nmDepths[jobServer(a)] ?? -1;
+                const db = nmDepths[jobServer(b)] ?? -1;
+                return db - da;
+            });
+            for (const job of sorted) card.appendChild(jobRow(job, m.label, marketCtx));
+            host.appendChild(card);
+        }
+    }
+
     function renderServerPriorities(host, nmGraph, priorities) {
         host.innerHTML = '';
         const wrap = document.createElement('details');
@@ -193,13 +319,16 @@
     }
 
     async function render(container) {
-        const [settings, state, queue, bugged, nmGraph, priorities] = await Promise.all([
+        const [settings, state, queue, bugged, nmGraph, priorities, home, dark, srm] = await Promise.all([
             Store.sync.getOne(C.STORAGE_SYNC.AUTOJOBS_SETTINGS, DEFAULT_SETTINGS),
             Store.local.getOne(C.STORAGE_LOCAL.AUTOJOBS_STATE, { status: 'idle' }),
             Store.local.getOne(C.STORAGE_LOCAL.AUTOJOBS_QUEUE, []),
             Store.local.getOne(C.STORAGE_LOCAL.BUGGED_JOBS, {}),
             Store.local.getOne(C.STORAGE_LOCAL.NM_GRAPH, null),
             Store.sync.getOne(C.STORAGE_SYNC.SERVER_PRIORITIES, {}),
+            Store.local.getOne(C.STORAGE_LOCAL.MARKET, null),
+            Store.local.getOne(C.STORAGE_LOCAL.DARK_MARKET, null),
+            Store.local.getOne(C.STORAGE_LOCAL.SRM_MARKET, null),
         ]);
 
         // Tear down a previous logViewer if we're re-rendering — its storage
@@ -211,15 +340,22 @@
         const headerHost = el('div');
         const sourcesHost = el('div');
         const queueHost = el('div');
+        const availHost = el('div');
         const prioHost = el('div');
         container.appendChild(headerHost);
         container.appendChild(sourcesHost);
         container.appendChild(queueHost);
+        container.appendChild(availHost);
         container.appendChild(prioHost);
 
         renderHeader(headerHost, settings, state);
         renderSources(sourcesHost, settings);
         renderQueue(queueHost, queue, bugged);
+        renderAvailableJobs(availHost, [
+            { key: 'home', label: 'Home Market', data: home, enabled: settings.markets?.home !== false },
+            { key: 'dark', label: 'Dark Market', data: dark, enabled: settings.markets?.dark !== false },
+            { key: 'srm',  label: 'SRM7-M',      data: srm,  enabled: settings.markets?.srm  !== false },
+        ], settings, priorities, bugged, queue, state, nmGraph);
         renderServerPriorities(prioHost, nmGraph, priorities || {});
 
         // Activity log — Logger ring filtered to module='auto-jobs'. The
@@ -243,7 +379,10 @@
                 if (changes[C.STORAGE_LOCAL.AUTOJOBS_STATE] ||
                     changes[C.STORAGE_LOCAL.AUTOJOBS_QUEUE] ||
                     changes[C.STORAGE_LOCAL.BUGGED_JOBS] ||
-                    changes[C.STORAGE_LOCAL.NM_GRAPH]) render(container);
+                    changes[C.STORAGE_LOCAL.NM_GRAPH] ||
+                    changes[C.STORAGE_LOCAL.MARKET] ||
+                    changes[C.STORAGE_LOCAL.DARK_MARKET] ||
+                    changes[C.STORAGE_LOCAL.SRM_MARKET]) render(container);
             });
             unsub2 = Store.sync.onChanged((changes) => {
                 if (!container.classList.contains('active')) return;

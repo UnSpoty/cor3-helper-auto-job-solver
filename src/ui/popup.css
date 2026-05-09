@@ -261,6 +261,7 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
 .merc-card { display: grid; grid-template-columns: 1fr auto; gap: 6px 10px; align-items: center; }
 .merc-card.selected { border-color: var(--os-color-primary-hex); }
 .merc-card.unavail { opacity: 0.5; }
+.job-card.disabled, .card.disabled { opacity: 0.45; }
 
 /* ─── Module manager ─────────────────────────────────────────────────── */
 .module-card {
