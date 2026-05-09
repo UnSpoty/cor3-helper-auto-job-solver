@@ -103,6 +103,7 @@
         "src/modules/data/decisions.js",
         "src/modules/data/market.js",
         "src/modules/data/dark-market.js",
+        "src/modules/data/srm-market.js",
         "src/modules/data/stash.js",
         "src/modules/data/mercenaries.js",
         "src/modules/data/merc-config.js",

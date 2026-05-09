@@ -32,6 +32,8 @@
             fwd('refreshMarket',      MSG.GAME.REFRESH_MARKET);
             fwd('requestDarkMarket',  'COR3_REQUEST_DARK_MARKET');
             fwd('refreshDarkMarket',  MSG.GAME.REFRESH_DARK_MARKET);
+            fwd('requestSrmMarket',   'COR3_REQUEST_SRM_MARKET');
+            fwd('refreshSrmMarket',   MSG.GAME.REFRESH_SRM_MARKET);
             fwd('leaveStash',         'COR3_LEAVE_STASH');
             fwd('keepWorkerAlive',    'COR3_KEEP_ALIVE');
             fwd('requestArchivedExpeditions', 'COR3_REQUEST_ARCHIVED_EXPEDITIONS');

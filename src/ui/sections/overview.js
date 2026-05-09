@@ -47,7 +47,10 @@
     function genAlarmId() { return 'alarm_' + Date.now() + '_' + Math.floor(Math.random() * 1000); }
 
     const ALARM_TIMER_LABELS = {
-        daily: 'Daily Ops', home_jobs: 'Home Market reset', dark_jobs: 'Dark Market reset',
+        daily: 'Daily Ops',
+        home_jobs: 'Home Market reset',
+        dark_jobs: 'Dark Market reset',
+        srm_jobs: 'SRM7-M reset',
     };
 
     function appearanceToggle(label, key, currentValue) {
@@ -76,7 +79,7 @@
         container.innerHTML = '';
 
         const [
-            daily, dailyLog, market, dark, darkAvail,
+            daily, dailyLog, market, dark, darkAvail, srm, srmAvail,
             web, sys,
             autoRefresh, autoDecrypt, autoIceWall,
             disableSystemMessages, disableBackground, disableNetworkFog, disableMapFx,
@@ -87,9 +90,11 @@
             Store.local.getOne(C.STORAGE_LOCAL.MARKET),
             Store.local.getOne(C.STORAGE_LOCAL.DARK_MARKET),
             Store.local.getOne(C.STORAGE_LOCAL.DARK_MARKET_AVAILABLE, true),
+            Store.local.getOne(C.STORAGE_LOCAL.SRM_MARKET),
+            Store.local.getOne(C.STORAGE_LOCAL.SRM_MARKET_AVAILABLE, true),
             Store.local.getOne(C.STORAGE_LOCAL.WEB_VERSION, '?'),
             Store.local.getOne(C.STORAGE_LOCAL.SYSTEM_VERSION, '?'),
-            Store.sync.getOne(C.STORAGE_SYNC.AUTO_REFRESH, { home_jobs: false, dark_jobs: false }),
+            Store.sync.getOne(C.STORAGE_SYNC.AUTO_REFRESH, { home_jobs: false, dark_jobs: false, srm_jobs: false }),
             Store.sync.getOne(C.STORAGE_SYNC.AUTO_DECRYPT_ENABLED, false),
             Store.sync.getOne(C.STORAGE_SYNC.AUTO_ICE_WALL_ENABLED, false),
             Store.sync.getOne(C.STORAGE_SYNC.DISABLE_SYSTEM_MESSAGES, false),
@@ -100,7 +105,7 @@
             Store.local.getOne(C.STORAGE_LOCAL.EXPEDITIONS, []),
         ]);
 
-        const ar = autoRefresh || { home_jobs: false, dark_jobs: false };
+        const ar = autoRefresh || { home_jobs: false, dark_jobs: false, srm_jobs: false };
 
         // ─── Daily Ops ────────────────────────────────────────────────
         container.appendChild(el('div', 'section-title', 'Daily Ops'));
@@ -140,12 +145,20 @@
         // ─── Markets ──────────────────────────────────────────────────
         container.appendChild(el('div', 'section-title', 'Markets'));
 
-        function marketCard(label, data, available, isDark) {
-            const card = el('div', 'card');
+        // Compact 2-row card. Was 4 rows (head + jobs line + ar-row + btn-row);
+        // collapsed to (label · jobs | timer) and (auto-refresh switch | refresh).
+        // canBeUnreachable flips on for remote markets (Dark, SRM7-M) where the
+        // server can refuse get.jobs with no-path-to-server.
+        function marketCard({ label, data, available, arKey, refreshAction, canBeUnreachable }) {
+            const card = el('div', 'card compact');
+
             const head = el('div', 'card-row');
-            head.appendChild(el('span', 'card-label',
-                `${label}${(isDark && available === false) ? ' · unreachable' : ''}`));
-            if (data && data.nextJobsResetAt && (!isDark || available !== false)) {
+            const unreachable = canBeUnreachable && available === false;
+            const jobs = (data && Array.isArray(data.jobs)) ? data.jobs : [];
+            const left = el('span', 'card-label',
+                `${escape(label)}${unreachable ? ' · unreachable' : ` · ${jobs.length} jobs`}`);
+            head.appendChild(left);
+            if (data && data.nextJobsResetAt && !unreachable) {
                 const t = uiComponents.timer.create(data.nextJobsResetAt);
                 timerInstances.push(t);
                 head.appendChild(t.el);
@@ -154,33 +167,37 @@
             }
             card.appendChild(head);
 
-            const jobs = (data && Array.isArray(data.jobs)) ? data.jobs : [];
-            card.appendChild(el('div', 'sm muted mt-sm', `${jobs.length} job(s) on the board`));
-
-            // Per-market auto-refresh toggle (was a separate AUTO-REFRESH MARKETS section).
-            const arKey = isDark ? 'dark_jobs' : 'home_jobs';
-            const arRow = el('div', 'card-row mt-sm');
-            arRow.innerHTML = `
-                <span class="card-label">Auto-refresh</span>
-                <label class="switch"><input type="checkbox" ${ar[arKey] ? 'checked' : ''}><span class="switch-slider"></span></label>
-            `;
-            arRow.querySelector('input').addEventListener('change', async (e) => {
+            const ctrls = el('div', 'card-row mt-sm');
+            const sw = el('label', 'switch');
+            sw.innerHTML = `<input type="checkbox" ${ar[arKey] ? 'checked' : ''}><span class="switch-slider"></span>`;
+            sw.querySelector('input').addEventListener('change', async (e) => {
                 const cur = (await Store.sync.getOne(C.STORAGE_SYNC.AUTO_REFRESH, {})) || {};
                 cur[arKey] = e.target.checked;
                 await Store.sync.setOne(C.STORAGE_SYNC.AUTO_REFRESH, cur);
             });
-            card.appendChild(arRow);
+            const swRow = el('div', 'row gap-sm');
+            swRow.appendChild(sw);
+            swRow.appendChild(el('span', 'muted xs', 'auto-refresh'));
+            ctrls.appendChild(swRow);
+            const refreshBtn = el('button', 'btn small', 'Refresh');
+            refreshBtn.addEventListener('click', () => sendToContent(refreshAction));
+            ctrls.appendChild(refreshBtn);
+            card.appendChild(ctrls);
 
-            const btnRow = el('div', 'row gap-sm mt-sm');
-            const refresh = el('button', 'btn small', 'Refresh');
-            refresh.addEventListener('click', () =>
-                sendToContent(isDark ? 'refreshDarkMarket' : 'refreshMarket'));
-            btnRow.appendChild(refresh);
-            card.appendChild(btnRow);
             return card;
         }
-        container.appendChild(marketCard('Home Market', market, true, false));
-        container.appendChild(marketCard('Dark Market', dark, darkAvail, true));
+        container.appendChild(marketCard({
+            label: 'Home Market',  data: market, available: true,        arKey: 'home_jobs',
+            refreshAction: 'refreshMarket',     canBeUnreachable: false,
+        }));
+        container.appendChild(marketCard({
+            label: 'Dark Market',  data: dark,   available: darkAvail,   arKey: 'dark_jobs',
+            refreshAction: 'refreshDarkMarket', canBeUnreachable: true,
+        }));
+        container.appendChild(marketCard({
+            label: 'SRM7-M',       data: srm,    available: srmAvail,    arKey: 'srm_jobs',
+            refreshAction: 'refreshSrmMarket',  canBeUnreachable: true,
+        }));
 
         // ─── Auto solvers ─────────────────────────────────────────────
         container.appendChild(el('div', 'section-title', 'Auto solvers'));
@@ -302,7 +319,8 @@
                 if (!container.classList.contains('active')) return;
                 if (changes[C.STORAGE_LOCAL.DAILY_OPS] || changes[C.STORAGE_LOCAL.DAILY_HACK_LOG] ||
                     changes[C.STORAGE_LOCAL.MARKET] ||
-                    changes[C.STORAGE_LOCAL.DARK_MARKET] || changes[C.STORAGE_LOCAL.EXPEDITIONS] ||
+                    changes[C.STORAGE_LOCAL.DARK_MARKET] || changes[C.STORAGE_LOCAL.SRM_MARKET] ||
+                    changes[C.STORAGE_LOCAL.EXPEDITIONS] ||
                     changes[C.STORAGE_LOCAL.WEB_VERSION] || changes[C.STORAGE_LOCAL.SYSTEM_VERSION]) {
                     render(container);
                 }

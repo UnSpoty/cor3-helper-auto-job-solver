@@ -74,6 +74,14 @@
             }
             return null;
         }
+        if (timerSource === 'srm_jobs') {
+            const d = await Store.local.getOne(C.STORAGE_LOCAL.SRM_MARKET);
+            if (d && d.nextJobsResetAt) {
+                const diff = new Date(d.nextJobsResetAt).getTime() - Date.now();
+                return diff > 0 ? Math.floor(diff / 1000) : 0;
+            }
+            return null;
+        }
         if (timerSource && timerSource.startsWith('exp_')) {
             const expId = timerSource.substring(4);
             const exps = await Store.local.getOne(C.STORAGE_LOCAL.EXPEDITIONS, []);

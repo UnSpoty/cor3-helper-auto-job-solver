@@ -53,6 +53,7 @@
                 if (op === 'expeditions') root.__cor3RequestExpeditions();
                 else if (op === 'market') root.__cor3RequestMarket();
                 else if (op === 'darkMarket') root.__cor3RequestDarkMarket();
+                else if (op === 'srmMarket') root.__cor3RequestSrmMarket();
                 else if (op === 'stash') root.__cor3RequestStash();
                 else if (op === 'dailyOps') post('COR3_FETCH_DAILY_OPS', null);
                 else if (op.startsWith('decision:')) {
@@ -91,6 +92,18 @@
                         handleWsMessage(event.data, ws);
                     } catch (_) { /* silent */ }
                 });
+
+                // Wrap ws.send so we see EVERY outbound — both our extension's
+                // get.jobs (issued via wsSend below) AND cor3.gg's own
+                // get.jobs that fires whenever the user opens a Market panel
+                // in-game. Both responses arrive on this socket; without this
+                // hook we'd attribute them to the wrong slot or pollute Home.
+                // See captureOutboundGetJobs() for the parser.
+                const origWsSend = ws.send.bind(ws);
+                ws.send = function (data) {
+                    try { captureOutboundGetJobs(data); } catch (_) { /* silent */ }
+                    return origWsSend(data);
+                };
 
                 ws.addEventListener('open', () => {
                     console.debug('[COR3] WS connected — scheduling initial data fetch');
@@ -135,7 +148,7 @@
         if (eventName === 'error' && payload && payload.message === 'token-expired') {
             console.log('[COR3] Token expired — closing sockets to force reconnect');
             tokenExpiredFlag = true;
-            ['expeditions', 'market', 'darkMarket', 'stash', 'dailyOps'].forEach(queueRetryOp);
+            ['expeditions', 'market', 'darkMarket', 'srmMarket', 'stash', 'dailyOps'].forEach(queueRetryOp);
             post(MSG.AUTH.TOKEN_EXPIRED, null);
             for (const s of trackedSockets.slice()) {
                 try { s.close(); } catch (_) {}
@@ -287,12 +300,22 @@
             // get.jobs (new endpoint, replaces get.options for fetching the
             // job board). Response shape: payload.data = { jobs, recentJobs,
             // nextJobsResetAt } — the old payload.data.market wrapper is
-            // gone. We attribute the response to home/dark by FIFO-popping
-            // our pending-request queue (responses come in send-order on
-            // the same socket).
-            if (action === 'get.jobs' && payload.data) {
+            // gone. The response carries no marketId echo, so we FIFO-pop
+            // the pending-request queue. The queue is filled by
+            // captureOutboundGetJobs (wrapped ws.send above), which catches
+            // BOTH our extension's get.jobs AND cor3.gg's own — the latter
+            // fires whenever the user opens a Market panel in-game, and we
+            // need to consume those entries in lockstep or attribution drifts.
+            //
+            // ALWAYS pop the queue (even on errors / no-data) so order stays
+            // aligned with the wire. If the queue is empty (response without
+            // a recognized outbound) we'd rather drop the frame than guess —
+            // the previous "fall through to Home Market" behaviour was the
+            // root cause of the cross-market data pollution bug.
+            if (action === 'get.jobs') {
                 const pending = popPendingMarketJobsRequest();
-                const marketId = pending?.marketId;
+                if (!payload.data || !pending) return;
+                const marketId = pending.marketId;
                 const out = {
                     marketId,
                     jobs: Array.isArray(payload.data.jobs) ? payload.data.jobs : [],
@@ -301,9 +324,15 @@
                 };
                 if (marketId === DARK_MARKET_ID) {
                     post(MSG.WS.DARK_MARKET, { market: out });
-                } else {
+                } else if (marketId === SRM_MARKET_ID) {
+                    post(MSG.WS.SRM_MARKET, { market: out });
+                } else if (marketId === HOME_MARKET_ID) {
                     post(MSG.WS.MARKET, { market: out });
-                    root.__cor3LastMarketId = marketId || HOME_MARKET_ID;
+                    root.__cor3LastMarketId = marketId;
+                } else {
+                    // Unknown market — could be a future market we don't track.
+                    // Don't post anywhere; just log so it's discoverable.
+                    console.debug('[COR3] get.jobs response for untracked market', marketId);
                 }
                 return;
             }
@@ -516,10 +545,15 @@
     const HOME_MARKET_ID = '019d3ea4-85bd-7389-904d-8f7c85841134';
     const DARK_MARKET_ID = '019d3ea4-85bd-7389-904d-908ba9194aa0';
     const DARK_SERVER_ID = '019d29c5-4b37-79bf-b23e-304d8ea03c15';
+    const SRM_MARKET_ID  = '019da731-2db5-7d76-9447-1ea3b9b78001';
+    const SRM_SERVER_ID  = '019da6f1-16f7-75a6-b6d3-0b1d5f92a108';
 
     // get.jobs response carries no marketId echo, so we FIFO-attribute by
     // request order. Entries auto-expire after 30 s to prevent the queue
-    // from growing if a request gets dropped.
+    // from growing if a request gets dropped. Filled by captureOutboundGetJobs
+    // (called from the wrapped ws.send) — so it picks up cor3.gg's OWN
+    // get.jobs requests too, not just ours, which was the source of the
+    // "Home Market shows wrong job count after opening Dark/SRM in-game" bug.
     const pendingMarketJobsRequests = [];
     function pushPendingMarketJobsRequest(marketId) {
         pendingMarketJobsRequests.push({ marketId, sentAt: Date.now() });
@@ -532,8 +566,25 @@
         return pendingMarketJobsRequests.shift() || null;
     }
 
+    // Outbound parser. Recognises socket.io v4 event frames of the shape
+    //   42["event",{"event":{"name":"market","action":"get.jobs"},"data":{"marketId":"..."}}]
+    // (cor3.gg's own getJobs(marketId) and our wsSend below produce the same
+    // shape — confirmed by inspecting cor3.gg's bundle: the runAction wrapper
+    // always emits via this.emit("event",{event:{name,action},data})).
+    function captureOutboundGetJobs(rawData) {
+        if (typeof rawData !== 'string') return;
+        if (rawData.length > 4096) return;          // cheap guard; get.jobs frames are small
+        if (!rawData.startsWith('42[')) return;
+        if (rawData.indexOf('"get.jobs"') < 0) return;
+        const m = rawData.match(/"marketId"\s*:\s*"([0-9a-f-]{36})"/i);
+        if (!m) return;
+        pushPendingMarketJobsRequest(m[1]);
+    }
+
     function sendGetJobs(marketId) {
-        pushPendingMarketJobsRequest(marketId);
+        // Don't push the queue here — the wrapped ws.send will, via
+        // captureOutboundGetJobs, on the actual transmit. Pushing here too
+        // would double-count.
         return wsSend('42["event",{"event":{"name":"market","action":"get.jobs"},"data":{"marketId":"' + marketId + '"}}]');
     }
 
@@ -554,8 +605,17 @@
         return true;
     };
 
+    root.__cor3RequestSrmMarket = function () {
+        // Same shape as Dark Market: SRM7-M is a SOYUZ public server with
+        // canSetEndpoint:true, and get.jobs by marketId works regardless of
+        // whether the user is currently endpointed at it.
+        sendGetJobs(SRM_MARKET_ID);
+        return true;
+    };
+
     root.__cor3RefreshMarket = root.__cor3RequestMarket;
     root.__cor3RefreshDarkMarket = root.__cor3RequestDarkMarket;
+    root.__cor3RefreshSrmMarket = root.__cor3RequestSrmMarket;
 
     let initialFetchDone = false;
     root.__cor3ResetInitialFetch = function () {
@@ -569,9 +629,10 @@
         post('COR3_FETCH_DAILY_OPS', null); // legacy daily-ops fetch trigger
         root.__cor3RequestMarket();
         setTimeout(() => root.__cor3RequestDarkMarket(), 1000);
-        setTimeout(() => root.__cor3RequestExpeditions(), 2000);
-        setTimeout(() => root.__cor3RequestStash(), 6000);
-        setTimeout(() => root.__cor3RequestArchivedExpeditions(), 8000);
+        setTimeout(() => root.__cor3RequestSrmMarket(), 2000);
+        setTimeout(() => root.__cor3RequestExpeditions(), 3000);
+        setTimeout(() => root.__cor3RequestStash(), 7000);
+        setTimeout(() => root.__cor3RequestArchivedExpeditions(), 9000);
     };
 
     root.__cor3KeepAlive = function () { /* no-op marker */ };
@@ -628,8 +689,10 @@
         'COR3_REQUEST_STASH': () => root.__cor3RequestStash(),
         'COR3_REQUEST_MARKET': () => root.__cor3RequestMarket(),
         'COR3_REQUEST_DARK_MARKET': () => root.__cor3RequestDarkMarket(),
+        'COR3_REQUEST_SRM_MARKET': () => root.__cor3RequestSrmMarket(),
         [MSG.GAME.REFRESH_MARKET]: () => root.__cor3RefreshMarket(),
         [MSG.GAME.REFRESH_DARK_MARKET]: () => root.__cor3RefreshDarkMarket(),
+        [MSG.GAME.REFRESH_SRM_MARKET]: () => root.__cor3RefreshSrmMarket(),
         'COR3_LEAVE_STASH': () => leaveRoom('stash'),
         'COR3_SELL_ITEM': (e) => root.__cor3SellItem(e.itemId, e.quantity || 1),
         [MSG.GAME.RESPOND_DECISION]: (e) => root.__cor3RespondDecision(e.expeditionId, e.messageId, e.selectedOption),
