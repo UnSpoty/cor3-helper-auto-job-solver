@@ -490,10 +490,14 @@
             if (queue.length > 0) setTimeout(executeNextFromQueue, 1000);
             return;
         }
-        if (state.status === 'solving' && solvingStartedAt > 0 && Date.now() - solvingStartedAt > 180000) {
-            modRef.warn('solving watchdog 3min — bug & reset');
+        // 5 min ceiling — was 3 min, but server-connect's hack-tool fallback
+        // can spend up to 4 min on the ice-wall puzzle (matches cor3.gg's
+        // own in-game deadline). Connect + actual job work sit on top of
+        // that; 5 min leaves a small buffer before we declare a real hang.
+        if (state.status === 'solving' && solvingStartedAt > 0 && Date.now() - solvingStartedAt > 300000) {
+            modRef.warn('solving watchdog 5min — bug & reset');
             if (state.jobId) {
-                bugJob(state.jobId, state.jobName || state.jobType || 'Unknown', 'solving watchdog 3min');
+                bugJob(state.jobId, state.jobName || state.jobType || 'Unknown', 'solving watchdog 5min');
                 const qi = queue.findIndex((j) => j.jobId === state.jobId);
                 if (qi !== -1) { queue.splice(qi, 1); saveQueue(); }
             }

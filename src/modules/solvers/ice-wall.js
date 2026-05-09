@@ -324,7 +324,7 @@
             if (!document.querySelector(SEL.APP)) { mod.info('puzzle window closed'); return true; }
             const c = readCounter();
             if (c && c.current >= c.total) { mod.info(`solved: ${c.current}/${c.total}`); clearOverlay(); return true; }
-            if (Date.now() - startTime > 180_000) { mod.warn('safety timeout (180s)'); clearOverlay(); return false; }
+            if (Date.now() - startTime > 240_000) { mod.warn('safety timeout (240s)'); clearOverlay(); return false; }
 
             const candidates = findApexCandidates();
             if (candidates.length === 0) { await dom.sleep(250); continue; }

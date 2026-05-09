@@ -218,10 +218,12 @@
         }
         Bus.window.post(MSG.JOB.LOG, { msg: 'Ice wall opened — waiting for solver…', level: 'info' });
 
-        // Wait for it to close. 120 s ceiling — the solver itself is much
-        // faster than that, but we want headroom for slow rendering /
-        // partial-board phases / WS hiccups.
-        const deadline = Date.now() + 120_000;
+        // Wait for it to close. 240 s ceiling — matches cor3.gg's own
+        // in-game puzzle deadline (~4 min). The solver itself usually
+        // wraps in 30-60 s, but partial-board phases / virtual-list
+        // re-renders / WS hiccups can stretch a round; this gives the
+        // full session time to finish before we declare the slot dead.
+        const deadline = Date.now() + 240_000;
         while (Date.now() < deadline && !root.__jobManagerAbort) {
             if (!document.querySelector(SEL.ICE_WALL_APP)) {
                 // Grace period for the active-access list to repopulate.
@@ -231,7 +233,7 @@
             }
             await dom.sleep(500);
         }
-        log('warn', `Ice wall did not close in 120 s for "${serverName}"`);
+        log('warn', `Ice wall did not close in 240 s for "${serverName}"`);
         Bus.window.post(MSG.JOB.LOG, { msg: `Ice wall timeout on "${serverName}" — give up`, level: 'warn' });
         return false;
     }
