@@ -47,13 +47,14 @@ cor3-helper/
 │   └── todo.md
 └── src/
     ├── core/             Bus, Store, Logger, Module, Registry, Settings
-    ├── shared/           constants, dom, ws-frames, errors
+    ├── shared/           platform, constants, dom, ws-frames, errors
     ├── interceptors/     ws-interceptor, http-interceptor, solver-loader
     ├── modules/
     │   ├── data/         9 modules — one per WS payload
-    │   ├── automation/   9 modules — timers, auto-jobs, auto-send-merc, …
+    │   ├── automation/   9 modules — timers, auto-jobs, auto-send-merc, …,
+    │   │                  auto-decrypt, auto-ice-wall, daily-ops, runtime-bridge
     │   ├── game/         network-map, server-connect, sai-navigator, flows-core, 9 flows
-    │   ├── solvers/      decrypt, daily-hack
+    │   ├── solvers/      decrypt, daily-ops, ice-wall
     │   └── appearance/   4 CSS/DOM toggles
     ├── ui/               popup.html + popup.css + components/ + sections/
     └── entry/            content-early.js, content.js, background.js
@@ -124,16 +125,26 @@ find src -name '*.js' -exec node --check {} \;
 - All 9 job flow types: file_decryption, ip_injection, ip_cleanup,
   file_upload, log_deletion, log_download, file_elimination, data_download,
   decrypt_extract
-- Decrypt minimax algorithm — verbatim port from legacy
+- Decrypt minimax algorithm — verbatim port from legacy. May 2026: cor3.gg
+  swapped the text input for arrow-key-driven `ParameterCells`; the new
+  submit layer is click-on-cell + ArrowUp + click-SendButton (see
+  [docs/glossary.md](docs/glossary.md) → solver-decrypt).
 - Daily-hack pattern detection (System Log Integrity + Signal Hack) —
   carried into the new `solver-daily-ops` (Game Center one-shot) which
   added: full DOM navigation (open Game Center → open Daily Ops card →
-  Start), generic `^Get \w+` intro click, puzzle-type routing,
+  Start), generic intro click, puzzle-type routing,
   `setReactInputValue` + submit click, WS-readiness gates around Start
   and Submit (`__cor3IsWsReady` / `__cor3WaitForWs`), and a
   post-submit `awaitSubmitFeedback()` that scans for verified/reward/fail
-  text within 5 s. The legacy `solver-daily-hack` module is kept dormant
-  for the (now-removed) "Auto daily-hack" toggle path.
+  text within 5 s. The standalone-page `solver-daily-hack` was deleted —
+  cor3.gg moved the puzzle into Game Center, and the legacy toggle had
+  no UI route to turn it on anymore.
+- ICE WALL Break solver — SAI's Porter-lite r4 minigame. Watcher matches
+  the 9-cell target preview against the 100-cell board, finds the
+  feasible apex with most lit-cell evidence, clicks the bottom-row
+  centre cell of the matched sub-triangle (NOT the apex — empirically
+  that's a no-op). Overlay paints the predicted sub-triangle so the
+  user can verify visually.
 - Auto-send-merc with cheapest-AVAILABLE selection + stash-full re-enable
 - Multi-alarm system (alarms tick every second, audio via Web Audio API)
 - Pop-out window mode (`?mode=popout`)
@@ -165,13 +176,13 @@ Quick list of every registered module ID and its world:
 - `flow-file-decryption`, `flow-ip-injection`, `flow-ip-cleanup`,
   `flow-file-upload`, `flow-log-deletion`, `flow-log-download`,
   `flow-file-elimination`, `flow-data-download`, `flow-decrypt-extract`
-- `solver-decrypt`, `solver-daily-hack` (legacy, dormant), `solver-daily-ops` (new, one-shot via popup Solve button)
+- `solver-decrypt`, `solver-daily-ops`, `solver-ice-wall`
 
 **Isolated content_scripts:**
 - `auth`, `expeditions`, `decisions`, `market`, `dark-market`, `stash`,
   `mercenaries`, `merc-config`, `expedition-config` — data
 - `timers`, `auto-refresh`, `auto-send-merc`, `auto-choose-decision`,
-  `auto-decrypt`, `auto-daily-hack`, `daily-ops`, `auto-jobs`,
+  `auto-decrypt`, `auto-ice-wall`, `daily-ops`, `auto-jobs`,
   `runtime-bridge` — automation
 - `appearance-system-messages`, `appearance-background`,
   `appearance-network-fog`, `appearance-map-fx` — appearance

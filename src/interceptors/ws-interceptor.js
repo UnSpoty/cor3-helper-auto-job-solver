@@ -641,7 +641,6 @@
         [MSG.GAME.OPEN_CONTAINER]: (e) => root.__cor3OpenContainer(e.expeditionId),
         [MSG.GAME.COLLECT_ALL]: (e) => root.__cor3CollectAll(e.expeditionId),
         [MSG.SOLVER.STOP_DECRYPT]: () => { root.__solverAbort = true; },
-        [MSG.SOLVER.STOP_DAILY_HACK]: () => { root.__dailyHackAbort = true; root.__dailyHackActive = false; },
         [MSG.SOLVER.START_DECRYPT]: () => {
             if (root.__solverActive && !root.__solverAbort) return;
             root.__solverAbort = false;

@@ -27,6 +27,7 @@
   "background": {
     "service_worker": "src/entry/background.js",
     "scripts": [
+      "src/shared/platform.js",
       "src/shared/constants.js",
       "src/core/bus.js",
       "src/core/store.js",
@@ -45,6 +46,7 @@
         "https://os.cor3.gg/*"
       ],
       "js": [
+        "src/shared/platform.js",
         "src/shared/constants.js",
         "src/shared/dom.js",
         "src/shared/ws-frames.js",
@@ -72,7 +74,6 @@
         "src/modules/game/flows/data-download.js",
         "src/modules/game/flows/decrypt-extract.js",
         "src/modules/solvers/decrypt.js",
-        "src/modules/solvers/daily-hack.js",
         "src/modules/solvers/daily-ops.js",
         "src/modules/solvers/ice-wall.js",
         "src/entry/content-early.js"
@@ -86,6 +87,7 @@
         "https://os.cor3.gg/*"
       ],
       "js": [
+        "src/shared/platform.js",
         "src/shared/constants.js",
         "src/shared/dom.js",
         "src/shared/ws-frames.js",
@@ -110,7 +112,6 @@
         "src/modules/automation/auto-send-merc.js",
         "src/modules/automation/auto-choose-decision.js",
         "src/modules/automation/auto-decrypt.js",
-        "src/modules/automation/auto-daily-hack.js",
         "src/modules/automation/auto-ice-wall.js",
         "src/modules/automation/daily-ops.js",
         "src/modules/automation/auto-jobs.js",

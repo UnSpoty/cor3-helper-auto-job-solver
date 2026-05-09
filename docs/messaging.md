@@ -109,14 +109,10 @@ Direction: bidirectional. `START_*` and `STOP_*` are isolated → MAIN; `DAILY_H
 |---|---|---|---|
 | `SOLVER.START_DECRYPT` | `COR3_START_DECRYPT_SOLVER` | `null` | starts the watcher in `solver-decrypt` (config-hack minigame). Idempotent. |
 | `SOLVER.STOP_DECRYPT` | `COR3_STOP_DECRYPT_SOLVER` | `null` | sets `window.__solverAbort=true`. |
-| `SOLVER.STOP_DAILY_HACK` | `COR3_STOP_DAILY_HACK` | `null` | sets `window.__dailyHackAbort=true`. **Legacy** — used by the standalone-page daily-hack watcher; the new Daily Ops in-Game-Center solver doesn't loop. |
-| `SOLVER.DAILY_HACK_LOG` | `COR3_DAILY_HACK_LOG` | `{ message }` | legacy solver summary, e.g. `Signal Hack → Type: MORSE, Value: 2459`. Still routed into `STORAGE_LOCAL.DAILY_HACK_LOG`. |
 | `SOLVER.START_DAILY_OPS` | `COR3_START_DAILY_OPS` | `null` | one-shot trigger for `solver-daily-ops` (MAIN). Posted by `automation/daily-ops.js` when the popup sends `solveDailyOps`. The solver navigates Game Center → Daily Ops → Start, detects puzzle type (signal vs log), and submits. |
-| `SOLVER.DAILY_OPS_LOG` | `COR3_DAILY_OPS_LOG` | `{ message }` | progress + result lines from `solver-daily-ops` (`starting…`, `signal puzzle`, `solved: 2534627653 (binary)`, `no server feedback (WS hiccup?)`, …). `automation/daily-ops.js` mirrors them into `STORAGE_LOCAL.DAILY_HACK_LOG` so the Overview card can show the last line; success messages also retrigger a REST refetch so the streak/claimed badge flips without a Refresh click. |
-
-### Off-enum
-
-- `COR3_START_DAILY_HACK` — legacy solver start (toggle-driven). Currently dormant: the toggle was removed in the May 2026 UI restructure when Daily Ops moved into Game Center; the new flow uses `SOLVER.START_DAILY_OPS` instead. Kept routable so any pre-existing `autoDailyHackEnabled=true` storage state still bootstraps the legacy watcher.
+| `SOLVER.DAILY_OPS_LOG` | `COR3_DAILY_OPS_LOG` | `{ message }` | progress + result lines from `solver-daily-ops` (`starting…`, `signal puzzle`, `solved: 2534627653 (binary)`, `no server feedback (WS hiccup?)`, …). `automation/daily-ops.js` mirrors them into `STORAGE_LOCAL.DAILY_HACK_LOG` (legacy key name kept for storage compat) so the Overview card can show the last line; success messages also retrigger a REST refetch so the streak/claimed badge flips without a Refresh click. |
+| `SOLVER.START_ICE_WALL` | `COR3_START_ICE_WALL` | `null` | starts the watcher in `solver-ice-wall` (Porter-lite r4 minigame opened from SAI). |
+| `SOLVER.STOP_ICE_WALL` | `COR3_STOP_ICE_WALL` | `null` | sets `window.__iceWallAbort=true`. |
 
 ---
 
@@ -219,7 +215,7 @@ or both.
 
 | Key | Shape | Owner |
 |---|---|---|
-| `dailyHackLog` | string | `auto-daily-hack.js` (legacy) + `automation/daily-ops.js` (new — relays `SOLVER.DAILY_OPS_LOG`) |
+| `dailyHackLog` | string | `automation/daily-ops.js` (relays `SOLVER.DAILY_OPS_LOG`). Legacy key name; keeping the field stable so previously-stored values aren't orphaned. |
 | `dailyHackLogUpdatedAt` | number | same |
 
 ### Logger / errors
@@ -241,7 +237,7 @@ or both.
 | `serverPriorities` | `{[serverName]: number}` | `{}` | `auto-jobs.js` (used by queue sort; UI for editing not built yet) |
 | `autoSendMerc` | `{enabled, autoChooseMerc, mercenaryId, mercenaryName, disabledReason}` | `{enabled:false, autoChooseMerc:true}` | `auto-send-merc.js`, mercenaries section |
 | `autoDecryptEnabled` | bool | `false` | `auto-decrypt.js` |
-| `autoDailyHackEnabled` | bool | `false` | `auto-daily-hack.js` (legacy — toggle removed from UI; key kept for storage compat). The new flow is the popup's "Solve" one-shot button on the Daily Ops card. |
+| `autoIceWallEnabled` | bool | `false` | `auto-ice-wall.js` — toggle gates the SAI Porter-lite r4 watcher. |
 | `autoRefresh` | `{home_jobs: bool, dark_jobs: bool}` | `{home:false, dark:false}` | `auto-refresh.js` |
 | `autoChooseEnabled` | bool | `false` | `auto-choose-decision.js` |
 | `riskThreshold` | `0..10` | `5` | `auto-choose-decision.js`. Score = `loot - risk*((10-threshold)/5)`. |
@@ -288,9 +284,9 @@ Used by Module Manager UI for grouping. Each module declares one in its
 |---|---|---|
 | `CATEGORY.CORE` | `core` | `runtime-bridge` |
 | `CATEGORY.DATA` | `data` | 9 data modules |
-| `CATEGORY.AUTOMATION` | `automation` | timers, auto-refresh, auto-jobs, auto-send-merc, auto-choose-decision, auto-decrypt, auto-daily-hack, daily-ops |
+| `CATEGORY.AUTOMATION` | `automation` | timers, auto-refresh, auto-jobs, auto-send-merc, auto-choose-decision, auto-decrypt, auto-ice-wall, daily-ops, runtime-bridge |
 | `CATEGORY.GAME` | `game` | network-map, server-connect, sai-navigator, flows-core, 9 flows |
-| `CATEGORY.SOLVER` | `solver` | solver-decrypt, solver-daily-hack, solver-daily-ops |
+| `CATEGORY.SOLVER` | `solver` | solver-decrypt, solver-daily-ops, solver-ice-wall |
 | `CATEGORY.APPEARANCE` | `appearance` | 4 appearance modules |
 | `CATEGORY.UI` | `ui` | (UI sections aren't Modules — they live in popup context separately) |
 

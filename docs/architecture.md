@@ -39,7 +39,7 @@ and the runtime API. They communicate over `window.postMessage`.
 │    merc-config, expedition-config)             │
 │  • 9 automation modules (auto-jobs, auto-send- │
 │    merc, auto-choose-decision, auto-refresh,   │
-│    auto-decrypt, auto-daily-hack, daily-ops,   │
+│    auto-decrypt, auto-ice-wall, daily-ops,     │
 │    timers, runtime-bridge)                     │
 │  • 4 appearance modules                        │
 ├────────────────────────────────────────────────┤
@@ -50,8 +50,8 @@ and the runtime API. They communicate over `window.postMessage`.
 │  • game core: network-map, server-connect,     │
 │    sai-navigator                               │
 │  • flows-core + 9 flow modules                 │
-│  • 3 solver modules (decrypt, daily-hack,      │
-│    daily-ops — Game Center one-shot)           │
+│  • 3 solver modules (decrypt, daily-ops,       │
+│    ice-wall)                                   │
 ├────────────────────────────────────────────────┤
 │ Background SW  (src/entry/background.js)       │
 │  • keep-alive ping                             │
@@ -72,28 +72,29 @@ The order matters: core primitives must exist before modules use them.
 ### MAIN content_scripts (`content_scripts[0]`, `world: MAIN`, `run_at: document_start`)
 
 ```
-1.  src/shared/constants.js          ← MSG, STORAGE_*, FLOW, CATEGORY enums
-2.  src/shared/dom.js                ← sleep, waitForEl, click, react-input
-3.  src/shared/ws-frames.js          ← Socket.IO v4 parser
-4.  src/shared/errors.js             ← cor3LogError + back-compat aliases
-5.  src/core/bus.js                  ← Bus.window.{post,on}; Bus.runtime.{send,on}
-6.  src/core/store.js                ← Store.local / Store.sync facade
-7.  src/core/logger.js               ← per-module ring buffer; forwards from MAIN
-8.  src/core/module.js               ← base class
-9.  src/core/settings.js             ← module-state persistence
-10. src/core/registry.js             ← topo-sort, boot()
-11. src/interceptors/ws-interceptor.js
-12. src/interceptors/http-interceptor.js
-13. src/interceptors/solver-loader.js
-14. src/modules/game/network-map.js
-15. src/modules/game/server-connect.js
-16. src/modules/game/sai-navigator.js
-17. src/modules/game/flows/_shared.js
-18-26. src/modules/game/flows/*      ← 9 flow modules
-27. src/modules/solvers/decrypt.js
-28. src/modules/solvers/daily-hack.js   ← legacy standalone-page solver
-29. src/modules/solvers/daily-ops.js    ← one-shot Game Center solver
-30. src/entry/content-early.js       ← Registry.boot()
+1.  src/shared/platform.js           ← isFirefox / isChromium runtime detect
+2.  src/shared/constants.js          ← MSG, STORAGE_*, FLOW, CATEGORY enums
+3.  src/shared/dom.js                ← sleep, waitForEl, click, react-input
+4.  src/shared/ws-frames.js          ← Socket.IO v4 parser
+5.  src/shared/errors.js             ← cor3LogError + back-compat aliases
+6.  src/core/bus.js                  ← Bus.window.{post,on}; Bus.runtime.{send,on}
+7.  src/core/store.js                ← Store.local / Store.sync facade
+8.  src/core/logger.js               ← per-module ring buffer; forwards from MAIN
+9.  src/core/module.js               ← base class
+10. src/core/settings.js             ← module-state persistence
+11. src/core/registry.js             ← topo-sort, boot()
+12. src/interceptors/ws-interceptor.js
+13. src/interceptors/http-interceptor.js
+14. src/interceptors/solver-loader.js
+15. src/modules/game/network-map.js
+16. src/modules/game/server-connect.js
+17. src/modules/game/sai-navigator.js
+18. src/modules/game/flows/_shared.js
+19-27. src/modules/game/flows/*      ← 9 flow modules
+28. src/modules/solvers/decrypt.js
+29. src/modules/solvers/daily-ops.js    ← Game Center Daily Ops solver
+30. src/modules/solvers/ice-wall.js     ← SAI Porter-lite r4 ICE WALL solver
+31. src/entry/content-early.js       ← Registry.boot()
 ```
 
 ### Isolated content_scripts (`content_scripts[1]`, isolated world, `run_at: document_idle`)

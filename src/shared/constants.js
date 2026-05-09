@@ -63,10 +63,9 @@
         SOLVER: {
             START_DECRYPT: 'COR3_START_DECRYPT_SOLVER',
             STOP_DECRYPT: 'COR3_STOP_DECRYPT_SOLVER',
-            STOP_DAILY_HACK: 'COR3_STOP_DAILY_HACK',
-            DAILY_HACK_LOG: 'COR3_DAILY_HACK_LOG',
             // Daily Ops one-shot solver (Game Center module). Replaces the
-            // legacy auto-daily-hack toggle.
+            // legacy daily-hack toggle, which solved the same puzzles when
+            // they lived on a standalone page (deleted May 2026).
             START_DAILY_OPS: 'COR3_START_DAILY_OPS',
             DAILY_OPS_LOG: 'COR3_DAILY_OPS_LOG',
             // Ice Wall solver — SAI's Porter-lite r4 minigame. Toggle-driven
@@ -175,9 +174,8 @@
         // Auto-send merc
         AUTO_SEND_MERC: 'autoSendMerc',
 
-        // Auto-decrypt / Auto-daily-hack / Auto-ice-wall
+        // Auto-decrypt / Auto-ice-wall
         AUTO_DECRYPT_ENABLED: 'autoDecryptEnabled',
-        AUTO_DAILY_HACK_ENABLED: 'autoDailyHackEnabled',
         AUTO_ICE_WALL_ENABLED: 'autoIceWallEnabled',
 
         // Auto-refresh

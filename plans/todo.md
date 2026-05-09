@@ -10,6 +10,61 @@
 
 ## Recently shipped — May 2026
 
+### Overview tab audit + Firefox readiness
+
+Закрыли Overview-вкладку как готовую: прошли по каждому блоку, сверили
+поведение с DOM-ом, выкинули мусор после ICE WALL итерации.
+
+Что сделано:
+
+- **Удалены legacy daily-hack модули**:
+  - `src/modules/automation/auto-daily-hack.js` — UI-тогл сняли давно,
+    модуль остался висеть. Storage-ключ `AUTO_DAILY_HACK_ENABLED`
+    тоже выкинут.
+  - `src/modules/solvers/daily-hack.js` — алгоритмы (System Log
+    Integrity / Signal Hack) уже скопированы в `solver-daily-ops`.
+    Стандалон-страница, для которой он жил, давно мигрирована в Game
+    Center; никто его больше не запускал.
+  - `MSG.SOLVER.STOP_DAILY_HACK` / `DAILY_HACK_LOG` envelope-имена
+    выкинуты из `constants.js`. ws-interceptor handler для STOP_DAILY_HACK
+    тоже удалён.
+  - `STORAGE_LOCAL.DAILY_HACK_LOG` ключ оставлен (имя legacy, но
+    активно используется `solver-daily-ops` для UI-лога — переименовывать
+    значило бы орфанить уже сохранённые значения).
+
+- **UI flicker** на Overview исправлен:
+  старый `Store.sync.onChanged` listener фуллрендерил вкладку на
+  *любую* настройку — включая тогл, который пользователь только что
+  кликнул сам. Каждый клик = repaint всего таба, на FF особенно
+  заметно. Теперь sync-listener реагирует только на `ALARMS` (тот
+  список реально меняется визуально); тогл-флаги UI рендерит
+  непосредственно через onChange checkbox-а.
+
+- **`COR3.platform`** добавлен в `src/shared/platform.js` — детектит
+  runtime по префиксу URL расширения:
+  ```
+  COR3.platform = { isFirefox, isChromium, isSafari, extensionProtocol }
+  ```
+  Подключён первым в `manifest.json` (background scripts + оба
+  content_scripts) и в `src/ui/popup.html`. Любой код может ветвиться
+  без import'ов.
+
+- **Game appearance — `disableBackground` round-trip**: уже
+  починен раньше (на этой же неделе) — `el.remove()` → `display:none`
+  + `data-cor3-bg-hidden` marker. Остальные 3 модуля
+  (system-messages, network-fog, map-fx) перепроверены и работают
+  обратимо.
+
+- **Alarms** — collapsible default-closed (был open).
+
+Открытое — Firefox: пользователь сообщил что Game appearance на
+Firefox молчит, и UI попапа моргает. UI flicker должен уйти после
+этого фикса. Game appearance не работает — гипотеза: `chrome.storage.
+sync.onChanged` события не доставляются от popup-а к isolated content
+script в FF MV3. Если подтвердится — добавим runtime-message fallback
+(popup явно постит `chrome.runtime.sendMessage` после write, isolated
+content слушает оба источника).
+
 ### Auto-decrypt: keyboard puzzle → click-driven puzzle
 
 cor3.gg перерисовал config-hack минигу. Раньше — текстовое поле с

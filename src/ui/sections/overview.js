@@ -280,6 +280,14 @@
         // Subscribe-only mount; first render runs from activate(). Calling render
         // here would race the activate() render and double-paint (see logger fix
         // commit for the full pattern).
+        //
+        // We re-render only on DATA changes (timer values, job lists, expedition
+        // counts, daily-ops result, alarms list). Toggle changes are NOT re-render
+        // triggers — the user just clicked the switch, the DOM already shows
+        // the new state, and a full repaint flickers the whole tab. Same goes
+        // for the auto-refresh map (a per-market sub-toggle). The handful of
+        // controls in the Alarms add-form re-render naturally when ALARMS
+        // (the visible list) changes — that's a real data update.
         mount(container) {
             unsubs.push(Store.local.onChanged((changes) => {
                 if (!container.classList.contains('active')) return;
@@ -292,16 +300,9 @@
             }));
             unsubs.push(Store.sync.onChanged((changes) => {
                 if (!container.classList.contains('active')) return;
-                if (changes[C.STORAGE_SYNC.ALARMS]
-                    || changes[C.STORAGE_SYNC.AUTO_REFRESH]
-                    || changes[C.STORAGE_SYNC.AUTO_DECRYPT_ENABLED]
-                    || changes[C.STORAGE_SYNC.AUTO_ICE_WALL_ENABLED]
-                    || changes[C.STORAGE_SYNC.DISABLE_SYSTEM_MESSAGES]
-                    || changes[C.STORAGE_SYNC.DISABLE_BACKGROUND]
-                    || changes[C.STORAGE_SYNC.DISABLE_NETWORK_FOG]
-                    || changes.disableMapFxEnabled) {
-                    render(container);
-                }
+                // Alarms list IS data — counts and items change visibly.
+                // Everything else (toggle flags) is the user's own click.
+                if (changes[C.STORAGE_SYNC.ALARMS]) render(container);
             }));
         },
         activate(container) { render(container); },
