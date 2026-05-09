@@ -1,6 +1,20 @@
 // src/entry/background.js
-// Service worker entry. Load shared/core then SW-specific modules.
-// Uses importScripts (classic SW context) to load scripts in order.
+// Cross-browser background entry.
+//
+// Chrome MV3 (service worker context):
+//   • manifest.background.service_worker → this file runs in a SW
+//   • importScripts() is defined and loads our deps
+//   • manifest.background.scripts is ignored (Chrome warns about it)
+//
+// Firefox MV3 (event page context, as of Firefox 150):
+//   • background.service_worker is currently pref-gated off → won't run
+//   • manifest.background.scripts is honoured: each file loaded as a
+//     classic <script> in document order, with this file last so it
+//     runs after constants/Bus/Store/etc. are defined globally
+//   • importScripts() is undefined here, so the if-guard is a no-op
+//
+// Both paths land in the same flat globals (no module exports), so
+// every helper below works regardless of which browser loaded us.
 
 if (typeof importScripts === 'function') {
     importScripts(
