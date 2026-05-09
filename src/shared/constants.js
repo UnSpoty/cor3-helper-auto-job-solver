@@ -62,6 +62,10 @@
             NM_SERVERS: 'COR3_NM_SERVERS',
             REQUEST_NM_MAP: 'COR3_REQUEST_NM_MAP',
             NM_GRAPH: 'COR3_NM_GRAPH',
+            // Tell MAIN to revert the network-map endpoint back to HOME
+            // (used by auto-jobs at end of a bulk-accept batch that may
+            // have left endpoint on DARK/SRM after a remote-market accept).
+            REVERT_ENDPOINT_TO_HOME: 'COR3_REVERT_ENDPOINT_TO_HOME',
         },
 
         // Solver lifecycle (MAIN ↔ isolated)

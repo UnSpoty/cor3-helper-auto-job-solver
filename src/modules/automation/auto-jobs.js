@@ -346,6 +346,13 @@
         if (state.status !== 'idle') { modRef.warn('accept skipped — status not idle'); return; }
         if (!candidates.length) return;
 
+        // Group accepts by marketId so MAIN's __cor3AcceptJob only does
+        // ONE set.endpoint preflight per market (HOME jobs first, then DARK,
+        // then SRM — or whatever the natural sort order is). Without
+        // grouping, an interleaved [HOME, DARK, HOME, DARK] batch would
+        // flip the endpoint 4 times.
+        candidates.sort((a, b) => (a.marketId || '').localeCompare(b.marketId || ''));
+
         state = { ...IDLE_STATE, status: 'accepting', jobName: `Accepting ${candidates.length} job(s)` };
         saveState();
         modRef.info(`accept-batch n=${candidates.length}`);
@@ -730,6 +737,11 @@
                 saveQueue();
                 bulkPendingJobs = []; bulkSentOrder = []; bulkAcceptCount = 0; bulkAcceptTotal = 0; bulkAcceptStartedAt = 0;
                 pushUserLog(`Accept done — queue: ${queue.length} job(s)`, 'ok');
+                // After a remote-market accept (DARK/SRM) the endpoint is
+                // left on that market's server; revert to HOME so subsequent
+                // server-connect calls (most flows target HOME-network
+                // servers) don't hit the wrong endpoint.
+                Bus.window.post(C.MSG.GAME.REVERT_ENDPOINT_TO_HOME, null);
                 resetState('accept-batch-complete');
                 setTimeout(() => requestMarketRefresh('accept-batch-done'), 500);
                 setTimeout(executeNextFromQueue, 1000);
@@ -747,6 +759,7 @@
             if (bulkAcceptCount >= bulkAcceptTotal) {
                 saveQueue();
                 bulkPendingJobs = []; bulkSentOrder = []; bulkAcceptCount = 0; bulkAcceptTotal = 0; bulkAcceptStartedAt = 0;
+                Bus.window.post(C.MSG.GAME.REVERT_ENDPOINT_TO_HOME, null);
                 resetState('accept-batch-complete');
                 setTimeout(() => requestMarketRefresh('accept-batch-done'), 500);
                 setTimeout(executeNextFromQueue, 1000);

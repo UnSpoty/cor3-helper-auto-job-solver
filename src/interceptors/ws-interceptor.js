@@ -624,14 +624,41 @@
         return true;
     };
 
+    // job.take requires currentEndpoint to match the market's home server,
+    // exactly like get.jobs does — without the preflight the server replies
+    // {error:"market-not-reachable"} (verified live: HOME endpoint + DARK
+    // job.take → error; DARK endpoint + DARK job.take → status:ok).
+    //
+    // Accepts come in as a burst from auto-jobs's bulkAccept — pacing 1.2 s
+    // apart. We serialise via inflightAcceptChain so concurrent set.endpoint
+    // dances don't trample each other; same pattern as fetchRemoteMarketSequence.
+    // No revert here — the orchestrator posts REVERT_ENDPOINT_TO_HOME after
+    // the whole batch finishes (one set.endpoint hit instead of one per
+    // accept).
+    let inflightAcceptChain = Promise.resolve();
     root.__cor3AcceptJob = function (jobId, marketId) {
-        const data = JSON.stringify({ marketId, jobId });
-        const ok = wsSend('42["event",{"event":{"name":"market","action":"job.take"},"data":' + data + '}]');
-        if (!ok) {
-            // Legacy event watched by content.js bulk-accept watchdog; not in MSG enum
-            post('COR3_ACCEPT_JOB_SEND_FAILED', { jobId, marketId });
-        }
-        return ok;
+        inflightAcceptChain = inflightAcceptChain.then(async () => {
+            const cfg = MARKET_BY_ID[marketId];
+            const requiredServer = cfg ? cfg.serverId : null;
+            if (requiredServer && currentEndpoint !== requiredServer) {
+                // Same lock-wait as fetchRemoteMarketSequence — never yank
+                // endpoint while a flow is mid-stride. Accepts run when
+                // state=idle so this is rarely needed, but cheap insurance.
+                const lockDeadline = Date.now() + 60_000;
+                while (root.__pipelineLocked && Date.now() < lockDeadline) {
+                    await sleep(500);
+                }
+                sendSetEndpoint(requiredServer);
+                await sleep(800);  // RTT + server-side state propagation
+            }
+            const data = JSON.stringify({ marketId, jobId });
+            const ok = wsSend('42["event",{"event":{"name":"market","action":"job.take"},"data":' + data + '}]');
+            if (!ok) {
+                // Legacy event watched by content.js bulk-accept watchdog; not in MSG enum
+                post('COR3_ACCEPT_JOB_SEND_FAILED', { jobId, marketId });
+            }
+        }).catch((e) => { console.warn('[COR3] accept failed', e); });
+        return true;  // sync return — async work runs on inflightAcceptChain
     };
 
     root.__cor3CompleteJob = function (jobId, marketId) {
@@ -904,6 +931,16 @@
         'COR3_REQUEST_DARK_MARKET': () => root.__cor3RequestDarkMarket(),
         'COR3_REQUEST_SRM_MARKET': () => root.__cor3RequestSrmMarket(),
         [MSG.GAME.REQUEST_NM_MAP]: () => root.__cor3RequestNetworkMap(),
+        [MSG.GAME.REVERT_ENDPOINT_TO_HOME]: () => {
+            // Serialise behind any in-flight accept dance so we don't fire
+            // a revert that races a still-pending set.endpoint(remote).
+            inflightAcceptChain = inflightAcceptChain.then(async () => {
+                if (currentEndpoint !== HOME_SERVER_ID) {
+                    sendSetEndpoint(HOME_SERVER_ID);
+                    await sleep(300);
+                }
+            }).catch(() => {});
+        },
         [MSG.GAME.REFRESH_MARKET]: () => root.__cor3RefreshMarket(),
         [MSG.GAME.REFRESH_DARK_MARKET]: () => root.__cor3RefreshDarkMarket(),
         [MSG.GAME.REFRESH_SRM_MARKET]: () => root.__cor3RefreshSrmMarket(),
