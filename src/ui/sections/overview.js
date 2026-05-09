@@ -9,7 +9,7 @@
 //     keep market controls together with the market they affect)
 //   • Auto solvers — Auto-decrypt only
 //   • Game appearance — system messages, background, network fog, map FX
-//   • Alarms (collapsible <details>, default open) — list + add form
+//   • Alarms (collapsible <details>, default closed) — list + add form
 //   • Versions footer (web / system)
 //
 // Active expeditions and pending decisions live in the Expeditions tab.
@@ -190,7 +190,7 @@
         for (const e of exps || []) alarmLabels['exp_' + e.id] = `${e.locationName || 'Expedition'} — ${e.zoneName || ''}`;
         const alarmsBlock = document.createElement('details');
         alarmsBlock.className = 'collapsible';
-        alarmsBlock.open = true;
+        alarmsBlock.open = false;
         const summary = document.createElement('summary');
         summary.className = 'section-title';
         summary.textContent = `Alarms (${(alarms || []).length})`;
