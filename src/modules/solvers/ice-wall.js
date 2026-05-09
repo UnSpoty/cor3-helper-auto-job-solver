@@ -272,60 +272,30 @@
 
     // ─── Click attempt ───────────────────────────────────────────────────
     /**
-     * Best-effort click on the apex cell. We try four escalating tactics:
-     *   1. Native .click() on the bounding triangle (cheapest)
-     *   2. PointerEvent + MouseEvent down/up/click sequence
-     *   3. Native .click() on each ancestor up to the wrapper g
-     *   4. Locate the React onClick prop via __reactProps$<key> and call it
-     *      with a synthetic event
+     * Dispatch the click that advances the counter. mousedown + mouseup +
+     * click on the bounding triangle, with proper coordinates — verified
+     * live to round-trip cleanly against the May 2026 build.
      *
-     * NONE of these worked against the May 2026 build — the puzzle
-     * apparently checks event.isTrusted or routes input through some
-     * channel our dispatched events don't reach. Logging the apex
-     * coordinates is currently the most useful output of this function;
-     * the user can hand-click the apex while we figure out the trigger.
+     * Earlier this function tried four tactics in sequence (native
+     * .click(), the mouse sequence, native .click() on ancestors, and a
+     * React-fiber onClick invocation). At least two of them registered
+     * with the puzzle's handler, so each call advanced the counter twice
+     * — round 1 went 0/3 → 2/3 in one click, etc. Sticking to one
+     * dispatch makes each click count exactly once.
      */
-    async function attemptClick(glyphGroup, mod) {
+    async function attemptClick(glyphGroup, _mod) {
         const tri = glyphGroup.querySelector(SEL.TRIANGLE);
         if (!tri) return false;
         const r = tri.getBoundingClientRect();
-        const cx = r.left + r.width / 2;
-        const cy = r.top + r.height / 2;
-        const evtBase = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy, button: 0, buttons: 1 };
-
-        // 1. Native .click() on triangle and wrapper
-        try { tri.click(); } catch (_) {}
-        try { glyphGroup.click(); } catch (_) {}
-
-        // 2. PointerEvent + MouseEvent dance
-        try {
-            tri.dispatchEvent(new PointerEvent('pointerdown', { ...evtBase, pointerType: 'mouse', pointerId: 1 }));
-            tri.dispatchEvent(new PointerEvent('pointerup',   { ...evtBase, pointerType: 'mouse', pointerId: 1, buttons: 0 }));
-        } catch (_) {}
-        tri.dispatchEvent(new MouseEvent('mousedown', evtBase));
-        tri.dispatchEvent(new MouseEvent('mouseup',   { ...evtBase, buttons: 0 }));
-        tri.dispatchEvent(new MouseEvent('click',     { ...evtBase, buttons: 0 }));
-
-        // 3. React fiber onClick (often bound to the wrapper g at depth ~2)
-        let p = tri;
-        for (let d = 0; d < 12 && p; d++) {
-            const key = Object.keys(p).find((k) => k.startsWith('__reactProps$'));
-            const props = key ? p[key] : null;
-            if (props && typeof props.onClick === 'function') {
-                try {
-                    props.onClick({
-                        type: 'click', currentTarget: p, target: tri,
-                        preventDefault: () => {}, stopPropagation: () => {},
-                        isDefaultPrevented: () => false, isPropagationStopped: () => false,
-                        nativeEvent: new MouseEvent('click', evtBase),
-                        clientX: cx, clientY: cy, button: 0, buttons: 0,
-                    });
-                } catch (e) { mod.debug(`fiber onClick threw at depth ${d}: ${e.message}`); }
-                break;
-            }
-            p = p.parentElement;
-        }
-
+        const opts = {
+            bubbles: true, cancelable: true, view: window,
+            clientX: r.left + r.width / 2,
+            clientY: r.top + r.height / 2,
+            button: 0, buttons: 1,
+        };
+        tri.dispatchEvent(new MouseEvent('mousedown', opts));
+        tri.dispatchEvent(new MouseEvent('mouseup',   { ...opts, buttons: 0 }));
+        tri.dispatchEvent(new MouseEvent('click',     { ...opts, buttons: 0 }));
         return true;
     }
 
