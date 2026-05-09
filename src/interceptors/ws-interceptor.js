@@ -543,8 +543,14 @@
     };
 
     root.__cor3RequestDarkMarket = function () {
-        wsSend('42["event",{"event":{"name":"network-map","action":"set.endpoint"},"data":{"serverId":"' + DARK_SERVER_ID + '"}}]');
-        setTimeout(() => sendGetJobs(DARK_MARKET_ID), 1500);
+        // Direct get.jobs with the dark marketId is enough — the server
+        // looks up by marketId regardless of current endpoint. The legacy
+        // network-map.set.endpoint preflight is gone: it added 1500ms of
+        // delay and could falsely trip darkMarketAvailable=false via
+        // no-path-to-server when the user wasn't manually connected to
+        // the dark server (verified by inspecting cor3.gg's own client —
+        // it sends nothing but join-room + get.{options,lots,jobs}).
+        sendGetJobs(DARK_MARKET_ID);
         return true;
     };
 

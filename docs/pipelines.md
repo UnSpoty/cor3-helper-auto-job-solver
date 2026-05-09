@@ -601,9 +601,14 @@ __cor3RequestMarket():
     sendGetJobs(HOME_MARKET_ID)
 
 __cor3RequestDarkMarket():
-    wsSend network-map.set.endpoint  → DARK_SERVER_ID
-    setTimeout 1500ms:
-        sendGetJobs(DARK_MARKET_ID)
+    sendGetJobs(DARK_MARKET_ID)
+    // No network-map.set.endpoint preflight — the server looks up by
+    // marketId regardless of current endpoint. Verified by inspecting
+    // cor3.gg's own client when the user opens D4RK manually: it sends
+    // only join-room + get.{options,lots,jobs}, no set.endpoint at all.
+    // The legacy preflight added 1500ms of delay and could falsely trip
+    // darkMarketAvailable=false via no-path-to-server when the user
+    // hadn't manually connected to D4RK first.
 
 sendGetJobs(marketId):
     pendingMarketJobsRequests.push({ marketId, sentAt })
@@ -648,7 +653,11 @@ frames the site sends when the user opens Market via Network Map):
 ```
 HOME_MARKET_ID = '019d3ea4-85bd-7389-904d-8f7c85841134'
 DARK_MARKET_ID = '019d3ea4-85bd-7389-904d-908ba9194aa0'
-DARK_SERVER_ID = '019d29c5-4b37-79bf-b23e-304d8ea03c15'   // for set.endpoint
+DARK_SERVER_ID = '019d29c5-4b37-79bf-b23e-304d8ea03c15'   // legacy — kept
+                                                          // for the
+                                                          // set.endpoint
+                                                          // unreachable
+                                                          // listener
 ```
 
 ---
