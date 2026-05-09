@@ -31,9 +31,22 @@
     // own subscriber inside uiComponents.logViewer (no full re-mount).
     let liveLogViewer = null;
 
-    function renderHeader(host, settings, state) {
+    // Solvers Auto-Jobs depends on. Each one corresponds to a chrome.storage.
+    // sync key on the Overview tab (Auto solvers section). If any of these
+    // is off, Auto-Jobs would accept jobs and then sit waiting on a minigame
+    // that nobody's solving — better to refuse to start.
+    const REQUIRED_SOLVERS = [
+        { key: C.STORAGE_SYNC.AUTO_DECRYPT_ENABLED,  label: 'Auto-decrypt',  reason: 'file_decryption / decrypt_extract jobs open a config-hack minigame that this solver handles' },
+        { key: C.STORAGE_SYNC.AUTO_ICE_WALL_ENABLED, label: 'Auto ICE WALL', reason: 'reconnecting to a server can drop into the ICE break minigame; this solver handles it' },
+    ];
+
+    function renderHeader(host, settings, state, solverFlags) {
         host.innerHTML = '';
         const head = el('div', 'card');
+
+        const missingSolvers = REQUIRED_SOLVERS.filter((s) => !solverFlags[s.key]);
+        const blocked = missingSolvers.length > 0;
+
         head.innerHTML = `
             <div class="card-row">
                 <span class="card-label">Auto-Jobs</span>
@@ -46,10 +59,32 @@
             ${state.jobName ? `<div class="sm mt-sm">${escape(state.jobName)} <span class="muted">[${escape(state.jobType || '')}]</span></div>` : ''}
             ${state.serverName ? `<div class="sm muted">server: ${escape(state.serverName)}</div>` : ''}
         `;
+
+        if (blocked && !settings.enabled) {
+            // Render a small warn-card listing exactly which solvers to enable
+            // and why. Lives between status and the START button so the user
+            // sees the gate before they click.
+            const warn = el('div', 'card-row mt-sm');
+            warn.innerHTML = `
+                <span class="pill warn">Required solvers</span>
+                <span class="sm muted">enable in Overview → Auto solvers</span>
+            `;
+            head.appendChild(warn);
+            const list = el('div', 'mt-sm');
+            for (const s of missingSolvers) {
+                list.appendChild(el('div', 'sm', `· <b>${escape(s.label)}</b> — <span class="muted xs">${escape(s.reason)}</span>`));
+            }
+            head.appendChild(list);
+        }
+
         const toggleBtn = el('button', 'btn btn-block mt-sm', settings.enabled ? 'STOP' : 'START');
         toggleBtn.classList.toggle('btn-danger', !!settings.enabled);
-        toggleBtn.classList.toggle('btn-success', !settings.enabled);
+        toggleBtn.classList.toggle('btn-success', !settings.enabled && !blocked);
+        // Stop is always allowed; start is gated on solvers being on.
+        toggleBtn.disabled = blocked && !settings.enabled;
+        if (toggleBtn.disabled) toggleBtn.title = `Enable required solvers first: ${missingSolvers.map((s) => s.label).join(', ')}`;
         toggleBtn.addEventListener('click', async () => {
+            if (toggleBtn.disabled) return;
             const nextSettings = Object.assign({}, settings, { enabled: !settings.enabled });
             await Store.sync.setOne(C.STORAGE_SYNC.AUTOJOBS_SETTINGS, nextSettings);
             const tab = await getCor3Tab();
@@ -319,7 +354,7 @@
     }
 
     async function render(container) {
-        const [settings, state, queue, bugged, nmGraph, priorities, home, dark, srm] = await Promise.all([
+        const [settings, state, queue, bugged, nmGraph, priorities, home, dark, srm, autoDecrypt, autoIceWall] = await Promise.all([
             Store.sync.getOne(C.STORAGE_SYNC.AUTOJOBS_SETTINGS, DEFAULT_SETTINGS),
             Store.local.getOne(C.STORAGE_LOCAL.AUTOJOBS_STATE, { status: 'idle' }),
             Store.local.getOne(C.STORAGE_LOCAL.AUTOJOBS_QUEUE, []),
@@ -329,7 +364,13 @@
             Store.local.getOne(C.STORAGE_LOCAL.MARKET, null),
             Store.local.getOne(C.STORAGE_LOCAL.DARK_MARKET, null),
             Store.local.getOne(C.STORAGE_LOCAL.SRM_MARKET, null),
+            Store.sync.getOne(C.STORAGE_SYNC.AUTO_DECRYPT_ENABLED, false),
+            Store.sync.getOne(C.STORAGE_SYNC.AUTO_ICE_WALL_ENABLED, false),
         ]);
+        const solverFlags = {
+            [C.STORAGE_SYNC.AUTO_DECRYPT_ENABLED]: !!autoDecrypt,
+            [C.STORAGE_SYNC.AUTO_ICE_WALL_ENABLED]: !!autoIceWall,
+        };
 
         // Tear down a previous logViewer if we're re-rendering — its storage
         // listener leaks otherwise.
@@ -348,7 +389,7 @@
         container.appendChild(availHost);
         container.appendChild(prioHost);
 
-        renderHeader(headerHost, settings, state);
+        renderHeader(headerHost, settings, state, solverFlags);
         renderSources(sourcesHost, settings);
         renderQueue(queueHost, queue, bugged);
         renderAvailableJobs(availHost, [
@@ -387,7 +428,9 @@
             unsub2 = Store.sync.onChanged((changes) => {
                 if (!container.classList.contains('active')) return;
                 if (changes[C.STORAGE_SYNC.AUTOJOBS_SETTINGS] ||
-                    changes[C.STORAGE_SYNC.SERVER_PRIORITIES]) render(container);
+                    changes[C.STORAGE_SYNC.SERVER_PRIORITIES] ||
+                    changes[C.STORAGE_SYNC.AUTO_DECRYPT_ENABLED] ||
+                    changes[C.STORAGE_SYNC.AUTO_ICE_WALL_ENABLED]) render(container);
             });
             render(container);
         },
