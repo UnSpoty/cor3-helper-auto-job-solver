@@ -130,6 +130,12 @@
      *   • mismatch  — lit AND different signature → contradicts; eliminates
      *   • unknown   — dark (not revealed yet) → no evidence either way
      *
+     * Each candidate also carries a `clickTarget`: the actual cell to
+     * dispatch the click on. Empirically this is NOT the apex of the
+     * sub-triangle — it's the centre cell of the BOTTOM row (offset
+     * +108 in Y, 0 in X from the apex). User confirmed: clicking the
+     * apex is a no-op, clicking bottom-centre advances the counter.
+     *
      * Returns feasible candidates (mismatch === 0) sorted by match count
      * descending. Caller decides confidence threshold.
      */
@@ -157,7 +163,15 @@
             if (mismatch > 0) continue;
             // Pure unknowns (no evidence at all) aren't useful
             if (match === 0) continue;
-            out.push({ x: apex.x, y: apex.y, group: apex.group, match, unknown, mismatch });
+            // Click target = bottom-row centre cell (apex_x, apex_y + 108)
+            const clickKey = `${apex.x},${apex.y + 108},false`;
+            const clickCell = boardByPos.get(clickKey);
+            out.push({
+                x: apex.x, y: apex.y, group: apex.group,
+                clickGroup: clickCell ? clickCell.group : apex.group,
+                clickX: apex.x, clickY: apex.y + 108,
+                match, unknown, mismatch,
+            });
         }
         out.sort((a, b) => b.match - a.match);
         return out;
@@ -200,11 +214,11 @@
     }
 
     /**
-     * Draw the predicted apex sub-triangle. Two visual modes:
-     *   • tentative (best guess so far, but not confident enough to click) —
-     *     dim yellow outline, dashed
-     *   • confident (clear unique winner, ready to click) — solid orange,
-     *     filled apex
+     * Draw the predicted sub-triangle plus a brighter highlight on the
+     * actual click target (bottom-row centre cell, not the apex).
+     * Two visual modes:
+     *   • tentative — dim yellow outline, dashed
+     *   • confident — solid orange, filled click cell
      */
     function drawOverlay(apex, confident) {
         const wall = document.querySelector(SEL.WALL);
@@ -237,15 +251,21 @@
         if (dash) bigPath.setAttribute('stroke-dasharray', dash);
         overlay.appendChild(bigPath);
 
-        const apexPath = document.createElementNS(ns, 'path');
-        apexPath.setAttribute('transform', `translate(${apex.x}, ${apex.y})`);
-        apexPath.setAttribute('d', 'M60.6914 53.0305 H1.73242 L31.21 1.99927 Z');
-        apexPath.setAttribute('fill', color);
-        apexPath.setAttribute('fill-opacity', confident ? '0.45' : '0.20');
-        apexPath.setAttribute('stroke', '#FFFFFF');
-        apexPath.setAttribute('stroke-width', '2');
-        if (dash) apexPath.setAttribute('stroke-dasharray', dash);
-        overlay.appendChild(apexPath);
+        // Highlight the CLICK target (bottom-row centre cell), not the apex.
+        // The puzzle accepts the click on this cell; the apex highlight in
+        // the previous version was misleading — empirically clicks there
+        // are no-ops.
+        const clickX = apex.clickX !== undefined ? apex.clickX : apex.x;
+        const clickY = apex.clickY !== undefined ? apex.clickY : apex.y + 108;
+        const clickPath = document.createElementNS(ns, 'path');
+        clickPath.setAttribute('transform', `translate(${clickX}, ${clickY})`);
+        clickPath.setAttribute('d', 'M60.6914 53.0305 H1.73242 L31.21 1.99927 Z');
+        clickPath.setAttribute('fill', color);
+        clickPath.setAttribute('fill-opacity', confident ? '0.45' : '0.20');
+        clickPath.setAttribute('stroke', '#FFFFFF');
+        clickPath.setAttribute('stroke-width', '2');
+        if (dash) clickPath.setAttribute('stroke-dasharray', dash);
+        overlay.appendChild(clickPath);
 
         renderG.appendChild(overlay);
     }
@@ -361,8 +381,8 @@
             if (apexKey === lastClickedApexKey) { await dom.sleep(300); continue; }
 
             const counterCur = readCounter();
-            mod.info(`commit: apex (${best.x}, ${best.y}) — match ${best.match}/9, unknown ${best.unknown}, counter ${counterCur?.current}/${counterCur?.total}`);
-            await attemptClick(best.group, mod);
+            mod.info(`commit: apex (${best.x}, ${best.y}) → click bottom-centre (${best.clickX}, ${best.clickY}) — match ${best.match}/9, unknown ${best.unknown}, counter ${counterCur?.current}/${counterCur?.total}`);
+            await attemptClick(best.clickGroup, mod);
             lastClickedApexKey = apexKey;
 
             const ticked = await dom.waitFor(() => {
