@@ -16,6 +16,12 @@
     if (root.__cor3IsolatedBootDone) return;
     root.__cor3IsolatedBootDone = true;
 
+    // Console-visible boot indicator. Without this we have no way to tell
+    // from the page console whether isolated content_scripts loaded at all
+    // (Logger.push goes to chrome.storage, not console). Critical for
+    // diagnosing Firefox MV3 load issues.
+    console.log('[COR3.entry/content] isolated-world boot starting');
+
     // Log-bridge: ingest entries forwarded from MAIN-world modules.
     // MAIN-world Logger lacks chrome.storage, so it posts each entry as
     // 'COR3_LOG_REMOTE' via window.postMessage. We unwrap and persist locally.
@@ -27,10 +33,12 @@
 
     Registry.boot().then(() => {
         const all = Registry.snapshot();
+        console.log('[COR3.entry/content] isolated-world boot complete —', all.length, 'modules');
         Logger.push('registry', C.LOG_LEVEL.INFO, `boot done — ${all.length} modules`, {
             ids: all.map((m) => m.id),
         });
     }).catch((e) => {
+        console.error('[COR3.entry/content] boot failed', e);
         Logger.push('registry', C.LOG_LEVEL.ERROR, 'boot failed', { error: String(e), stack: e && e.stack });
     });
 

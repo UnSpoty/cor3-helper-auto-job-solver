@@ -66,17 +66,19 @@
                 name: 'Hide system messages',
                 category: C.CATEGORY.APPEARANCE,
                 owns: { storageKeys: [C.STORAGE_SYNC.DISABLE_SYSTEM_MESSAGES] },
-                defaultEnabled: false,
+                // Module is always loaded; the FEATURE is off by default via the
+                // storage key (Store.sync.getOne(KEY, false)). defaultEnabled controls
+                // the module-level master switch in the Module Manager — appearance
+                // modules must be enabled there or they can't even subscribe to
+                // their toggle key.
             });
         }
         async start() {
             const enabled = await Store.sync.getOne(C.STORAGE_SYNC.DISABLE_SYSTEM_MESSAGES, false);
             if (enabled) { setTimeout(() => { hideAll(); startObserver(); }, 1000); }
 
-            this.track(Store.sync.onChanged((changes) => {
-                const ch = changes[C.STORAGE_SYNC.DISABLE_SYSTEM_MESSAGES];
-                if (!ch) return;
-                if (ch.newValue) { hideAll(); startObserver(); this.info('hiding system messages'); }
+            this.track(Store.sync.onSettingChange(C.STORAGE_SYNC.DISABLE_SYSTEM_MESSAGES, (newValue) => {
+                if (newValue) { hideAll(); startObserver(); this.info('hiding system messages'); }
                 else { showAll(); stopObserver(); this.info('showing system messages'); }
             }));
             this.track(() => stopObserver());

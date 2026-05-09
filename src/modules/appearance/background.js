@@ -37,16 +37,16 @@
                 name: 'Disable background',
                 category: C.CATEGORY.APPEARANCE,
                 owns: { storageKeys: [C.STORAGE_SYNC.DISABLE_BACKGROUND] },
-                defaultEnabled: false,
+                // Module always loads; the FEATURE is off by default via the
+                // storage default — see appearance/system-messages.js for the
+                // full reason why defaultEnabled: false is wrong here.
             });
         }
         async start() {
             const enabled = await Store.sync.getOne(C.STORAGE_SYNC.DISABLE_BACKGROUND, false);
             if (enabled) setTimeout(hideAll, 1000);
-            this.track(Store.sync.onChanged((changes) => {
-                const ch = changes[C.STORAGE_SYNC.DISABLE_BACKGROUND];
-                if (!ch) return;
-                if (ch.newValue) { hideAll(); this.info('background hidden'); }
+            this.track(Store.sync.onSettingChange(C.STORAGE_SYNC.DISABLE_BACKGROUND, (newValue) => {
+                if (newValue) { hideAll(); this.info('background hidden'); }
                 else { showAll(); this.info('background restored'); }
             }));
             this.info('background ready');

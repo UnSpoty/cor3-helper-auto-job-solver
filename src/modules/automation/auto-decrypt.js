@@ -22,10 +22,8 @@
             const enabled = await Store.sync.getOne(C.STORAGE_SYNC.AUTO_DECRYPT_ENABLED, false);
             if (enabled) { this.info('starting decrypt solver'); start(); }
 
-            this.track(Store.sync.onChanged((changes) => {
-                const ch = changes[C.STORAGE_SYNC.AUTO_DECRYPT_ENABLED];
-                if (!ch) return;
-                if (ch.newValue) { this.info('toggle ON'); start(); }
+            this.track(Store.sync.onSettingChange(C.STORAGE_SYNC.AUTO_DECRYPT_ENABLED, (newValue) => {
+                if (newValue) { this.info('toggle ON'); start(); }
                 else { this.info('toggle OFF'); stop(); }
             }));
 

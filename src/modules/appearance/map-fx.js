@@ -47,18 +47,16 @@
                 name: 'Disable map FX',
                 category: C.CATEGORY.APPEARANCE,
                 owns: { storageKeys: [SYNC_KEY] },
-                defaultEnabled: false,
+                // Module always loads; FEATURE off by default via storage default.
             });
         }
         async start() {
             const enabled = await Store.sync.getOne(SYNC_KEY, false);
             if (enabled) applyMapFx(true);
 
-            this.track(Store.sync.onChanged((changes) => {
-                if (changes[SYNC_KEY]) {
-                    applyMapFx(!!changes[SYNC_KEY].newValue);
-                    this.info(changes[SYNC_KEY].newValue ? 'map FX disabled' : 'map FX enabled');
-                }
+            this.track(Store.sync.onSettingChange(SYNC_KEY, (newValue) => {
+                applyMapFx(!!newValue);
+                this.info(newValue ? 'map FX disabled' : 'map FX enabled');
             }));
             this.info('map-fx ready');
         }

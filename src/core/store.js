@@ -81,6 +81,53 @@
     const sync = makeArea('sync');
 
     /**
+     * Listen for changes to a single sync key from EITHER source:
+     *   • chrome.storage.sync.onChanged — the canonical channel; reliable
+     *     on Chrome but Firefox MV3 has known cross-context delivery
+     *     issues (popup writes that don't propagate to isolated content
+     *     scripts).
+     *   • Bus.runtime — a fallback message of the shape
+     *     { type: 'settingChanged', payload: { key, value } } that the
+     *     popup posts via chrome.tabs.sendMessage right after setOne().
+     *
+     * Both signals call the callback; we dedupe by the last seen value so
+     * a Chrome write that lands on both channels still fires once.
+     * Returns an unsubscribe fn.
+     *
+     * Lives on root.COR3.Store.sync so isolated modules can replace
+     *   Store.sync.onChanged((changes) => { if (changes[KEY]) … })
+     * with
+     *   Store.sync.onSettingChange(KEY, (newValue) => …)
+     * — fewer lines AND Firefox-safe.
+     */
+    function onSettingChange(key, callback) {
+        let lastValue = Symbol('uninit');
+        const fire = (newValue) => {
+            if (newValue === lastValue) return;
+            lastValue = newValue;
+            try { callback(newValue); }
+            catch (e) {
+                try { console.error('[COR3.Store] onSettingChange callback error', e); } catch (_) {}
+            }
+        };
+        const unsubStorage = sync.onChanged((changes) => {
+            if (Object.prototype.hasOwnProperty.call(changes, key)) {
+                fire(changes[key].newValue);
+            }
+        });
+        let unsubBus = () => {};
+        const Bus = root.COR3.Bus;
+        if (Bus && Bus.runtime && typeof Bus.runtime.on === 'function') {
+            unsubBus = Bus.runtime.on('settingChanged', (payload) => {
+                if (!payload || payload.key !== key) return;
+                fire(payload.value);
+            });
+        }
+        return () => { unsubStorage(); unsubBus(); };
+    }
+    sync.onSettingChange = onSettingChange;
+
+    /**
      * Wait until a particular key has any (truthy) value in `area`. Useful for
      * modules that need a token / config item before they can do anything.
      */

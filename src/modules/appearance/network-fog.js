@@ -47,17 +47,15 @@
                 name: 'Disable network fog',
                 category: C.CATEGORY.APPEARANCE,
                 owns: { storageKeys: [C.STORAGE_SYNC.DISABLE_NETWORK_FOG] },
-                defaultEnabled: false,
+                // Module always loads; FEATURE off by default via storage default.
             });
         }
         async start() {
             const enabled = await Store.sync.getOne(C.STORAGE_SYNC.DISABLE_NETWORK_FOG, false);
             if (enabled) setTimeout(() => { hideAll(); startObserver(); }, 1000);
 
-            this.track(Store.sync.onChanged((changes) => {
-                const ch = changes[C.STORAGE_SYNC.DISABLE_NETWORK_FOG];
-                if (!ch) return;
-                if (ch.newValue) { hideAll(); startObserver(); this.info('fog hidden'); }
+            this.track(Store.sync.onSettingChange(C.STORAGE_SYNC.DISABLE_NETWORK_FOG, (newValue) => {
+                if (newValue) { hideAll(); startObserver(); this.info('fog hidden'); }
                 else { showAll(); stopObserver(); this.info('fog restored'); }
             }));
             this.track(() => stopObserver());

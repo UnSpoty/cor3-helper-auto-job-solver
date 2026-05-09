@@ -58,7 +58,16 @@
                 <label class="switch"><input type="checkbox" ${currentValue ? 'checked' : ''}><span class="switch-slider"></span></label>
             </div>
         `;
-        row.querySelector('input').addEventListener('change', (e) => Store.sync.setOne(key, e.target.checked));
+        row.querySelector('input').addEventListener('change', async (e) => {
+            const value = e.target.checked;
+            await Store.sync.setOne(key, value);
+            // Belt-and-suspenders: also push the change as a runtime message.
+            // chrome.storage.sync.onChanged works reliably from popup → isolated
+            // content script on Chrome, but Firefox MV3 has known cross-context
+            // delivery gaps. The Store.sync.onSettingChange helper in modules
+            // listens for both signals and dedupes.
+            sendToContent('settingChanged', { key, value });
+        });
         return row;
     }
 
