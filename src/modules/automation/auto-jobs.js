@@ -835,20 +835,37 @@
         onServerUnreachable(env) {
             const { serverName, blockedByKD } = env;
             if (!serverName) return;
-            let skipMs = 30 * 60 * 1000;
+
+            // Path-blocking K/D servers come back from network-map with a
+            // confirmed timer text — those legitimately can't be reached
+            // until the timer expires, so block the *transit* server (not
+            // the destination) for the timer duration.
             if (Array.isArray(blockedByKD) && blockedByKD.length > 0) {
                 for (const { serverName: kdName, timerText } of blockedByKD) {
                     const kdMs = parseKDTimerMs(timerText);
                     kdSkipServers.set(kdName, Date.now() + kdMs);
                     pushUserLog(`K/D "${kdName}" (${timerText || '?'}) blocking path to "${serverName}"`, 'warn');
-                    skipMs = Math.max(skipMs, kdMs);
                 }
             }
-            kdSkipServers.set(serverName, Date.now() + skipMs);
-            pushUserLog(`Server "${serverName}" unreachable — skip ${Math.round(skipMs / 60000)} min`, 'warn');
-            if (state.status === 'solving') {
+
+            // Don't blanket-skip the destination server — one unreachable
+            // event isn't strong enough to ban every job touching it (could
+            // be a transient WS hiccup, a brief endpoint mismatch, or a
+            // K/D we haven't observed yet). Instead, bug the *current job*
+            // so the scanner moves on; the bugged TTL lets that specific
+            // job retry after a cooldown, but other jobs on the same
+            // server stay reachable.
+            if (state.status === 'solving' && state.jobId) {
+                bugJob(state.jobId, state.jobName || state.jobType || 'Unknown',
+                       `server "${serverName}" unreachable`, COMPLETE_ERR_BUG_TTL_MS);
+                const qi = queue.findIndex((j) => j.jobId === state.jobId);
+                if (qi !== -1) { queue.splice(qi, 1); saveQueue(); }
+                pushUserLog(`Server "${serverName}" unreachable — job bugged, picking next`, 'warn');
                 solvingStartedAt = 0;
-                resetState();
+                resetState('server-unreachable');
+                if (queue.length > 0) setTimeout(executeNextFromQueue, 3000);
+            } else {
+                pushUserLog(`Server "${serverName}" unreachable`, 'warn');
             }
         }
 
