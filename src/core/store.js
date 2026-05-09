@@ -16,45 +16,50 @@
         return typeof chrome !== 'undefined' && chrome.storage;
     }
 
+    // Detect "extension context invalidated" — the throw/rejection that
+    // chrome.* APIs produce after the extension is reloaded or disabled
+    // while a content script is still running on the page. Safe to swallow:
+    // the next page load will get a fresh content-script context.
+    function isCtxInvalidated(e) {
+        const msg = (e && (e.message || String(e))) || '';
+        return /Extension context invalidated|context invalidated/i.test(msg);
+    }
+
     function makeArea(areaName) {
         const area = hasStorage() ? chrome.storage[areaName] : null;
 
-        async function get(keys) {
-            if (!area) return {};
+        // Wrap a chrome.storage callback-style call. Resolves with the
+        // callback arg, OR with `fallback` if the call throws synchronously
+        // (extension reload race) or fails with chrome.runtime.lastError.
+        // Never rejects — silent best-effort, callers can keep going.
+        function safeCall(fn, fallback) {
             return new Promise((resolve) => {
-                area.get(keys, (data) => { void chrome.runtime.lastError; resolve(data || {}); });
+                try {
+                    fn((arg) => {
+                        // Read lastError to silence the "unchecked" warning
+                        // that Chrome emits when nobody touches it.
+                        const err = chrome.runtime && chrome.runtime.lastError;
+                        if (err && isCtxInvalidated(err)) return resolve(fallback);
+                        resolve(arg !== undefined ? arg : fallback);
+                    });
+                } catch (e) {
+                    if (!isCtxInvalidated(e)) {
+                        try { console.warn('[COR3.Store] storage call threw', e); } catch (_) {}
+                    }
+                    resolve(fallback);
+                }
             });
         }
 
+        async function get(keys)         { return area ? safeCall((cb) => area.get(keys, cb), {}) : {}; }
+        async function set(obj)          { if (area) await safeCall((cb) => area.set(obj, cb), undefined); }
+        async function remove(keys)      { if (area) await safeCall((cb) => area.remove(keys, cb), undefined); }
+        async function clear()           { if (area) await safeCall((cb) => area.clear(cb), undefined); }
         async function getOne(key, defaultValue) {
             const data = await get(key);
             return Object.prototype.hasOwnProperty.call(data, key) ? data[key] : defaultValue;
         }
-
-        async function set(obj) {
-            if (!area) return;
-            return new Promise((resolve) => {
-                area.set(obj, () => { void chrome.runtime.lastError; resolve(); });
-            });
-        }
-
-        async function setOne(key, value) {
-            return set({ [key]: value });
-        }
-
-        async function remove(keys) {
-            if (!area) return;
-            return new Promise((resolve) => {
-                area.remove(keys, () => { void chrome.runtime.lastError; resolve(); });
-            });
-        }
-
-        async function clear() {
-            if (!area) return;
-            return new Promise((resolve) => {
-                area.clear(() => { void chrome.runtime.lastError; resolve(); });
-            });
-        }
+        async function setOne(key, value) { return set({ [key]: value }); }
 
         /**
          * Subscribe to changes in this area. Handler receives the same
@@ -70,8 +75,14 @@
                     try { console.error('[COR3.Store] onChanged handler error', e); } catch (_) {}
                 }
             };
-            chrome.storage.onChanged.addListener(wrapped);
-            return () => chrome.storage.onChanged.removeListener(wrapped);
+            try { chrome.storage.onChanged.addListener(wrapped); }
+            catch (e) {
+                if (!isCtxInvalidated(e)) try { console.warn('[COR3.Store] onChanged addListener threw', e); } catch (_) {}
+                return () => {};
+            }
+            return () => {
+                try { chrome.storage.onChanged.removeListener(wrapped); } catch (_) { /* invalidated */ }
+            };
         }
 
         return { get, getOne, set, setOne, remove, clear, onChanged };

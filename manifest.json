@@ -25,19 +25,7 @@
     "https://svc-corie.cor3.gg/*"
   ],
   "background": {
-    "service_worker": "src/entry/background.js",
-    "scripts": [
-      "src/shared/platform.js",
-      "src/shared/constants.js",
-      "src/core/bus.js",
-      "src/core/store.js",
-      "src/core/logger.js",
-      "src/shared/errors.js",
-      "src/core/module.js",
-      "src/core/settings.js",
-      "src/core/registry.js",
-      "src/entry/background.js"
-    ]
+    "service_worker": "src/entry/background.js"
   },
   "content_scripts": [
     {

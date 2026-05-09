@@ -4,6 +4,7 @@
 
 if (typeof importScripts === 'function') {
     importScripts(
+        '../shared/platform.js',
         '../shared/constants.js',
         '../core/bus.js',
         '../core/store.js',
