@@ -279,10 +279,17 @@ DevTools console by `[solver-daily-ops]` (Logger module id) and look in
   `console.debug` for `pre-encoding analysis: …`. If both Morse and
   Binary decode validly without a hint, it's ambiguous; the heuristic is
   documented in the function body.
-- **Log puzzle: `no error-type-button for: <label>`** — `ERROR_LABELS`
-  is hardcoded English. If cor3.gg ever localizes those button texts,
-  rewrite `findErrorTypeButton()` to match by data-attribute or position
-  rather than `textContent`.
+- **Log puzzle: `no error-type-button for: <issue>`** — neither the
+  English `ERROR_LABELS` text match nor the `ISSUE_BUTTON_INDEX`
+  position fallback found a button for the given issue. The position
+  fallback assumes 6 buttons in TIME / TYPE / MISSING_SECTOR /
+  MISSING_STATUS / SECTOR_BAD / STATUS_BAD order — verify in DevTools
+  that today's puzzle still renders all 6 buttons in that order, and
+  update the index map if not.
+- **Log puzzle: Confirm Selection stays disabled, "Selected: 1 / 2"** —
+  the analyzer ran before all `.log-entry` rows finished animating in
+  (`.log-entry-appearing` class). `waitForLogScanComplete()` should
+  guard this; if it fired too early, increase the timeout there.
 
 WS readiness probes (exposed by ws-interceptor) are usable from the F12
 console for diagnosis:

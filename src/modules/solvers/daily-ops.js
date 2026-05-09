@@ -34,9 +34,10 @@
     // ─── System Log Integrity tables ──────────────────────────────────────
     const VALID_TYPES = new Set(['AUTH', 'TEMP-SYNC', 'SCAN', 'ROUTE-CHECK', 'RADIO-TEST', 'PING', 'SYNC']);
     const VALID_STATUSES = new Set(['OK', 'WARN', 'ERROR']);
-    // The site renders these as exact-match button labels. If a future
-    // localization wraps them, .error-type-button text matching breaks —
-    // log handler will warn and continue, leaving the user to finish.
+    // Today the site renders these as English brand labels even on RU
+    // locale, so exact-text matching works. If they ever localize, we fall
+    // through to the position map below — buttons appear in this stable
+    // order inside every .error-analysis-block.
     const ERROR_LABELS = {
         TIME: 'Time format is incorrect',
         TYPE: 'Event type is incorrect',
@@ -44,6 +45,17 @@
         MISSING_STATUS: 'Missing /status parameter',
         SECTOR_BAD: '/sector parameter is incorrect',
         STATUS_BAD: '/status parameter is incorrect',
+    };
+    // Position fallback for .error-type-button — verified against today's
+    // build by reading every block with text "Time format is incorrect" /
+    // "Event type is incorrect" / … in this order.
+    const ISSUE_BUTTON_INDEX = {
+        TIME: 0,
+        TYPE: 1,
+        MISSING_SECTOR: 2,
+        MISSING_STATUS: 3,
+        SECTOR_BAD: 4,
+        STATUS_BAD: 5,
     };
 
     // Static dock IDs that are NOT Game Center. Anything else is a candidate.
@@ -317,7 +329,22 @@
 
         mod.info(`submitted daily ops (signal): ${code} (${pick.encoding})`);
         const ok = await awaitSubmitFeedback(mod);
-        if (ok) logUi(`solved: ${code} (${pick.encoding})`);
+        if (ok) {
+            logUi(`solved: ${code} (${pick.encoding})`);
+            // Close the puzzle window so the UI doesn't auto-roll a new
+            // round (the daily reward is already credited at this point).
+            await dom.sleep(400);
+            closePuzzleWindow();
+        }
+    }
+
+    function closePuzzleWindow() {
+        let win = document.querySelector('.game-container');
+        while (win && !win.matches?.('[data-component-name="ApplicationWindow"]') && win.parentElement) {
+            win = win.parentElement;
+        }
+        const close = win?.querySelector('[data-component-name="close-app-btn"]');
+        if (close) dom.clickEl(close);
     }
 
     // ─── System Log Integrity solver ──────────────────────────────────────
@@ -377,26 +404,65 @@
         return true;
     }
 
-    function findErrorTypeButton(container, label) {
-        return Array.from(container.querySelectorAll('.error-type-button'))
-            .find((b) => (b.textContent || '').trim() === label) || null;
+    function findErrorTypeButton(container, issue) {
+        const buttons = Array.from(container.querySelectorAll('.error-type-button'));
+        const label = ERROR_LABELS[issue];
+        if (label) {
+            const byText = buttons.find((b) => (b.textContent || '').trim() === label);
+            if (byText) return byText;
+        }
+        // Position fallback for localized builds. The block always renders
+        // all 6 issue buttons in ISSUE_BUTTON_INDEX order, regardless of
+        // which issues actually apply to the line.
+        const idx = ISSUE_BUTTON_INDEX[issue];
+        if (idx !== undefined && buttons[idx]) return buttons[idx];
+        return null;
+    }
+
+    // The log puzzle animates rows in one-by-one (.log-entry-appearing).
+    // Reading entries before the scan finishes finds only a partial set,
+    // and the puzzle requires exactly 2 selections — picking from a
+    // partial view leaves us short and the Confirm button stays disabled.
+    // Wait until the count stops growing for two consecutive ticks.
+    async function waitForLogScanComplete(container) {
+        let lastCount = -1;
+        let stableTicks = 0;
+        const deadline = Date.now() + 8000;
+        while (Date.now() < deadline) {
+            const n = container.querySelectorAll('.log-entry').length;
+            const stillAppearing = container.querySelector('.log-entry-appearing');
+            if (n > 0 && n === lastCount && !stillAppearing) {
+                if (++stableTicks >= 2) return n;
+            } else {
+                stableTicks = 0;
+                lastCount = n;
+            }
+            await dom.sleep(250);
+        }
+        return container.querySelectorAll('.log-entry').length;
     }
 
     async function solveLogIntegrity(mod) {
         mod.info('routing to System Log Integrity solver');
         logUi('log puzzle');
 
-        const logContainer = document.querySelector('.log-entries') ||
-                             document.querySelector('.log-entries-holder') ||
-                             document.querySelector('.log-entries-container') ||
-                             document.querySelector('.log');
+        // ── Step 1: read .log-entry rows and pick the 2 most-broken ones ──
+        const logContainer = await dom.waitForEl(() => {
+            return document.querySelector('.log-entries') ||
+                   document.querySelector('.log-entries-holder') ||
+                   document.querySelector('.log-entries-container') ||
+                   document.querySelector('.log');
+        }, { timeout: 6000 });
         if (!logContainer) { mod.error('log-entries container not found'); logUi('log container missing'); return; }
+
+        const finalCount = await waitForLogScanComplete(logContainer);
+        mod.debug(`log scan settled: ${finalCount} entries`);
 
         const entries = Array.from(logContainer.querySelectorAll('.log-entry'));
         if (!entries.length) { mod.error('no .log-entry elements'); logUi('no log entries'); return; }
 
         const analyzed = entries.map((el) => {
-            const textEl = el.querySelector('span') || el.querySelector('.log-text') || el;
+            const textEl = el.querySelector('.log-line') || el.querySelector('span') || el.querySelector('.log-text') || el;
             const text = (textEl?.textContent || '').trim();
             return { el, text, issues: analyzeLogLine(text) };
         }).filter((e) => e.issues.length > 0);
@@ -407,12 +473,16 @@
 
         for (const entry of selected) clickCheckbox(entry.el);
 
-        const confirmBtn = document.querySelector('.confirm-button');
-        if (!confirmBtn) { mod.error('.confirm-button not found'); logUi('confirm missing'); return; }
-        dom.clickEl(confirmBtn);
-        await dom.sleep(1000);
+        // ── Step 2: Confirm Selection (.confirm-button #1) ────────────────
+        const confirmSel = await dom.waitForEl(() => {
+            const b = document.querySelector('.confirm-button');
+            return (b && !b.disabled) ? b : null;
+        }, { timeout: 4000 });
+        if (!confirmSel) { mod.error('Confirm Selection button missing'); logUi('confirm missing'); return; }
+        dom.clickEl(confirmSel);
 
-        const analysisContainer = document.querySelector('.analysis-container');
+        // ── Step 3: Analysis page — click Fix Error → matching error types ──
+        const analysisContainer = await dom.waitForEl('.analysis-container', { timeout: 5000 });
         if (!analysisContainer) { mod.error('.analysis-container not found after confirm'); logUi('analysis screen missing'); return; }
 
         const blocks = Array.from(analysisContainer.querySelectorAll('.error-analysis-block'));
@@ -435,39 +505,52 @@
             const fixBtn = block.querySelector('.fix-error-button');
             if (fixBtn) {
                 dom.clickEl(fixBtn);
-                await dom.sleep(60);
+                await dom.sleep(80);
                 for (const iss of issues) {
-                    const label = ERROR_LABELS[iss] || iss;
-                    const errBtn = findErrorTypeButton(block, label);
+                    const errBtn = findErrorTypeButton(block, iss);
                     if (errBtn) {
                         dom.clickEl(errBtn);
-                        await dom.sleep(40);
-                    } else mod.warn(`no error-type-button for: ${label}`);
+                        await dom.sleep(50);
+                    } else mod.warn(`no error-type-button for: ${iss}`);
                 }
                 mod.info(`fixed: ${lineText}`);
             } else mod.warn(`no .fix-error-button for: ${lineText}`);
         }
 
-        // Final submit (Daily Ops wraps the legacy puzzle in a frame that
-        // expects a submit click to claim the reward). Best-effort: try the
-        // generic .submit-button class, then fall back to any visible
-        // "submit"/"confirm"/"complete" labelled button.
+        // ── Step 4: Confirm Fixes (.confirm-button #2 — same class, new screen) ──
         await dom.sleep(400);
-        const submit = document.querySelector('.game-container .submit-button')
-            || document.querySelector('.submit-button')
-            || findEnabledButtonByText(/submit|confirm|complete/i, document.querySelector('.game-container') || document);
-        if (submit && !submit.disabled) {
-            await waitForWsReady(mod, 'Submit');
-            dom.clickEl(submit);
-            mod.info('clicked final submit');
-            const ok = await awaitSubmitFeedback(mod);
-            if (ok) logUi('solved: log integrity');
-        } else {
-            // No explicit submit button — the puzzle likely auto-confirms once
-            // every error is fixed. Probe the container for success text.
-            const ok = await awaitSubmitFeedback(mod);
-            if (ok) logUi('solved: log integrity');
+        const confirmFix = await dom.waitForEl(() => {
+            const b = document.querySelector('.confirm-button');
+            return (b && !b.disabled) ? b : null;
+        }, { timeout: 4000 });
+        if (!confirmFix) { mod.error('Confirm Fixes button missing'); logUi('fix-confirm missing'); return; }
+        dom.clickEl(confirmFix);
+
+        // ── Step 5: Run Re-scan (.scan-button) — this is the WS round-trip ──
+        const rescan = await dom.waitForEl('.scan-button', { timeout: 5000 });
+        if (!rescan) { mod.error('Run Re-scan button missing'); logUi('rescan missing'); return; }
+        await waitForWsReady(mod, 'Submit');
+        dom.clickEl(rescan);
+
+        // ── Step 6: Wait for the success result screen ────────────────────
+        const result = await dom.waitForEl('.result-screen', { timeout: 8000 });
+        if (!result) { mod.error('result-screen never rendered'); logUi('no server feedback (WS hiccup?)'); return; }
+        if (!result.classList.contains('success')) {
+            mod.warn(`result screen not in success state (classes: ${result.className})`);
+            logUi('server rejected fixes');
+            return;
         }
+
+        mod.info('daily ops log integrity solved');
+        logUi('solved: log integrity');
+
+        // ── Step 7: Close result + the puzzle window. Without this, the
+        // puzzle UI auto-rolls a new round (it's designed for replay
+        // sessions); the daily reward is already credited at this point.
+        const closeResult = result.querySelector('.retry-button');
+        if (closeResult) dom.clickEl(closeResult);
+        await dom.sleep(300);
+        closePuzzleWindow();
     }
 
     // ─── Orchestrator ─────────────────────────────────────────────────────
@@ -483,19 +566,25 @@
         }
         if (!await clickStartButton(mod)) return;
 
-        // Wait for puzzle window — first state is GameWaitingScreen with an
-        // intro button (e.g. "Get Signal" / "Get Logs"); .game-container
-        // appears after that click.
+        // Wait for puzzle window — first state is GameWaitingScreen with a
+        // single "advance" button (varies: "Get Signal" for the signal
+        // puzzle, "Start" for log integrity, possibly others); the inner
+        // .game-container only appears after that click.
         const puzzle = await dom.waitForEl(findPuzzleWindow, { timeout: 8000 });
         if (!puzzle) { mod.error('puzzle window did not open'); logUi('puzzle window missing'); return; }
 
-        // Click the intro "Get …" button if it exists. Both signal and log
-        // puzzles share this entry pattern (English brand keyword "Get").
-        const introBtn = await dom.waitForEl(
-            () => findEnabledButtonByText(/^get\s+\w+/i, findPuzzleWindow() || document),
-            { timeout: 4000 }
-        );
-        if (introBtn) { dom.clickEl(introBtn); await dom.sleep(500); }
+        // Click the intro button. GameWaitingScreen's job is to show one
+        // button and wait for the user to press it — so we just click the
+        // first enabled button in scope, regardless of its label. This is
+        // resilient to localization and to puzzle-type rebrands.
+        const waitScreen = document.querySelector('[data-sentry-component="GameWaitingScreen"]');
+        if (waitScreen) {
+            const introBtn = await dom.waitForEl(
+                () => Array.from(waitScreen.querySelectorAll('button')).find((b) => !b.disabled) || null,
+                { timeout: 4000 }
+            );
+            if (introBtn) { dom.clickEl(introBtn); await dom.sleep(500); }
+        }
 
         // For signal puzzles, also press PLAY SIGNAL to render the timeline.
         // For log puzzles, the entry-click reveals .log-entries directly,

@@ -69,6 +69,45 @@ solver на Replay-режиме прошёл Signal-задачу до `DECODE ST
 VERIFIED, +525 Credits` (Morse `6458797498`, Morse `5733161629`,
 Binary `4533115764` — три прогона).
 
+### Daily Ops solve — System Log Integrity (доработка)
+
+Сегодня daily-задача оказалась Log Integrity вместо Signal Decode.
+Прогнали солвер на ней end-to-end и поправили три проблемы:
+
+1. **intro-click слишком узкий**. Был regex `^get\s+\w+/i` который
+   ловил "Get Signal" в Signal-паззле, но не "Start" в Log Integrity.
+   Заменили на "клик по единственной enabled-кнопке внутри
+   `GameWaitingScreen`" — экран по архитектуре однокнопочный, любой
+   label сработает.
+2. **`.log-entry-appearing` race**. Паззл анимирует появление строк
+   одну за одной; чтение до конца анимации даёт частичный набор и
+   паззл застревает на "Selected: 1 / 2" с disabled Confirm-кнопкой.
+   Добавили `waitForLogScanComplete(container)` который опрашивает
+   counter до 2 стабильных тиков подряд И исчезновения класса
+   `.log-entry-appearing`.
+3. **post-fix flow не доделан**. Легаси-`solver-daily-hack` после
+   error-type кликов просто останавливался. Daily Ops оборачивает
+   паззл во фрейм, который требует:
+   - Confirm Fixes (`.confirm-button` #2, тот же класс что и
+     "Confirm Selection" но на другом экране)
+   - Run Re-scan (`.scan-button`) — это и есть момент WS round-trip,
+     поэтому WS-gate ставим именно тут
+   - детект `.result-screen.success` (вместо textContent regex)
+   - Close + закрытие окна через `close-app-btn` (иначе паззл сам
+     перекатывает новый раунд — он designed для replay-сессий, а
+     daily reward уже заскорен на этом моменте)
+
+Также `findErrorTypeButton` теперь делает text→position fallback:
+текст по `ERROR_LABELS` — primary path (на сегодняшнем билде кнопки
+английские даже на RU-локали), `ISSUE_BUTTON_INDEX` (TIME=0, TYPE=1,
+MISSING_SECTOR=2, MISSING_STATUS=3, SECTOR_BAD=4, STATUS_BAD=5) —
+fallback на случай локализации.
+
+End-to-end на живой странице: 30 строк отсканировались, 2 битые
+найдены, 4 fix-клика (TYPE+MISSING_SECTOR на одной, SECTOR_BAD+
+STATUS_BAD на другой), `result-screen success`, окно закрылось,
+`Завершено / +525 Кредиты` залочено.
+
 ### UI restructure (later in the same day)
 
 Сократили вкладки с 8 до 5 и переразложили контент по

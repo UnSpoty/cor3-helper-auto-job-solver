@@ -476,30 +476,59 @@ MAIN solver-daily-ops.runOnce(mod):
         failed|invalid|incorrect|try again → 'fail'
         else → 'no server feedback (WS hiccup?)'
 
-    // ── System Log Integrity flow (port from legacy daily-hack.js) ──
-    parse .log-entry text per analyzeLogLine() → issues = [TIME?, TYPE?,
-        MISSING_SECTOR?, MISSING_STATUS?, SECTOR_BAD?, STATUS_BAD?]
+    // ── System Log Integrity flow ──
+    waitForLogScanComplete(.log-entries):       // puzzle animates rows in
+        until count stable for 2 ticks AND      // (.log-entry-appearing);
+        no .log-entry-appearing remains         // reading too early gets
+                                                 // a partial set and
+                                                 // Confirm stays disabled
+    parse each .log-entry → analyzeLogLine() →
+        issues = [TIME?, TYPE?, MISSING_SECTOR?,
+                  MISSING_STATUS?, SECTOR_BAD?, STATUS_BAD?]
     click checkbox on the 2 worst entries
-    click .confirm-button
+    click .confirm-button                       // "Confirm Selection"
+    wait .analysis-container
     for each .error-analysis-block:
         click .fix-error-button
-        click matching .error-type-button per ERROR_LABELS[issue]
-                                                 // exact-text match on
-                                                 // English error labels —
-                                                 // localization will break
-                                                 // this; warn-and-continue
+        click .error-type-button per issue:
+            byText: matches ERROR_LABELS[issue] (English brand text,
+                    works on RU locale today)
+            byPosition: ISSUE_BUTTON_INDEX fallback —
+                    TIME=0, TYPE=1, MISSING_SECTOR=2, MISSING_STATUS=3,
+                    SECTOR_BAD=4, STATUS_BAD=5 (every block renders all
+                    6 in this order regardless of which apply)
+    click .confirm-button                       // "Confirm Fixes" (same
+                                                 // class, different screen)
+    wait .scan-button
     waitForWsReady('Submit')
-    click .submit-button (or text-fallback /submit|confirm|complete/i)
-    awaitSubmitFeedback()
+    click .scan-button                          // "Run Re-scan" — actual
+                                                 // WS round-trip; server
+                                                 // validates the fixes
+                                                 // and credits the reward
+    wait .result-screen
+    if .result-screen.success:
+        click .result-screen .retry-button      // "Close" the success card
+        closePuzzleWindow()                     // → click ApplicationWindow
+                                                 // close-app-btn — without
+                                                 // this the puzzle UI
+                                                 // auto-rolls a new round
+                                                 // (designed for replay)
+    else: warn 'server rejected fixes'
 ```
 
 **Locale-neutral selectors only:** all DOM lookups go through
 `data-component-name` / `data-sentry-component` attributes or stable CSS
-classes. The only English-keyword couplings are the brand strings `daily`
-(card description), `get` (intro button), `morse` / `binary` (encoding
-option labels), `verified|reward|…` (success heuristic), and the legacy
-`ERROR_LABELS` strings (which the legacy solver hardcoded — flagged as
-locale-fragile in `solveLogIntegrity`).
+classes. The intro click on `GameWaitingScreen` clicks whatever the
+single enabled button happens to be (it's a label-agnostic "advance"
+screen — was "Get Signal" for signal, "Start" for log) so the regex
+isn't load-bearing. The only English-keyword couplings left are:
+`daily` (card description), `morse` / `binary` (encoding option labels —
+matched contains-style on the encoding-option text), `verified|reward|
+credits|success` / `failed|invalid|incorrect|try again` (signal
+puzzle's `awaitSubmitFeedback` heuristic), and `ERROR_LABELS` (log
+puzzle's error-type buttons — currently English even on RU locale, with
+a position-based fallback `ISSUE_BUTTON_INDEX` if labels ever
+localize).
 
 **WS readiness gate:** `__cor3IsWsReady()` and `__cor3WaitForWs(ms)` are
 exposed by the WS interceptor and consumed before each click that
