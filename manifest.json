@@ -74,6 +74,7 @@
         "src/modules/solvers/decrypt.js",
         "src/modules/solvers/daily-hack.js",
         "src/modules/solvers/daily-ops.js",
+        "src/modules/solvers/ice-wall.js",
         "src/entry/content-early.js"
       ],
       "run_at": "document_start",
@@ -110,6 +111,7 @@
         "src/modules/automation/auto-choose-decision.js",
         "src/modules/automation/auto-decrypt.js",
         "src/modules/automation/auto-daily-hack.js",
+        "src/modules/automation/auto-ice-wall.js",
         "src/modules/automation/daily-ops.js",
         "src/modules/automation/auto-jobs.js",
         "src/modules/automation/runtime-bridge.js",

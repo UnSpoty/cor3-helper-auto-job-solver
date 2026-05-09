@@ -69,6 +69,12 @@
             // legacy auto-daily-hack toggle.
             START_DAILY_OPS: 'COR3_START_DAILY_OPS',
             DAILY_OPS_LOG: 'COR3_DAILY_OPS_LOG',
+            // Ice Wall solver — SAI's Porter-lite r4 minigame. Toggle-driven
+            // watcher (same pattern as solver-decrypt): MAIN watches for
+            // [data-sentry-component="IceWallBreakApplication"], then matches
+            // lit wall glyphs against the target-preview signatures.
+            START_ICE_WALL: 'COR3_START_ICE_WALL',
+            STOP_ICE_WALL: 'COR3_STOP_ICE_WALL',
         },
 
         // Job-flow dispatch (isolated → MAIN job-manager)
@@ -169,9 +175,10 @@
         // Auto-send merc
         AUTO_SEND_MERC: 'autoSendMerc',
 
-        // Auto-decrypt / Auto-daily-hack
+        // Auto-decrypt / Auto-daily-hack / Auto-ice-wall
         AUTO_DECRYPT_ENABLED: 'autoDecryptEnabled',
         AUTO_DAILY_HACK_ENABLED: 'autoDailyHackEnabled',
+        AUTO_ICE_WALL_ENABLED: 'autoIceWallEnabled',
 
         // Auto-refresh
         AUTO_REFRESH: 'autoRefresh',

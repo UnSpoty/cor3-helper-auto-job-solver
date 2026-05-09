@@ -69,7 +69,7 @@
         const [
             daily, dailyLog, market, dark, darkAvail,
             web, sys,
-            autoRefresh, autoDecrypt,
+            autoRefresh, autoDecrypt, autoIceWall,
             disableSystemMessages, disableBackground, disableNetworkFog, disableMapFx,
             alarms, exps,
         ] = await Promise.all([
@@ -82,6 +82,7 @@
             Store.local.getOne(C.STORAGE_LOCAL.SYSTEM_VERSION, '?'),
             Store.sync.getOne(C.STORAGE_SYNC.AUTO_REFRESH, { home_jobs: false, dark_jobs: false }),
             Store.sync.getOne(C.STORAGE_SYNC.AUTO_DECRYPT_ENABLED, false),
+            Store.sync.getOne(C.STORAGE_SYNC.AUTO_ICE_WALL_ENABLED, false),
             Store.sync.getOne(C.STORAGE_SYNC.DISABLE_SYSTEM_MESSAGES, false),
             Store.sync.getOne(C.STORAGE_SYNC.DISABLE_BACKGROUND, false),
             Store.sync.getOne(C.STORAGE_SYNC.DISABLE_NETWORK_FOG, false),
@@ -175,17 +176,7 @@
         // ─── Auto solvers ─────────────────────────────────────────────
         container.appendChild(el('div', 'section-title', 'Auto solvers'));
         container.appendChild(appearanceToggle('Auto-decrypt', C.STORAGE_SYNC.AUTO_DECRYPT_ENABLED, autoDecrypt));
-        // Placeholder for the next solver. Disabled until the toggle is
-        // wired to a real module — replace the label and pass the actual
-        // STORAGE_SYNC key + value when ready.
-        const placeholderSolver = el('div', 'card');
-        placeholderSolver.innerHTML = `
-            <div class="card-row">
-                <span class="card-label muted">Auto-? <span class="xs">(coming soon)</span></span>
-                <label class="switch"><input type="checkbox" disabled><span class="switch-slider"></span></label>
-            </div>
-        `;
-        container.appendChild(placeholderSolver);
+        container.appendChild(appearanceToggle('Auto ICE WALL', C.STORAGE_SYNC.AUTO_ICE_WALL_ENABLED, autoIceWall));
 
         // ─── Game appearance ──────────────────────────────────────────
         container.appendChild(el('div', 'section-title', 'Game appearance'));
@@ -304,6 +295,7 @@
                 if (changes[C.STORAGE_SYNC.ALARMS]
                     || changes[C.STORAGE_SYNC.AUTO_REFRESH]
                     || changes[C.STORAGE_SYNC.AUTO_DECRYPT_ENABLED]
+                    || changes[C.STORAGE_SYNC.AUTO_ICE_WALL_ENABLED]
                     || changes[C.STORAGE_SYNC.DISABLE_SYSTEM_MESSAGES]
                     || changes[C.STORAGE_SYNC.DISABLE_BACKGROUND]
                     || changes[C.STORAGE_SYNC.DISABLE_NETWORK_FOG]
