@@ -94,6 +94,72 @@ a { color: var(--os-color-primary-hex); }
 }
 .icon-btn:hover { color: var(--os-color-primary-hex); border-color: var(--os-color-border-secondary); }
 
+.lang-select {
+    background: transparent;
+    color: var(--os-color-text-secondary);
+    border: 1px solid var(--os-color-border-secondary);
+    padding: 3px 6px;
+    border-radius: 4px;
+    font: inherit;
+    font-size: 11px;
+    cursor: pointer;
+    max-width: 110px;
+}
+.lang-select:hover { color: var(--os-color-primary-hex); border-color: var(--os-color-primary-hex); }
+.lang-select option { background: var(--os-color-bg); color: var(--os-color-text); }
+
+/* ─── Version-mismatch banner ─────────────────────────────────────── */
+.version-warning {
+    background: rgba(255, 200, 87, 0.12);
+    border-bottom: 1px solid var(--os-color-warning);
+    color: var(--os-color-warning);
+    padding: 8px 14px;
+    font-size: 11px;
+    line-height: 1.45;
+}
+.version-warning strong { color: var(--os-color-warning); font-weight: 600; }
+.version-warning .vw-detail { color: var(--os-color-text-grey); margin-top: 2px; }
+
+/* ─── No-tab placeholder (shown when no cor3.gg tab is open) ──────── */
+.no-tab {
+    padding: 30px 20px;
+    text-align: center;
+}
+.no-tab .nt-title {
+    font-size: 13px;
+    color: var(--os-color-warning);
+    font-weight: 600;
+    margin-bottom: 8px;
+}
+.no-tab .nt-body {
+    font-size: 12px;
+    color: var(--os-color-text-tertiary);
+    margin-bottom: 14px;
+    word-wrap: break-word;
+}
+.no-tab .btn { display: inline-block; }
+
+/* ─── Locked-tab placeholder (Expeditions under rework) ────────────── */
+.locked-tab {
+    padding: 30px 20px;
+    text-align: center;
+}
+.locked-tab .lt-title {
+    font-size: 13px;
+    color: var(--os-color-warning);
+    font-weight: 600;
+    margin-bottom: 8px;
+}
+.locked-tab .lt-body {
+    font-size: 12px;
+    color: var(--os-color-text-tertiary);
+}
+.tab.disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    color: var(--os-color-text-dim);
+}
+
 /* ─── Tabs ───────────────────────────────────────────────────────────── */
 .tabs {
     display: flex;

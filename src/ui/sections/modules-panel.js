@@ -6,6 +6,7 @@
     const root = window;
     root.COR3.ui = root.COR3.ui || {};
     const { uiComponents, Store, constants: C } = root.COR3;
+    const t = (k, vars) => root.COR3.i18n.t(k, vars);
 
     function el(tag, cls, html) {
         const e = document.createElement(tag);
@@ -51,12 +52,12 @@
 
     async function render(container) {
         container.innerHTML = '';
-        container.appendChild(el('div', 'section-title', 'Modules'));
+        container.appendChild(el('div', 'section-title', t('modules.title')));
 
         const mods = await fetchSnapshots();
         if (mods.length === 0) {
             container.appendChild(el('div', 'empty',
-                'Open a cor3.gg tab to see modules.<br>(scripting permission required for live state)'));
+                `${t('modules.openTab')}<br>(scripting permission required for live state)`));
             return;
         }
 
@@ -84,7 +85,7 @@
         }
 
         // Refresh button at bottom
-        const refresh = el('button', 'btn small btn-block mt-md', 'Refresh module list');
+        const refresh = el('button', 'btn small btn-block mt-md', t('modules.refresh'));
         refresh.addEventListener('click', () => render(container));
         container.appendChild(refresh);
     }

@@ -9,20 +9,33 @@
     <header class="app-header">
         <div class="app-title">COR3 <small>helper</small></div>
         <div class="header-actions">
+            <select class="lang-select" id="langSelect" title="Language"></select>
             <button class="icon-btn" id="popOutBtn" title="Pop out">⧉</button>
             <button class="icon-btn" id="sidePanelBtn" title="Side panel">⊟</button>
         </div>
     </header>
 
-    <nav class="tabs" id="tabs"></nav>
+    <!-- Version-mismatch banner. Hidden by default; shell.js reveals it
+         when chrome.storage.local.webVersion ≠ EXPECTED_WEB_VERSION. -->
+    <div class="version-warning" id="versionWarning" hidden></div>
 
-    <main id="main">
-        <section class="section" data-tab="overview"     id="section-overview"></section>
-        <section class="section" data-tab="expeditions"  id="section-expeditions"></section>
-        <section class="section" data-tab="autojobs"     id="section-autojobs"></section>
-        <section class="section" data-tab="modules"      id="section-modules"></section>
-        <section class="section" data-tab="logs"         id="section-logs"></section>
-    </main>
+    <!-- Wrapper around the navigable UI. shell.js swaps it out for a
+         no-tab placeholder when no cor3.gg tab is open, so we keep
+         everything that requires a live game tab inside it. -->
+    <div id="appShell">
+        <nav class="tabs" id="tabs"></nav>
+
+        <main id="main">
+            <section class="section" data-tab="overview"     id="section-overview"></section>
+            <section class="section" data-tab="expeditions"  id="section-expeditions"></section>
+            <section class="section" data-tab="autojobs"     id="section-autojobs"></section>
+            <section class="section" data-tab="modules"      id="section-modules"></section>
+            <section class="section" data-tab="logs"         id="section-logs"></section>
+        </main>
+    </div>
+
+    <!-- Placeholder when no cor3.gg tab is open. Toggled by shell.js. -->
+    <div id="noTab" class="no-tab" hidden></div>
 
     <!-- Load order matches manifest content_scripts so the SAME globals are
          available. Popup is its own context but shares the COR3 namespace. -->
@@ -33,6 +46,8 @@
     <script src="../core/store.js"></script>
     <script src="../core/logger.js"></script>
     <script src="../shared/errors.js"></script>
+
+    <script src="i18n.js"></script>
 
     <script src="components/icons.js"></script>
     <script src="components/timer.js"></script>

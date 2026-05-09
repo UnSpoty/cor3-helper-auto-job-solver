@@ -7,6 +7,7 @@
     const root = window;
     root.COR3.ui = root.COR3.ui || {};
     const { Store, constants: C, uiComponents } = root.COR3;
+    const t = (k, vars) => root.COR3.i18n.t(k, vars);
 
     function el(tag, cls, html) {
         const e = document.createElement(tag);
@@ -35,25 +36,28 @@
     // sync key on the Overview tab (Auto solvers section). If any of these
     // is off, Auto-Jobs would accept jobs and then sit waiting on a minigame
     // that nobody's solving — better to refuse to start.
-    const REQUIRED_SOLVERS = [
-        { key: C.STORAGE_SYNC.AUTO_DECRYPT_ENABLED,  label: 'Auto-decrypt',  reason: 'file_decryption / decrypt_extract jobs open a config-hack minigame that this solver handles' },
-        { key: C.STORAGE_SYNC.AUTO_ICE_WALL_ENABLED, label: 'Auto ICE WALL', reason: 'reconnecting to a server can drop into the ICE break minigame; this solver handles it' },
-    ];
+    function requiredSolvers() {
+        return [
+            { key: C.STORAGE_SYNC.AUTO_DECRYPT_ENABLED,  label: t('overview.autoDecrypt'),  reason: 'file_decryption / decrypt_extract jobs open a config-hack minigame that this solver handles' },
+            { key: C.STORAGE_SYNC.AUTO_ICE_WALL_ENABLED, label: t('overview.autoIceWall'), reason: 'reconnecting to a server can drop into the ICE break minigame; this solver handles it' },
+        ];
+    }
 
     function renderHeader(host, settings, state, solverFlags) {
         host.innerHTML = '';
         const head = el('div', 'card');
 
-        const missingSolvers = REQUIRED_SOLVERS.filter((s) => !solverFlags[s.key]);
+        const required = requiredSolvers();
+        const missingSolvers = required.filter((s) => !solverFlags[s.key]);
         const blocked = missingSolvers.length > 0;
 
         head.innerHTML = `
             <div class="card-row">
-                <span class="card-label">Auto-Jobs</span>
-                <span class="pill ${settings.enabled ? 'active' : 'idle'}">${settings.enabled ? 'ON' : 'OFF'}</span>
+                <span class="card-label">${escape(t('autojobs.title'))}</span>
+                <span class="pill ${settings.enabled ? 'active' : 'idle'}">${settings.enabled ? t('common.on') : t('common.off')}</span>
             </div>
             <div class="card-row mt-sm">
-                <span class="card-label">Status</span>
+                <span class="card-label">${escape(t('autojobs.status'))}</span>
                 <span class="pill ${state.status === 'idle' ? 'idle' : (state.status === 'solving' ? 'active' : 'warn')}">${state.status}</span>
             </div>
             ${state.jobName ? `<div class="sm mt-sm">${escape(state.jobName)} <span class="muted">[${escape(state.jobType || '')}]</span></div>` : ''}
@@ -66,8 +70,8 @@
             // sees the gate before they click.
             const warn = el('div', 'card-row mt-sm');
             warn.innerHTML = `
-                <span class="pill warn">Required solvers</span>
-                <span class="sm muted">enable in Overview → Auto solvers</span>
+                <span class="pill warn">${escape(t('autojobs.requiredSolvers'))}</span>
+                <span class="sm muted">${escape(t('autojobs.enableInOverview'))}</span>
             `;
             head.appendChild(warn);
             const list = el('div', 'mt-sm');
@@ -77,7 +81,7 @@
             head.appendChild(list);
         }
 
-        const toggleBtn = el('button', 'btn btn-block mt-sm', settings.enabled ? 'STOP' : 'START');
+        const toggleBtn = el('button', 'btn btn-block mt-sm', settings.enabled ? t('common.stop') : t('common.start'));
         toggleBtn.classList.toggle('btn-danger', !!settings.enabled);
         toggleBtn.classList.toggle('btn-success', !settings.enabled && !blocked);
         // Stop is always allowed; start is gated on solvers being on.
@@ -96,14 +100,14 @@
 
     function renderSources(host, settings) {
         host.innerHTML = '';
-        host.appendChild(el('div', 'section-title', 'Sources'));
+        host.appendChild(el('div', 'section-title', t('autojobs.sources')));
         const card = el('div', 'card');
         // Adding a 4th market = one row. The toggles all read settings.markets.<key>
         // which the auto-jobs orchestrator scans against MARKETS_FOR_SCAN.
         const MARKET_LABELS = [
-            { key: 'home', label: 'Home market' },
-            { key: 'dark', label: 'Dark market' },
-            { key: 'srm',  label: 'SRM7-M' },
+            { key: 'home', label: t('overview.homeMarket') },
+            { key: 'dark', label: t('overview.darkMarket') },
+            { key: 'srm',  label: t('overview.srm') },
         ];
         const m = settings.markets || {};
         card.innerHTML = MARKET_LABELS.map((mk, i) => `
@@ -131,7 +135,7 @@
         const buggedKeys = Object.keys(bugged || {});
         if (buggedKeys.length === 0) return;
         const card = el('div', 'card');
-        card.appendChild(el('div', 'card-row', `<span class="card-label">Failed (${buggedKeys.length})</span><span class="muted xs">soft- and hard-bugged jobs, awaiting TTL</span>`));
+        card.appendChild(el('div', 'card-row', `<span class="card-label">${escape(t('autojobs.failedTitle'))} (${buggedKeys.length})</span><span class="muted xs">${escape(t('autojobs.failedSub'))}</span>`));
         const list = el('div', 'mt-sm');
         const now = Date.now();
         for (const id of buggedKeys.slice(0, 12)) {
@@ -143,7 +147,7 @@
         }
         if (buggedKeys.length > 12) list.appendChild(el('div', 'muted sm mt-sm', `… +${buggedKeys.length - 12} more`));
         card.appendChild(list);
-        const clear = el('button', 'btn btn-danger small mt-sm', 'Clear failed');
+        const clear = el('button', 'btn btn-danger small mt-sm', t('autojobs.clearFailed'));
         clear.addEventListener('click', async () => {
             const tab = await getCor3Tab();
             if (tab) chrome.tabs.sendMessage(tab.id, { action: 'clearBuggedJobs' }).catch(() => {});
@@ -264,10 +268,10 @@
         const totalFailed = Object.keys(buggedJobs || {}).length;
         const totalAll = totalAvailable + totalQueued + totalFailed;
         host.appendChild(el('div', 'section-title',
-            `Jobs (${totalAll}) <span class="muted xs">· ${totalAvailable} available · ${totalQueued} in progress · ${totalFailed} failed</span>`));
+            `${escape(t('autojobs.jobs'))} (${totalAll}) <span class="muted xs">· ${totalAvailable} ${escape(t('autojobs.available'))} · ${totalQueued} ${escape(t('overview.inProgress'))} · ${totalFailed} ${escape(t('autojobs.failed'))}</span>`));
 
         if (totalAll === 0) {
-            host.appendChild(el('div', 'empty', 'No jobs visible.'));
+            host.appendChild(el('div', 'empty', t('autojobs.noJobs')));
             return;
         }
 
@@ -288,8 +292,8 @@
             const header = el('div', 'card-row');
             const marketQueued = (queue || []).filter((q) => q.marketId === m.data?.marketId).length;
             header.innerHTML = `
-                <span class="card-label">${escape(m.label)}${m.enabled ? '' : ' · disabled'}</span>
-                <span class="muted sm">${jobs.length} avail${marketQueued > 0 ? ` · ${marketQueued} queued` : ''}</span>
+                <span class="card-label">${escape(m.label)}${m.enabled ? '' : ' · ' + escape(t('autojobs.disabled'))}</span>
+                <span class="muted sm">${jobs.length} ${escape(t('overview.avail'))}${marketQueued > 0 ? ` · ${marketQueued} ${escape(t('autojobs.queued'))}` : ''}</span>
             `;
             card.appendChild(header);
 
@@ -323,7 +327,7 @@
         const skipCount = Object.values(priorities || {}).filter((v) => v === 'skip').length;
         const summary = document.createElement('summary');
         summary.className = 'section-title';
-        summary.textContent = `Server priorities${skipCount > 0 ? ` · ${skipCount} skipped` : ''}`;
+        summary.textContent = `${t('autojobs.serverPriorities')}${skipCount > 0 ? ` · ${skipCount} skipped` : ''}`;
         wrap.appendChild(summary);
 
         const card = el('div', 'card');
@@ -334,7 +338,7 @@
         const targetable = allServers.filter((s) => s.name && s.name !== nmGraph?.home);
 
         const rescanRow = el('div', 'row gap-sm mt-sm');
-        const rescanBtn = el('button', 'btn small', 'Refresh graph');
+        const rescanBtn = el('button', 'btn small', t('autojobs.refreshGraph'));
         rescanBtn.addEventListener('click', async () => {
             const tab = await getCor3Tab();
             if (tab) chrome.tabs.sendMessage(tab.id, { action: 'rescanNetworkMap' }).catch(() => {});
@@ -452,7 +456,7 @@
         // Activity log — Logger ring filtered to module='auto-jobs'. The
         // logViewer subscribes to cor3_logs storage changes itself, so we
         // don't need to re-render it on every tick.
-        container.appendChild(el('div', 'section-title', 'Activity log'));
+        container.appendChild(el('div', 'section-title', t('autojobs.activityLog')));
         const stream = el('div', 'log-stream');
         container.appendChild(stream);
         liveLogViewer = uiComponents.logViewer.attach(stream, { moduleFilter: 'auto-jobs' });
