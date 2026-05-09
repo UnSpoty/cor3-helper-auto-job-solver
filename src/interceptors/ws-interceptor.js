@@ -94,14 +94,17 @@
                 });
 
                 // Wrap ws.send so we see EVERY outbound — both our extension's
-                // get.jobs (issued via wsSend below) AND cor3.gg's own
-                // get.jobs that fires whenever the user opens a Market panel
-                // in-game. Both responses arrive on this socket; without this
-                // hook we'd attribute them to the wrong slot or pollute Home.
-                // See captureOutboundGetJobs() for the parser.
+                // get.jobs / set.endpoint (issued via wsSend below) AND
+                // cor3.gg's own that fires when the user opens a Market panel
+                // or clicks a server in Network Map. Both responses arrive on
+                // this socket; without this hook we'd attribute get.jobs to
+                // the wrong slot, and we'd lose track of the user's current
+                // endpoint (needed to revert after our preflight dance).
+                // Parsers: captureOutboundGetJobs / captureOutboundSetEndpoint.
                 const origWsSend = ws.send.bind(ws);
                 ws.send = function (data) {
                     try { captureOutboundGetJobs(data); } catch (_) { /* silent */ }
+                    try { captureOutboundSetEndpoint(data); } catch (_) { /* silent */ }
                     return origWsSend(data);
                 };
 
@@ -313,7 +316,28 @@
             // the previous "fall through to Home Market" behaviour was the
             // root cause of the cross-market data pollution bug.
             if (action === 'get.jobs') {
+                // Always pop the FIFO queue so order stays aligned (errors and
+                // success both consume an entry).
                 const pending = popPendingMarketJobsRequest();
+
+                // Error response — server echoes marketId in error.marketId,
+                // which is more reliable than the FIFO entry. Use it.
+                if (payload.error) {
+                    const errMarketId = payload.error.marketId || pending?.marketId;
+                    if (!errMarketId) return;
+                    const cfg = MARKET_BY_ID[errMarketId];
+                    if (payload.error.message === 'market-not-reachable' && cfg && cfg.unreachable) {
+                        post(MSG.WS[cfg.unreachable], {
+                            error: payload.error.message,
+                            marketId: errMarketId,
+                            serverId: payload.error.marketServer,
+                        });
+                    } else {
+                        console.debug('[COR3] get.jobs error', payload.error, 'market', errMarketId);
+                    }
+                    return;
+                }
+
                 if (!payload.data || !pending) return;
                 const marketId = pending.marketId;
                 const out = {
@@ -322,16 +346,12 @@
                     recentJobs: Array.isArray(payload.data.recentJobs) ? payload.data.recentJobs : [],
                     nextJobsResetAt: payload.data.nextJobsResetAt || null,
                 };
-                if (marketId === DARK_MARKET_ID) {
-                    post(MSG.WS.DARK_MARKET, { market: out });
-                } else if (marketId === SRM_MARKET_ID) {
-                    post(MSG.WS.SRM_MARKET, { market: out });
-                } else if (marketId === HOME_MARKET_ID) {
-                    post(MSG.WS.MARKET, { market: out });
-                    root.__cor3LastMarketId = marketId;
+                const cfg = MARKET_BY_ID[marketId];
+                if (cfg) {
+                    post(MSG.WS[cfg.main], { market: out });
+                    if (marketId === HOME_MARKET_ID) root.__cor3LastMarketId = marketId;
                 } else {
-                    // Unknown market — could be a future market we don't track.
-                    // Don't post anywhere; just log so it's discoverable.
+                    // Untracked market — could be a future market we don't track.
                     console.debug('[COR3] get.jobs response for untracked market', marketId);
                 }
                 return;
@@ -344,16 +364,26 @@
             return;
         }
 
-        // network-map: set.endpoint result and dark-market unreachable detection
+        // network-map: set.endpoint result. We do TWO things here:
+        //   1. Correct currentEndpoint from data.servers — server returns the
+        //      full server list with isEndpoint flags, the truthful source.
+        //   2. Surface no-path-to-server failures (used by solver server-
+        //      reachability checks; we kept the legacy DARK_MARKET_UNREACHABLE
+        //      post though the canonical unreachable detection now lives on
+        //      the market.get.jobs response (market-not-reachable error)).
         if (eventName === 'network-map' && payload && payload.event) {
             if (payload.event.action === 'set.endpoint') {
+                if (payload.data && Array.isArray(payload.data.servers)) {
+                    const ep = payload.data.servers.find((s) => s && s.isEndpoint === true);
+                    if (ep && ep.id) currentEndpoint = ep.id;
+                }
                 if (payload.error && payload.error.message === 'no-path-to-server') {
-                    console.log('[COR3] Dark market unreachable: no-path-to-server');
-                    post(MSG.WS.DARK_MARKET_UNREACHABLE, {
-                        error: payload.error.message,
-                        serverId: payload.error.serverId,
-                    });
-                    // Solvers watch this flag for connection rejection detection
+                    console.log('[COR3] no-path-to-server for', payload.error.serverId);
+                    if (payload.error.serverId === DARK_SERVER_ID) {
+                        post(MSG.WS.DARK_MARKET_UNREACHABLE, { error: payload.error.message, serverId: payload.error.serverId });
+                    } else if (payload.error.serverId === SRM_SERVER_ID) {
+                        post(MSG.WS.SRM_MARKET_UNREACHABLE, { error: payload.error.message, serverId: payload.error.serverId });
+                    }
                     root.__serverPathFailed = true;
                     setTimeout(() => { root.__serverPathFailed = false; }, 5000);
                 } else {
@@ -543,10 +573,34 @@
     // Market UUIDs are static per cor3.gg deployment. Captured by inspecting
     // the WS frames the site sends when the user opens Market manually.
     const HOME_MARKET_ID = '019d3ea4-85bd-7389-904d-8f7c85841134';
+    const HOME_SERVER_ID = '019c0a5b-eeeb-7d3e-b9c9-fd5c2ba7d399';
     const DARK_MARKET_ID = '019d3ea4-85bd-7389-904d-908ba9194aa0';
     const DARK_SERVER_ID = '019d29c5-4b37-79bf-b23e-304d8ea03c15';
     const SRM_MARKET_ID  = '019da731-2db5-7d76-9447-1ea3b9b78001';
     const SRM_SERVER_ID  = '019da6f1-16f7-75a6-b6d3-0b1d5f92a108';
+
+    // Map marketId → { name (for logs), unreachable (Bus type), main (Bus type) }
+    // Lets the get.jobs response handler post to the right Bus channel without
+    // an if/else cascade, and lets fetchRemoteMarketSequence find the server
+    // for any given marketId.
+    // Values reference MSG.WS.* by KEY name (e.g. main:'MARKET' resolves at
+    // dispatch time to MSG.WS.MARKET). Keeps the table compact and decoupled
+    // from the actual envelope-string format.
+    const MARKET_BY_ID = {
+        [HOME_MARKET_ID]: { serverId: HOME_SERVER_ID, name: 'home', main: 'MARKET',      unreachable: null },
+        [DARK_MARKET_ID]: { serverId: DARK_SERVER_ID, name: 'dark', main: 'DARK_MARKET', unreachable: 'DARK_MARKET_UNREACHABLE' },
+        [SRM_MARKET_ID]:  { serverId: SRM_SERVER_ID,  name: 'srm',  main: 'SRM_MARKET',  unreachable: 'SRM_MARKET_UNREACHABLE' },
+    };
+
+    // Tracks the user's current network-map endpoint server. Initial value is
+    // HOME (the default after login). Updated by:
+    //   1. captureOutboundSetEndpoint — optimistic on every set.endpoint we
+    //      observe leaving the socket (ours OR cor3.gg's).
+    //   2. handleWsMessage's network-map handler — corrected from
+    //      data.servers[?isEndpoint==true].id when the server replies.
+    // This lets fetchRemoteMarketSequence revert to whatever the user was on
+    // before our preflight, instead of always slamming them back to HOME.
+    let currentEndpoint = HOME_SERVER_ID;
 
     // get.jobs response carries no marketId echo, so we FIFO-attribute by
     // request order. Entries auto-expire after 30 s to prevent the queue
@@ -581,11 +635,69 @@
         pushPendingMarketJobsRequest(m[1]);
     }
 
+    // Outbound parser for network-map.set.endpoint. We optimistically update
+    // currentEndpoint on every observed outbound (ours OR cor3.gg's) — the
+    // server response will correct us via the data.servers parse below if
+    // the request actually fails. Without this, our preflight-revert dance
+    // for remote markets would always think the user is on HOME and revert
+    // to it even if they had manually navigated elsewhere.
+    function captureOutboundSetEndpoint(rawData) {
+        if (typeof rawData !== 'string') return;
+        if (rawData.length > 4096) return;
+        if (!rawData.startsWith('42[')) return;
+        if (rawData.indexOf('"set.endpoint"') < 0) return;
+        const m = rawData.match(/"serverId"\s*:\s*"([0-9a-f-]{36})"/i);
+        if (!m) return;
+        currentEndpoint = m[1];
+    }
+
     function sendGetJobs(marketId) {
         // Don't push the queue here — the wrapped ws.send will, via
         // captureOutboundGetJobs, on the actual transmit. Pushing here too
         // would double-count.
         return wsSend('42["event",{"event":{"name":"market","action":"get.jobs"},"data":{"marketId":"' + marketId + '"}}]');
+    }
+
+    function sendSetEndpoint(serverId) {
+        return wsSend('42["event",{"event":{"name":"network-map","action":"set.endpoint"},"data":{"serverId":"' + serverId + '"}}]');
+    }
+
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    // Remote markets (Dark, SRM7-M) require the user's current network-map
+    // endpoint to match the market's server, otherwise get.jobs replies with
+    // {error:"market-not-reachable"}. We do a transient set.endpoint → get.jobs
+    // → revert dance. The revert is best-effort (latest known endpoint at the
+    // time the timer fires).
+    //
+    // Trade-off: during the ~2.5s window the user's UI shows the temporary
+    // endpoint server highlighted in Network Map and may flicker hack-tools.
+    // Less invasive than NOT fetching at all, which left Dark Market stuck
+    // at "0 jobs" (the bug that prompted this design).
+    //
+    // Sequenced via a Promise chain on inflightRemoteFetch so multiple
+    // concurrent calls (e.g. initial fetch + a Refresh-button click) don't
+    // interleave their preflights and confuse currentEndpoint.
+    let inflightRemoteFetch = Promise.resolve();
+    function fetchRemoteMarketSequence(marketId, serverId) {
+        const run = inflightRemoteFetch.then(async () => {
+            const saved = currentEndpoint;
+            const needPreflight = (saved !== serverId);
+            if (needPreflight) {
+                sendSetEndpoint(serverId);
+                // 800ms is empirically enough: in mcp tests the server
+                // responded within ~300ms; we add slack for typical RTT.
+                await sleep(800);
+            }
+            sendGetJobs(marketId);
+            await sleep(1500);
+            if (needPreflight && saved && saved !== serverId) {
+                sendSetEndpoint(saved);
+                await sleep(300);
+            }
+        }).catch((e) => { console.warn('[COR3] fetchRemoteMarketSequence failed', e); });
+        inflightRemoteFetch = run;
+        return run;
     }
 
     root.__cor3RequestMarket = function () {
@@ -594,22 +706,12 @@
     };
 
     root.__cor3RequestDarkMarket = function () {
-        // Direct get.jobs with the dark marketId is enough — the server
-        // looks up by marketId regardless of current endpoint. The legacy
-        // network-map.set.endpoint preflight is gone: it added 1500ms of
-        // delay and could falsely trip darkMarketAvailable=false via
-        // no-path-to-server when the user wasn't manually connected to
-        // the dark server (verified by inspecting cor3.gg's own client —
-        // it sends nothing but join-room + get.{options,lots,jobs}).
-        sendGetJobs(DARK_MARKET_ID);
+        fetchRemoteMarketSequence(DARK_MARKET_ID, DARK_SERVER_ID);
         return true;
     };
 
     root.__cor3RequestSrmMarket = function () {
-        // Same shape as Dark Market: SRM7-M is a SOYUZ public server with
-        // canSetEndpoint:true, and get.jobs by marketId works regardless of
-        // whether the user is currently endpointed at it.
-        sendGetJobs(SRM_MARKET_ID);
+        fetchRemoteMarketSequence(SRM_MARKET_ID, SRM_SERVER_ID);
         return true;
     };
 
@@ -628,11 +730,18 @@
         console.log('[COR3] Running initial data fetch');
         post('COR3_FETCH_DAILY_OPS', null); // legacy daily-ops fetch trigger
         root.__cor3RequestMarket();
+        // Dark and SRM both go through inflightRemoteFetch which serialises
+        // them — kicking both off back-to-back is safe; the second waits for
+        // the first to finish its set.endpoint → get.jobs → revert cycle.
+        // Total preflight cost: ~5s for both remote markets in the worst
+        // case (currentEndpoint === HOME on startup).
         setTimeout(() => root.__cor3RequestDarkMarket(), 1000);
-        setTimeout(() => root.__cor3RequestSrmMarket(), 2000);
-        setTimeout(() => root.__cor3RequestExpeditions(), 3000);
-        setTimeout(() => root.__cor3RequestStash(), 7000);
-        setTimeout(() => root.__cor3RequestArchivedExpeditions(), 9000);
+        setTimeout(() => root.__cor3RequestSrmMarket(),  1100);
+        // Expeditions / stash / archived run on plain timers; they don't
+        // touch network-map and won't conflict with the remote-fetch chain.
+        setTimeout(() => root.__cor3RequestExpeditions(), 6500);
+        setTimeout(() => root.__cor3RequestStash(),       8500);
+        setTimeout(() => root.__cor3RequestArchivedExpeditions(), 10500);
     };
 
     root.__cor3KeepAlive = function () { /* no-op marker */ };

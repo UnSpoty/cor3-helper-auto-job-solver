@@ -122,7 +122,13 @@
         lastMarketRefreshAt = Date.now();
         if (modRef) modRef.debug(`market refresh [${reason || 'manual'}]`);
         Bus.window.post(MSG.GAME.REFRESH_MARKET, null);
-        Bus.window.post(MSG.GAME.REFRESH_DARK_MARKET, null);
+        // Only refresh Dark when the user actually wants Dark jobs picked up.
+        // Each Dark refresh now triggers a set.endpoint preflight in MAIN
+        // (because Dark is unreachable from HOME), which briefly hijacks the
+        // user's network-map endpoint — too disruptive to fire unconditionally.
+        if (settings.markets && settings.markets.dark) {
+            Bus.window.post(MSG.GAME.REFRESH_DARK_MARKET, null);
+        }
     }
 
     // ─── API extractors (canonical — never falls back to DOM) ─────────────
