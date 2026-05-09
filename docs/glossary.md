@@ -126,7 +126,10 @@ directly, but can post messages to it via `window.postMessage`.
 | `[data-sentry-element="FilePickerGridStyled"]` | inner grid |
 | `.file-picker-name` | file name inside picker grid |
 | `[data-sentry-element="FilePickerAttachButtonStyled"]` | Upload submit button |
-| `[data-sentry-element="LogContentStyled"][data-sentry-source-file="config-hack-application.tsx"]` | the decrypt minigame container |
+| `[data-sentry-component="ConfigHackApplication"]` | the decrypt minigame app (use this as the watch root) |
+| `[data-sentry-component="ParameterCells"]` | the decrypt minigame's parameter row (4 cell buttons + Send) |
+| `[data-sentry-element="SendButtonStyled"]` | the decrypt minigame's Send button (mousedown+mouseup+click submits) |
+| `[data-sentry-element="LogContentStyled"]` | log panel inside ConfigHackApplication; legacy selector kept the `[data-sentry-source-file="config-hack-application.tsx"]` qualifier — the qualifier is gone in May 2026 |
 | `.pulse-timeline` / `.pulse-group` / `.pulse-bar` | Signal Hack puzzle DOM |
 | `.log-entries` (or variants) / `.log-entry` | System Log Integrity puzzle |
 | `.confirm-button` / `.error-type-button` / `.fix-error-button` / `.error-analysis-block` | log-integrity solver UI |
@@ -145,6 +148,17 @@ directly, but can post messages to it via `window.postMessage`.
 - Submits guesses; reads `Mismatched <n>` from the log
 - Uses minimax with memoization; cached solver state for the standard
   4-field layout
+- May 2026 UI rewrite: the cor3.gg puzzle replaced its text input with
+  arrow-key-driven `ParameterCells`. Our solver:
+  - **Focuses a cell** by dispatching `mousedown + mouseup + click` on its
+    button (React onMouseDown is the focus handler — `.click()` alone
+    doesn't fire it)
+  - **Cycles a cell's value** with `ArrowUp` keydown/keyup events
+    targeted at `[data-sentry-component="ConfigHackApplication"]`
+  - **Submits** by clicking `[data-sentry-element="SendButtonStyled"]`
+    with the same mouse sequence (Enter via JS dispatch only fires
+    submit when focus is on the LAST cell — fragile; clicks work from
+    any state)
 
 `solver-daily-hack`:
 - **System Log Integrity:** picks 2 worst log lines, fills in error fixes

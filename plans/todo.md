@@ -10,6 +10,70 @@
 
 ## Recently shipped — May 2026
 
+### Auto-decrypt: keyboard puzzle → click-driven puzzle
+
+cor3.gg перерисовал config-hack минигу. Раньше — текстовое поле с
+placeholder'ом, в которое легаси-солвер набирал combo и слал Enter. Теперь
+4 кнопки-ячейки (`ParameterCells` × 4 + `SendButtonStyled`), которые
+управляются клавиатурой: ↑/↓ меняют значение в фокусной ячейке, ←/→
+переключают фокус, Enter сабмитит **только когда фокус на последнем
+поле**. Старый солвер 100% сломан — текстового input'а нет.
+
+Что выяснил при инспекции live-страницы (5 прогонов на test-account
+puzzle, потратили 3 свежих файла):
+
+- **Селекторы**: `[data-sentry-component="ConfigHackApplication"]` —
+  watch root (легаси `LogContentStyled[data-sentry-source-file="…"]`
+  тоже жив, но ConfigHackApplication надёжнее как контейнер).
+  `[data-sentry-component="ParameterCells"]` — строка ячеек.
+  `[data-sentry-element="SendButtonStyled"]` — Send.
+  `[data-sentry-element="LogContentStyled"]` — лог.
+- **Фокус-индикатор**: одна из 4 кнопок ячеек имеет уникальный
+  Goober-класс (`go1602054769`) против общего у трёх других
+  (`go2563699149`). Хеши меняются между билдами — детектим по
+  «уникальный-vs-остальные» структуре.
+- **`.click()` НЕ фокусирует ячейку.** Нужен полноценный mouse
+  sequence: `mousedown → mouseup → click`. React onMouseDown — это и
+  есть focus handler.
+- **Enter работает только когда фокус на последнем поле**, причём
+  после Enter браузерный фокус уходит на SendButton (его класс
+  меняется), и стрелки в этом состоянии теряются. Поэтому полагаемся
+  на клик SendButton (с тем же mouse sequence) вместо Enter — работает
+  из любого состояния.
+- **`ArrowUp` цикл значений**: верифицировано — от v1.0 ↓→v2.0→v1.1
+  →v1.0 (назад с wrap), ↑ — наоборот. Значения обновляются синхронно,
+  DOM-чтение `cellValue(i)` сразу после press надёжно.
+- **DOM-чтение фокуса лагает** относительно кейпрессов (~50ms) → race
+  condition в первом подходе с unique-class детектом. Решено уходом
+  на click-based фокусировку (детект больше не нужен — мы знаем что
+  кликнули).
+
+Архитектура нового solver-decrypt:
+- `focusCellByClick(idx)` — mousedown+mouseup+click на нужной ячейке
+- `setFocusedValue(idx, target, optsCount)` — `ArrowUp` keydown/keyup
+  через ConfigHackApplication target, пока `cellValue(idx)` не совпадёт
+- `clickSubmit()` — mousedown+mouseup+click на SendButton (никакого
+  Enter)
+- `waitForResponse(combo)` — сканирует `LogContentStyled` снизу вверх
+  на `> <combo>` echo, читает следующую строку для числа `Mismatched
+  N` (locale-resilient — не привязывается к слову "Mismatched"). Если
+  паззл-окно закрылось во время ожидания — early exit.
+
+Минимакс-алгоритм (Knuth-style) сохранён verbatim.
+
+End-to-end проверено: 4 валидных guess'a подряд (`v1.0 GET LTE AES → 2`,
+`v1.0 GET Fiber RSA → 2`, `v1.0 PUT LTE RSA → 2`, `v1.1 GET LTE RSA → 1`)
+прежде чем таймер паззла истёк (накопилось много минут моих диагностик
+в одном открытом окне). Алгоритм сходится корректно.
+
+В UI секцию Auto solvers добавлена disabled-заготовка `Auto-? (coming
+soon)` под следующий solver — заполнить лейбл и привязать к storage-key
+когда определится какая мини-игра.
+
+В дальнейшем этот watch-and-solve механизм должен использоваться в
+auto-jobs (когда оркестратор берёт Decrypt job, не пишет свою логику —
+полагается на уже включённый solver-decrypt watcher).
+
 ### Markets — get.jobs split
 
 cor3.gg переехал с одного `market.get.options` на три отдельных action'а:

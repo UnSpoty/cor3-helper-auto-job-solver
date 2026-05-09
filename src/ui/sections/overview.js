@@ -175,6 +175,17 @@
         // ─── Auto solvers ─────────────────────────────────────────────
         container.appendChild(el('div', 'section-title', 'Auto solvers'));
         container.appendChild(appearanceToggle('Auto-decrypt', C.STORAGE_SYNC.AUTO_DECRYPT_ENABLED, autoDecrypt));
+        // Placeholder for the next solver. Disabled until the toggle is
+        // wired to a real module — replace the label and pass the actual
+        // STORAGE_SYNC key + value when ready.
+        const placeholderSolver = el('div', 'card');
+        placeholderSolver.innerHTML = `
+            <div class="card-row">
+                <span class="card-label muted">Auto-? <span class="xs">(coming soon)</span></span>
+                <label class="switch"><input type="checkbox" disabled><span class="switch-slider"></span></label>
+            </div>
+        `;
+        container.appendChild(placeholderSolver);
 
         // ─── Game appearance ──────────────────────────────────────────
         container.appendChild(el('div', 'section-title', 'Game appearance'));
