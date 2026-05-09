@@ -64,12 +64,34 @@
         log('info', `Connecting to "${serverName}"`);
         Bus.window.post(MSG.JOB.LOG, { msg: `Connecting to server: "${serverName}"`, level: 'info' });
 
+        // ── DEBUG helper ──────────────────────────────────────────
+        // Posted at debug level so they're hidden from the default (info+)
+        // logViewer filter; switch to debug+ in the Logs tab if needed for
+        // future race-condition triage. Cheap and useful — no reason to remove.
+        const dbg = (msg) => Bus.window.post(MSG.JOB.LOG, { msg: `[connect/dbg] ${msg}`, level: 'debug' });
+        dbg(`endpoint=${(typeof root.__cor3CurrentEndpoint === 'string' ? root.__cor3CurrentEndpoint.slice(-12) : 'unknown')} pipelineLocked=${!!root.__pipelineLocked}`);
+
+        // 0. Ensure endpoint is HOME before clicking the server tile. After
+        // an accept-batch that hit DARK or SRM markets, the endpoint may
+        // still be on the remote server (REVERT_ENDPOINT_TO_HOME could be
+        // pending in the chain or only just dispatched). Clicking RM7-* from
+        // a remote endpoint does NOT visibly fail — server tile selection
+        // works, Connect/Login click through, but the active-access click
+        // can't resolve a path and SAI never opens. ensureHomeEndpoint
+        // tail-queues onto inflightAcceptChain so any in-flight remote dance
+        // settles before connect proceeds.
+        if (typeof root.__cor3EnsureHomeEndpoint === 'function') {
+            await root.__cor3EnsureHomeEndpoint();
+            dbg(`step 0 ok — endpoint after ensureHome=${(typeof root.__cor3CurrentEndpoint === 'string' ? root.__cor3CurrentEndpoint.slice(-12) : '?')}`);
+        }
+
         // 1. locate
         const item = NM.findServerItemByName(serverName);
         if (!item) {
             Bus.window.post(MSG.JOB.LOG, { msg: `Server not found in Network Map: "${serverName}"`, level: 'error' });
             return false;
         }
+        dbg('step 1 ok — found server item in NM');
 
         // 2. K/D check
         const { hasKD, timerText } = NM.checkServerKD(item);
@@ -83,6 +105,7 @@
         const icon = item.querySelector(NM.SEL.SERVER_ICON);
         dom.clickEl(icon || item);
         await dom.sleep(400);
+        dbg('step 3 — clicked server icon');
 
         // wait for side panel to reflect this server
         let panelReady = false;
@@ -92,22 +115,27 @@
             await dom.sleep(250);
         }
         if (!panelReady) {
+            const nameNow = document.querySelector(NM.SEL.PANEL_NAME)?.textContent?.trim();
+            dbg(`step 3 FAIL — side panel name "${nameNow || '(none)'}" ≠ "${serverName}"`);
             log('warn', `Side panel did not update for "${serverName}"`);
             return false;
         }
+        dbg('step 3 ok — panel name updated');
 
         // 4. click Connect — skip if Login already visible (already connected).
-        // Try the new onboarding-id selector first, then fall back to the
-        // legacy data-sentry-component for older builds. Same goes for Login.
         const queryConnectBtn = () => document.querySelector(SEL.CONNECT_BTN_NEW) || document.querySelector(NM.SEL.CONNECT_BTN);
         const queryLoginBtn   = () => document.querySelector(SEL.LOGIN_BTN_NEW)   || document.querySelector(NM.SEL.LOGIN_BTN);
         root.__connectStartedAt = Date.now();
-        if (!queryLoginBtn()) {
+        const loginAlreadyShown = !!queryLoginBtn();
+        dbg(`step 4 — login already visible? ${loginAlreadyShown}`);
+        if (!loginAlreadyShown) {
             const connectBtn = await dom.waitForEl(queryConnectBtn, { timeout: 3_000 });
             if (connectBtn) {
+                dbg('step 4 — clicking Connect');
                 dom.clickEl(connectBtn.closest('button') || connectBtn);
                 await dom.sleep(700);
             } else if (!queryLoginBtn()) {
+                dbg('step 4 FAIL — Connect btn not found, Login also missing');
                 log('warn', `Connect button not found for "${serverName}"`);
                 return false;
             }
@@ -119,19 +147,19 @@
         while (Date.now() < loginDeadline && !root.__jobManagerAbort) {
             loginBtn = queryLoginBtn();
             if (loginBtn) break;
-            // SAI opened directly (auto-login)
             if (getSaiForServer(serverName)) {
+                dbg('step 5 — SAI opened directly');
                 log('info', `SAI opened directly after Connect for "${serverName}"`);
                 return true;
             }
-            // Connect button reappeared → rejected
             if (queryConnectBtn()) {
+                dbg('step 5 FAIL — Connect btn reappeared (rejected)');
                 log('warn', `Connect button reappeared — rejected for "${serverName}"`);
                 Bus.window.post(MSG.JOB.SERVER_UNREACHABLE, { serverName });
                 return false;
             }
-            // WS reported no-path-to-server after our connect started
             if (root.__serverPathFailed > (root.__connectStartedAt || 0)) {
+                dbg('step 5 FAIL — no-path-to-server WS error');
                 log('warn', `No path to server (WS): "${serverName}"`);
                 root.__serverPathFailed = 0;
                 const blockedByKD = NM.listServersOnKD(serverName);
@@ -141,41 +169,51 @@
             await dom.sleep(200);
         }
         if (!loginBtn) {
+            dbg('step 5 FAIL — Login btn did not appear in 12s');
             log('warn', `Login button did not appear after Connect for "${serverName}"`);
             return false;
         }
+        dbg('step 5 ok — clicking Login');
         dom.clickEl(loginBtn.closest('button') || loginBtn);
         await dom.sleep(700);
 
-        // 6. login method dialog → click first Active Access entry. The
-        // chevron icon used to be a stable selector (ArrowRightIcon); now
-        // we walk SaiPanelListStyled and click its first row. The list mounts
-        // empty during the React skeleton phase, so wait for it to populate.
-        // If active access is empty, fall back to running a hack tool (the
-        // ice-wall solver breaks the resulting minigame); after success the
-        // active-access list populates and we click the new entry.
+        // 6. login panel — find an Active Access row OR fall back to hack-tool
         let loginPanel = await dom.waitForEl(SEL.LOGIN_PANEL, { timeout: 5_000 });
-        if (loginPanel) {
+        if (!loginPanel) {
+            dbg('step 6 FAIL — login panel did not mount in 5s');
+        } else {
+            // What's actually IN the panel? Helps when Active Access "exists"
+            // but its list is in some unexpected state.
+            const aaEl = loginPanel.querySelector(SEL.ACTIVE_ACCESS);
+            const aaList = aaEl?.querySelector(SEL.ACCESS_LIST);
+            const htEl = loginPanel.querySelector(SEL.HACK_TOOLS);
+            const htList = htEl?.querySelector(SEL.ACCESS_LIST);
+            dbg(`step 6 — panel mounted. ActiveAccess=${!!aaEl}/${aaList ? aaList.children.length + ' rows' : 'no list'} HackTools=${!!htEl}/${htList ? htList.children.length + ' rows' : 'no list'}`);
+
             let firstRow = await waitForActiveAccessRow(loginPanel, 5_000);
             if (!firstRow) {
-                // No standing active access — try the hack-tool path.
                 Bus.window.post(MSG.JOB.LOG, { msg: `Server "${serverName}" has no Active Access — attempting hack-tool path`, level: 'info' });
                 const hacked = await runHackToolForAccess(loginPanel, serverName, log);
                 if (hacked) {
-                    // The login panel may have been re-mounted after the
-                    // hack window closed — re-query rather than reusing a
-                    // possibly-detached node ref.
                     loginPanel = document.querySelector(SEL.LOGIN_PANEL) || loginPanel;
-                    // Backend granted access; the active-access list takes a
-                    // beat to mount after the hack window closes.
                     firstRow = await waitForActiveAccessRow(loginPanel, 8_000);
                 }
             }
             if (firstRow) {
+                const rowText = (firstRow.textContent || '').trim().slice(0, 60);
+                const rowAttached = !!firstRow.isConnected;
+                dbg(`step 6 — clicking access row "${rowText}" attached=${rowAttached}`);
                 dom.clickEl(firstRow);
                 await dom.sleep(700);
+
+                // Post-click probe: did anything appear?
+                const apps = Array.from(document.querySelectorAll(SEL.SAI_APP));
+                const titles = apps.map(a => `"${a.querySelector(SEL.SAI_TITLE)?.textContent?.trim() || ''}"`);
+                dbg(`step 6 post-click — SAI apps now: ${apps.length === 0 ? 'none' : titles.join(', ')}`);
+
                 log('info', `Clicked Active Access entry for "${serverName}"`);
             } else {
+                dbg('step 6 FAIL — no row to click after hack attempt');
                 Bus.window.post(MSG.JOB.LOG, { msg: `SAI login: no Active Access entry for "${serverName}" after hack attempt — solver will fail`, level: 'warn' });
             }
         }

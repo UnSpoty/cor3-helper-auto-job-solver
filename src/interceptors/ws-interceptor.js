@@ -640,25 +640,25 @@
         inflightAcceptChain = inflightAcceptChain.then(async () => {
             const cfg = MARKET_BY_ID[marketId];
             const requiredServer = cfg ? cfg.serverId : null;
+            const dbg = (m) => post(MSG.JOB.LOG, { msg: `[accept/dbg] ${m}`, level: 'debug' });
+            dbg(`job ${jobId.slice(-12)} market=${cfg?.name || marketId.slice(-12)} reqServer=${requiredServer ? requiredServer.slice(-12) : '?'} cur=${currentEndpoint.slice(-12)} lock=${!!root.__pipelineLocked}`);
             if (requiredServer && currentEndpoint !== requiredServer) {
-                // Same lock-wait as fetchRemoteMarketSequence — never yank
-                // endpoint while a flow is mid-stride. Accepts run when
-                // state=idle so this is rarely needed, but cheap insurance.
                 const lockDeadline = Date.now() + 60_000;
                 while (root.__pipelineLocked && Date.now() < lockDeadline) {
                     await sleep(500);
                 }
+                dbg(`set.endpoint(${requiredServer.slice(-12)})`);
                 sendSetEndpoint(requiredServer);
-                await sleep(800);  // RTT + server-side state propagation
+                await sleep(800);
             }
             const data = JSON.stringify({ marketId, jobId });
             const ok = wsSend('42["event",{"event":{"name":"market","action":"job.take"},"data":' + data + '}]');
+            dbg(`job.take sent ok=${ok}`);
             if (!ok) {
-                // Legacy event watched by content.js bulk-accept watchdog; not in MSG enum
                 post('COR3_ACCEPT_JOB_SEND_FAILED', { jobId, marketId });
             }
         }).catch((e) => { console.warn('[COR3] accept failed', e); });
-        return true;  // sync return — async work runs on inflightAcceptChain
+        return true;
     };
 
     root.__cor3CompleteJob = function (jobId, marketId) {
@@ -709,6 +709,9 @@
     // This lets fetchRemoteMarketSequence revert to whatever the user was on
     // before our preflight, instead of always slamming them back to HOME.
     let currentEndpoint = HOME_SERVER_ID;
+    // Expose for diagnostic logging from sibling modules (server-connect dbg
+    // line). Read-only mirror; the let above remains the source of truth.
+    Object.defineProperty(root, '__cor3CurrentEndpoint', { get: () => currentEndpoint, configurable: true });
 
     // get.jobs response carries no marketId echo, so we FIFO-attribute by
     // request order. Entries auto-expire after 30 s to prevent the queue
@@ -776,6 +779,26 @@
         // data fetch. Response is BFS-processed in handleWsMessage and
         // posted as MSG.GAME.NM_GRAPH.
         return wsSend('42["event",{"event":{"name":"network-map","action":"get.map"}}]');
+    };
+
+    // Ensure currentEndpoint is HOME before something endpoint-sensitive
+    // runs (server-connect's first click on a HOME-network server tile, in
+    // particular). Tail-queues onto inflightAcceptChain so any in-flight
+    // accept dance (and its trailing REVERT) finishes first. Returns a
+    // promise that resolves once endpoint is HOME (or 5 s elapsed,
+    // whichever first — best-effort).
+    root.__cor3EnsureHomeEndpoint = function () {
+        const run = inflightAcceptChain.then(async () => {
+            if (currentEndpoint === HOME_SERVER_ID) return;
+            sendSetEndpoint(HOME_SERVER_ID);
+            // Wait for the response to flip currentEndpoint, capped at 5 s.
+            const deadline = Date.now() + 5_000;
+            while (currentEndpoint !== HOME_SERVER_ID && Date.now() < deadline) {
+                await sleep(150);
+            }
+        }).catch(() => {});
+        inflightAcceptChain = run;
+        return run;
     };
 
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

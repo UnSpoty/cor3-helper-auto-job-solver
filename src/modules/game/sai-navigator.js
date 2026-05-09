@@ -188,7 +188,7 @@
                 });
                 Bus.window.post(C.MSG.JOB.LOG, {
                     msg: `Waiting for SAI "${serverName}" — currently open: ${apps.length === 0 ? 'none' : titles.join(', ')}`,
-                    level: 'info',
+                    level: 'debug',
                 });
                 nextBreadcrumb = Date.now() + 2_000;
             }

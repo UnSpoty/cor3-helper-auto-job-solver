@@ -123,37 +123,33 @@
         host.appendChild(card);
     }
 
-    function renderQueue(host, queue, bugged) {
-        host.innerHTML = '';
-        host.appendChild(el('div', 'section-title', `Queue (${queue.length})`));
-        if (queue.length === 0) {
-            host.appendChild(el('div', 'empty', 'Queue is empty.'));
-        } else {
-            for (const j of queue) {
-                const c = el('div', 'job-card');
-                c.innerHTML = `
-                    <div class="job-name">${escape(j.jobName || j.jobId)}</div>
-                    <div class="job-meta">[${escape(j.jobType)}]${j.serverName ? ' · ' + escape(j.serverName) : ''}${j.fileCondition ? ' · ' + escape(j.fileCondition) : ''}</div>
-                `;
-                host.appendChild(c);
-            }
-        }
-
+    // Renders the "Failed" subsection (formerly "Bugged") that lists jobs
+    // currently in the soft/hard bug TTL. Lives inside the Jobs section now;
+    // queue items are visualised via per-row chips in renderJobs instead of
+    // a separate Queue list (they were duplicate info).
+    function renderFailed(host, bugged) {
         const buggedKeys = Object.keys(bugged || {});
-        if (buggedKeys.length > 0) {
-            host.appendChild(el('div', 'section-title', `Bugged (${buggedKeys.length})`));
-            const bcard = el('div', 'card');
-            bcard.innerHTML = buggedKeys.slice(0, 10).map((id) =>
-                `<div class="sm">${escape((bugged[id] && bugged[id].name) || id)}</div>`).join('') +
-                (buggedKeys.length > 10 ? `<div class="muted sm">… +${buggedKeys.length - 10} more</div>` : '');
-            const clear = el('button', 'btn btn-danger small mt-sm', 'Clear bugged');
-            clear.addEventListener('click', async () => {
-                const tab = await getCor3Tab();
-                if (tab) chrome.tabs.sendMessage(tab.id, { action: 'clearBuggedJobs' }).catch(() => {});
-            });
-            bcard.appendChild(clear);
-            host.appendChild(bcard);
+        if (buggedKeys.length === 0) return;
+        const card = el('div', 'card');
+        card.appendChild(el('div', 'card-row', `<span class="card-label">Failed (${buggedKeys.length})</span><span class="muted xs">soft- and hard-bugged jobs, awaiting TTL</span>`));
+        const list = el('div', 'mt-sm');
+        const now = Date.now();
+        for (const id of buggedKeys.slice(0, 12)) {
+            const e = bugged[id] || {};
+            const ttlMs = e.ttl || 2 * 60 * 60 * 1000;
+            const remainingMs = Math.max(0, (e.ts || 0) + ttlMs - now);
+            const remainingMin = Math.ceil(remainingMs / 60000);
+            list.appendChild(el('div', 'sm', `<span class="pill warn">bug</span> ${escape(e.name || id)} <span class="muted xs">— retry in ${remainingMin}m</span>`));
         }
+        if (buggedKeys.length > 12) list.appendChild(el('div', 'muted sm mt-sm', `… +${buggedKeys.length - 12} more`));
+        card.appendChild(list);
+        const clear = el('button', 'btn btn-danger small mt-sm', 'Clear failed');
+        clear.addEventListener('click', async () => {
+            const tab = await getCor3Tab();
+            if (tab) chrome.tabs.sendMessage(tab.id, { action: 'clearBuggedJobs' }).catch(() => {});
+        });
+        card.appendChild(clear);
+        host.appendChild(card);
     }
 
     // Mirror of auto-jobs.js JOB_TYPE_KEYWORDS so the UI can label rows
@@ -225,15 +221,23 @@
         return row;
     }
 
-    function renderAvailableJobs(host, marketsData, settings, priorities, buggedJobs, queue, state, nmGraph) {
+    // Render queued-but-not-visible jobs as a synthetic job-like object
+    // (autoJobsQueue stores resolved entries: jobId/marketId/jobName/jobType/
+    // serverName/etc — not the original market job{}, so we have to fake the
+    // shape to feed into jobRow). Used when a job was accepted (taken off the
+    // market board) but hasn't finished executing yet — without this it'd
+    // disappear from Jobs entirely between accept and complete.
+    function syntheticJobFromQueue(q) {
+        return {
+            id: q.jobId,
+            name: q.jobName || q.jobType || q.jobId,
+            relatedServers: q.serverName ? [{ serverName: q.serverName }] : null,
+            // No rewardCredits available — leave undefined, jobRow handles it
+        };
+    }
+
+    function renderJobs(host, marketsData, settings, priorities, buggedJobs, queue, state, nmGraph) {
         host.innerHTML = '';
-        // marketsData = [{ key, label, data, enabled }, ...]
-        const totalShown = marketsData.reduce((n, m) => n + (m.data?.jobs?.length || 0), 0);
-        host.appendChild(el('div', 'section-title', `Available jobs (${totalShown})`));
-        if (totalShown === 0) {
-            host.appendChild(el('div', 'empty', 'No jobs visible on any market.'));
-            return;
-        }
 
         // Lookup tables shared across rows
         const nmDepths = {};
@@ -254,32 +258,61 @@
             marketEnabled: true,  // overwritten per market below
         };
 
+        // Section title with global breakdown so user sees totals at a glance.
+        const totalAvailable = marketsData.reduce((n, m) => n + (m.data?.jobs?.length || 0), 0);
+        const totalQueued = (queue || []).length;
+        const totalFailed = Object.keys(buggedJobs || {}).length;
+        const totalAll = totalAvailable + totalQueued + totalFailed;
+        host.appendChild(el('div', 'section-title',
+            `Jobs (${totalAll}) <span class="muted xs">· ${totalAvailable} available · ${totalQueued} in progress · ${totalFailed} failed</span>`));
+
+        if (totalAll === 0) {
+            host.appendChild(el('div', 'empty', 'No jobs visible.'));
+            return;
+        }
+
         for (const m of marketsData) {
             const jobs = m.data?.jobs || [];
-            if (jobs.length === 0) continue;
+            // Queue items belonging to this market that are NOT on the
+            // visible job board — usually accepted-but-not-finished. We
+            // synthesise a job{} shape for jobRow to consume so they appear
+            // in the list with correct chips (running/queued).
+            const visibleIds = new Set(jobs.map((j) => j.id));
+            const orphanQueueItems = (queue || []).filter((q) =>
+                q.marketId === m.data?.marketId && !visibleIds.has(q.jobId));
+            const orphanRows = orphanQueueItems.map(syntheticJobFromQueue);
+
+            if (jobs.length === 0 && orphanRows.length === 0) continue;
 
             const card = el('div', 'card' + (m.enabled ? '' : ' disabled'));
             const header = el('div', 'card-row');
+            const marketQueued = (queue || []).filter((q) => q.marketId === m.data?.marketId).length;
             header.innerHTML = `
                 <span class="card-label">${escape(m.label)}${m.enabled ? '' : ' · disabled'}</span>
-                <span class="muted sm">${jobs.length} job(s)</span>
+                <span class="muted sm">${jobs.length} avail${marketQueued > 0 ? ` · ${marketQueued} queued` : ''}</span>
             `;
             card.appendChild(header);
 
             const marketCtx = { ...ctx, marketEnabled: m.enabled };
-            // Sort within a market: queued first, then by depth descending
-            // (deepest first — matches orchestrator's jobPriority ordering).
-            const sorted = [...jobs].sort((a, b) => {
-                const aQ = queuedIds.has(a.id) ? 1 : 0;
-                const bQ = queuedIds.has(b.id) ? 1 : 0;
-                if (aQ !== bQ) return bQ - aQ;
+            // Sort within a market: running first, queued second, then by
+            // depth descending (deepest first — matches orchestrator's
+            // jobPriority ordering).
+            const all = [...jobs, ...orphanRows];
+            all.sort((a, b) => {
+                const aR = runningJobId === a.id ? 2 : (queuedIds.has(a.id) ? 1 : 0);
+                const bR = runningJobId === b.id ? 2 : (queuedIds.has(b.id) ? 1 : 0);
+                if (aR !== bR) return bR - aR;
                 const da = nmDepths[jobServer(a)] ?? -1;
                 const db = nmDepths[jobServer(b)] ?? -1;
                 return db - da;
             });
-            for (const job of sorted) card.appendChild(jobRow(job, m.label, marketCtx));
+            for (const job of all) card.appendChild(jobRow(job, m.label, marketCtx));
             host.appendChild(card);
         }
+
+        // Failed (bugged) jobs — at the bottom of Jobs section. Includes
+        // soft-bugs (transient timeouts, 15 min) and hard-bugs (2 h).
+        renderFailed(host, buggedJobs);
     }
 
     function renderServerPriorities(host, nmGraph, priorities) {
@@ -397,19 +430,19 @@
 
         const headerHost = el('div');
         const sourcesHost = el('div');
-        const queueHost = el('div');
-        const availHost = el('div');
+        const jobsHost = el('div');
         const prioHost = el('div');
         container.appendChild(headerHost);
         container.appendChild(sourcesHost);
-        container.appendChild(queueHost);
-        container.appendChild(availHost);
+        container.appendChild(jobsHost);
         container.appendChild(prioHost);
 
         renderHeader(headerHost, settings, state, solverFlags);
         renderSources(sourcesHost, settings);
-        renderQueue(queueHost, queue, bugged);
-        renderAvailableJobs(availHost, [
+        // Unified Jobs section: per-market lists with chips for state
+        // (queued/running/skip/bug/off) + a Failed card at the bottom.
+        // Replaces the separate "Queue" and "Bugged" sections.
+        renderJobs(jobsHost, [
             { key: 'home', label: 'Home Market', data: home, enabled: settings.markets?.home !== false },
             { key: 'dark', label: 'Dark Market', data: dark, enabled: settings.markets?.dark !== false },
             { key: 'srm',  label: 'SRM7-M',      data: srm,  enabled: settings.markets?.srm  !== false },

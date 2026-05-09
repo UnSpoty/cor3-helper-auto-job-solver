@@ -84,6 +84,7 @@
             autoRefresh, autoDecrypt, autoIceWall,
             disableSystemMessages, disableBackground, disableNetworkFog, disableMapFx,
             alarms, exps,
+            autoJobsQueue, autoJobsState,
         ] = await Promise.all([
             Store.local.getOne(C.STORAGE_LOCAL.DAILY_OPS),
             Store.local.getOne(C.STORAGE_LOCAL.DAILY_HACK_LOG),
@@ -103,6 +104,8 @@
             Store.sync.getOne('disableMapFxEnabled', false),
             Store.sync.getOne(C.STORAGE_SYNC.ALARMS, []),
             Store.local.getOne(C.STORAGE_LOCAL.EXPEDITIONS, []),
+            Store.local.getOne(C.STORAGE_LOCAL.AUTOJOBS_QUEUE, []),
+            Store.local.getOne(C.STORAGE_LOCAL.AUTOJOBS_STATE, { status: 'idle' }),
         ]);
 
         const ar = autoRefresh || { home_jobs: false, dark_jobs: false, srm_jobs: false };
@@ -155,8 +158,16 @@
             const head = el('div', 'card-row');
             const unreachable = canBeUnreachable && available === false;
             const jobs = (data && Array.isArray(data.jobs)) ? data.jobs : [];
-            const left = el('span', 'card-label',
-                `${escape(label)}${unreachable ? ' · unreachable' : ` · ${jobs.length} jobs`}`);
+            // Per-market in-progress count: queue items targeting this market
+            // PLUS the currently-running job if it lives here. Surfaces the
+            // same Auto-Jobs Jobs-section breakdown in compact form.
+            const myMarketId = data && data.marketId;
+            const inProgress = (autoJobsQueue || []).filter((q) => q.marketId === myMarketId).length
+                + (autoJobsState && autoJobsState.marketId === myMarketId && autoJobsState.status === 'solving' ? 1 : 0);
+            const breakdown = unreachable
+                ? ' · unreachable'
+                : ` · ${jobs.length} avail${inProgress > 0 ? ` · ${inProgress} in progress` : ''}`;
+            const left = el('span', 'card-label', `${escape(label)}${breakdown}`);
             head.appendChild(left);
             if (data && data.nextJobsResetAt && !unreachable) {
                 const t = uiComponents.timer.create(data.nextJobsResetAt);
@@ -321,7 +332,9 @@
                     changes[C.STORAGE_LOCAL.MARKET] ||
                     changes[C.STORAGE_LOCAL.DARK_MARKET] || changes[C.STORAGE_LOCAL.SRM_MARKET] ||
                     changes[C.STORAGE_LOCAL.EXPEDITIONS] ||
-                    changes[C.STORAGE_LOCAL.WEB_VERSION] || changes[C.STORAGE_LOCAL.SYSTEM_VERSION]) {
+                    changes[C.STORAGE_LOCAL.WEB_VERSION] || changes[C.STORAGE_LOCAL.SYSTEM_VERSION] ||
+                    // Per-market in-progress count is derived from these.
+                    changes[C.STORAGE_LOCAL.AUTOJOBS_QUEUE] || changes[C.STORAGE_LOCAL.AUTOJOBS_STATE]) {
                     render(container);
                 }
             }));
