@@ -169,11 +169,29 @@
         const ok = await SC.connect(serverName);
         if (!ok) return null;
 
-        // Wait up to 15s for SAI app to appear after login
+        // Wait up to 15s for SAI app to appear after login. Periodic
+        // breadcrumb every 2 s reports what we're actually seeing in the
+        // DOM — visible in the activity log. Cheap insurance against the
+        // "SAI opens then closes, no idea why" failure mode: if the title
+        // is wrong, or another app is masquerading, the breadcrumb makes
+        // it obvious without needing a console-level repro.
         const deadline = Date.now() + 15_000;
+        let nextBreadcrumb = Date.now() + 2_000;
         while (Date.now() < deadline && !root.__jobManagerAbort) {
             const sai = SC.getSaiForServer(serverName);
             if (sai) return sai;
+            if (Date.now() >= nextBreadcrumb) {
+                const apps = Array.from(document.querySelectorAll(SEL.APP));
+                const titles = apps.map((a) => {
+                    const t = a.querySelector('[data-sentry-element="SaiHeaderTitleStyled"]');
+                    return t ? `"${t.textContent.trim()}"` : '«no title»';
+                });
+                Bus.window.post(C.MSG.JOB.LOG, {
+                    msg: `Waiting for SAI "${serverName}" — currently open: ${apps.length === 0 ? 'none' : titles.join(', ')}`,
+                    level: 'info',
+                });
+                nextBreadcrumb = Date.now() + 2_000;
+            }
             await dom.sleep(400);
         }
         return null;

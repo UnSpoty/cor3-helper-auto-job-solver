@@ -40,10 +40,18 @@
     };
 
     function getSaiForServer(serverName) {
-        for (const app of document.querySelectorAll(SEL.SAI_APP)) {
+        const apps = Array.from(document.querySelectorAll(SEL.SAI_APP));
+        // Strict title match first — robust across multi-SAI scenarios.
+        for (const app of apps) {
             const title = app.querySelector(SEL.SAI_TITLE);
             if (title && title.textContent.trim() === serverName) return app;
         }
+        // Fallback: if exactly ONE SAI is open and we got here right after
+        // findOrOpenSai's closeAllSaiTerminals + connect, the singleton has
+        // to be ours. Catches the failure mode where SAI title renders late
+        // (or with subtle whitespace differences) and the strict equality
+        // misses it for the entire 15 s wait.
+        if (apps.length === 1) return apps[0];
         return null;
     }
 
