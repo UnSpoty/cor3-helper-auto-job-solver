@@ -116,15 +116,26 @@
     }
 
     /**
-     * Find every (apex_x, apex_y) on the board where the target's 9-cell
-     * pattern matches exactly: same signature AND same up/down orientation
-     * at every offset from the apex. Typically returns 0 or 1 candidates;
-     * 1 means "click here", 0 means "wait for more cells to render".
+     * Partial matcher — counts evidence per candidate apex without
+     * requiring every cell to be lit. Dark (un-revealed) cells have a
+     * different signature than lit ones (just an outline vs the full
+     * glyph), so the old "all 9 must match" approach only converged once
+     * every cell was rendered. The puzzle reveals cells gradually over
+     * the 3-minute timer, and we have to commit BEFORE everything's lit
+     * — there are 3 rounds and they share that one timer.
+     *
+     * For each candidate apex, walk the 9 target offsets and classify
+     * each board cell as:
+     *   • match     — lit AND same signature as target → strong evidence
+     *   • mismatch  — lit AND different signature → contradicts; eliminates
+     *   • unknown   — dark (not revealed yet) → no evidence either way
+     *
+     * Returns feasible candidates (mismatch === 0) sorted by match count
+     * descending. Caller decides confidence threshold.
      */
     function findApexCandidates() {
         const targetCells = readTargetCells();
         if (targetCells.length === 0) return [];
-        // Pick the target cell with the smallest Y as the apex anchor
         const targetApex = targetCells.reduce((a, b) => (a.y <= b.y ? a : b));
 
         const boardCells = readBoardCells();
@@ -133,17 +144,22 @@
 
         const out = [];
         for (const apex of boardCells) {
-            if (apex.mirror) continue;     // apex must be an up-pointing cell
-            let allMatch = true;
-            let allLit = true;
+            if (apex.mirror) continue;     // apex must be up-pointing
+            let match = 0, mismatch = 0, unknown = 0;
             for (const t of targetCells) {
                 const key = `${apex.x + (t.x - targetApex.x)},${apex.y + (t.y - targetApex.y)},${t.mirror}`;
                 const found = boardByPos.get(key);
-                if (!found || found.sig !== t.sig) { allMatch = false; break; }
-                if (!found.lit) allLit = false;
+                if (!found) { mismatch++; continue; } // out-of-bounds = elim
+                if (!found.lit) { unknown++; continue; }
+                if (found.sig === t.sig) match++;
+                else mismatch++;
             }
-            if (allMatch) out.push({ x: apex.x, y: apex.y, allLit, group: apex.group });
+            if (mismatch > 0) continue;
+            // Pure unknowns (no evidence at all) aren't useful
+            if (match === 0) continue;
+            out.push({ x: apex.x, y: apex.y, group: apex.group, match, unknown, mismatch });
         }
+        out.sort((a, b) => b.match - a.match);
         return out;
     }
 
@@ -183,42 +199,52 @@
         if (old) old.remove();
     }
 
-    function drawOverlay(apex) {
+    /**
+     * Draw the predicted apex sub-triangle. Two visual modes:
+     *   • tentative (best guess so far, but not confident enough to click) —
+     *     dim yellow outline, dashed
+     *   • confident (clear unique winner, ready to click) — solid orange,
+     *     filled apex
+     */
+    function drawOverlay(apex, confident) {
         const wall = document.querySelector(SEL.WALL);
         if (!wall) return;
         clearOverlay();
-        // The board glyphs sit inside <g transform="translate(12, 12)"> —
-        // append the overlay there so coordinates match.
         const renderG = wall.querySelector(':scope > g') || wall;
         const ns = 'http://www.w3.org/2000/svg';
         const overlay = document.createElementNS(ns, 'g');
         overlay.setAttribute('id', OVERLAY_ID);
         overlay.setAttribute('pointer-events', 'none');
 
-        // Big outline: 3-row sub-triangle bounds (apex top, bottom-row corners)
         const topX = apex.x + APEX_TRI_TOP_X;
         const topY = apex.y + APEX_TRI_TOP_Y;
         const blX  = apex.x - 63 + 1.7;
         const blY  = apex.y + 108 + 53;
         const brX  = apex.x + 63 + APEX_TRI_W;
         const brY  = blY;
+
+        const color = confident ? '#FFB857' : '#FFE066';
+        const fillOp = confident ? '0.10' : '0.05';
+        const dash = confident ? null : '6,4';
+
         const bigPath = document.createElementNS(ns, 'path');
         bigPath.setAttribute('d', `M ${topX} ${topY} L ${blX} ${blY} L ${brX} ${brY} Z`);
-        bigPath.setAttribute('fill', '#FFB857');
-        bigPath.setAttribute('fill-opacity', '0.10');
-        bigPath.setAttribute('stroke', '#FFB857');
+        bigPath.setAttribute('fill', color);
+        bigPath.setAttribute('fill-opacity', fillOp);
+        bigPath.setAttribute('stroke', color);
         bigPath.setAttribute('stroke-width', '3');
         bigPath.setAttribute('stroke-linejoin', 'round');
+        if (dash) bigPath.setAttribute('stroke-dasharray', dash);
         overlay.appendChild(bigPath);
 
-        // Inner accent: outline the apex cell itself in a brighter shade
         const apexPath = document.createElementNS(ns, 'path');
         apexPath.setAttribute('transform', `translate(${apex.x}, ${apex.y})`);
         apexPath.setAttribute('d', 'M60.6914 53.0305 H1.73242 L31.21 1.99927 Z');
-        apexPath.setAttribute('fill', '#FFB857');
-        apexPath.setAttribute('fill-opacity', '0.45');
+        apexPath.setAttribute('fill', color);
+        apexPath.setAttribute('fill-opacity', confident ? '0.45' : '0.20');
         apexPath.setAttribute('stroke', '#FFFFFF');
         apexPath.setAttribute('stroke-width', '2');
+        if (dash) apexPath.setAttribute('stroke-dasharray', dash);
         overlay.appendChild(apexPath);
 
         renderG.appendChild(overlay);
@@ -290,6 +316,15 @@
      * counter to tick over (which signals the puzzle has accepted our
      * answer and rolled a new target).
      */
+    // A candidate is "confident" once it has the unique highest match
+    // count among feasible candidates AND has at least this many cells
+    // matched. With 5 unique signatures across 9 target slots, ~3-4
+    // matches with 0 mismatches and a clear lead almost always pin the
+    // unique answer; waiting for higher confidence costs us seconds we
+    // need for rounds 2 and 3.
+    const MIN_CONFIDENT_MATCH = 3;
+    const MIN_LEAD = 1;     // best.match - second_best.match must be >=
+
     async function solveOnce(mod) {
         const startTime = Date.now();
         let lastDrawnApexKey = null;
@@ -302,56 +337,46 @@
             if (Date.now() - startTime > 180_000) { mod.warn('safety timeout (180s)'); clearOverlay(); return false; }
 
             const candidates = findApexCandidates();
-            if (candidates.length === 0) {
-                // Not enough cells revealed yet — wait and re-scan
-                await dom.sleep(300);
-                continue;
-            }
-            if (candidates.length > 1) {
-                mod.debug(`ambiguous: ${candidates.length} candidates, waiting for more glyphs to reveal`);
-                await dom.sleep(300);
-                continue;
+            if (candidates.length === 0) { await dom.sleep(250); continue; }
+
+            const best = candidates[0];
+            const second = candidates[1] || null;
+            const lead = best.match - (second ? second.match : 0);
+            const confident = best.match >= MIN_CONFIDENT_MATCH && lead >= MIN_LEAD;
+            const apexKey = `${best.x},${best.y}`;
+
+            // Always keep the overlay reflecting the current best guess.
+            // While not-yet-confident, draw it tentatively (yellow); when
+            // confident, switch to the strong orange.
+            if (apexKey !== lastDrawnApexKey || /* tentativeness changed */ true) {
+                drawOverlay(best, confident);
+                if (apexKey !== lastDrawnApexKey) {
+                    mod.info(`apex hint (${best.x}, ${best.y}) — match=${best.match} unknown=${best.unknown} lead=${lead} confident=${confident}`);
+                    lastDrawnApexKey = apexKey;
+                }
             }
 
-            const apex = candidates[0];
-            const apexKey = `${apex.x},${apex.y}`;
+            if (!confident) { await dom.sleep(250); continue; }
 
-            // Always keep the overlay in sync with the current best guess —
-            // even if we already clicked, the visual indicator helps the
-            // user hand-click while click dispatch is unresolved.
-            if (apexKey !== lastDrawnApexKey) {
-                drawOverlay(apex);
-                lastDrawnApexKey = apexKey;
-                mod.info(`overlay drawn at apex (${apex.x}, ${apex.y})`);
-            }
-
-            // De-dupe clicks within one round (apex stays the same until
-            // the counter ticks; clicking again would be wasted work).
-            if (apexKey === lastClickedApexKey) {
-                await dom.sleep(300);
-                continue;
-            }
+            if (apexKey === lastClickedApexKey) { await dom.sleep(300); continue; }
 
             const counterCur = readCounter();
-            mod.info(`match: apex (${apex.x}, ${apex.y}) — counter ${counterCur?.current}/${counterCur?.total}, allLit=${apex.allLit}`);
-            await attemptClick(apex.group, mod);
+            mod.info(`commit: apex (${best.x}, ${best.y}) — match ${best.match}/9, unknown ${best.unknown}, counter ${counterCur?.current}/${counterCur?.total}`);
+            await attemptClick(best.group, mod);
             lastClickedApexKey = apexKey;
 
-            // Wait up to 4s for the counter to tick over (= server accepted)
             const ticked = await dom.waitFor(() => {
                 const cc = readCounter();
                 return cc && counterCur && cc.current > counterCur.current ? cc : null;
             }, { timeout: 4000 });
             if (!ticked) {
-                mod.warn(`counter did not advance after click — likely click dispatch was ignored (event.isTrusted check?). Hand-click the highlighted apex.`);
-                // Wait longer before another auto-attempt so we don't spam
-                // and so the user has time to hand-click.
+                mod.warn(`counter did not advance after click — likely click dispatch was ignored. Hand-click the highlighted apex.`);
                 await dom.sleep(3000);
                 lastClickedApexKey = null;
             } else {
                 mod.info(`counter advanced: ${ticked.current}/${ticked.total}`);
                 lastClickedApexKey = null;
-                lastDrawnApexKey = null;     // force redraw for next round
+                lastDrawnApexKey = null;
                 clearOverlay();
             }
         }
