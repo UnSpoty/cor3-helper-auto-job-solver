@@ -156,6 +156,11 @@
         // Re-render the version banner if it's visible (text depends on
         // language).
         renderVersionWarning();
+
+        // No-tab placeholder is shown OUTSIDE the section system, so
+        // rerenderActive() doesn't touch it. Re-render it explicitly so
+        // the timer labels and gate copy flip with the language.
+        if (!noTabEl.hidden) renderNoTab();
     }
 
     function rerenderActive() {
@@ -196,7 +201,17 @@
         } catch (_) { return false; }
     }
 
-    function renderNoTab() {
+    // Countdown components attached to the no-tab placeholder. Tracked so
+    // we can stop the per-instance setIntervals on re-render and avoid
+    // ticking ghosts when the user opens cor3.gg and the placeholder hides.
+    let noTabTimers = [];
+    function clearNoTabTimers() {
+        for (const tm of noTabTimers) try { tm.stop(); } catch (_) {}
+        noTabTimers = [];
+    }
+
+    async function renderNoTab() {
+        clearNoTabTimers();
         noTabEl.innerHTML = '';
         const title = document.createElement('div');
         title.className = 'nt-title';
@@ -214,7 +229,77 @@
         noTabEl.appendChild(title);
         noTabEl.appendChild(body);
         noTabEl.appendChild(btn);
+
+        // Last-known timers: Daily Ops + Home/Dark/SRM market resets.
+        // Pulled from chrome.storage.local — populated by the data modules
+        // during the previous live session. Even with no tab open the
+        // countdown ticks correctly because the targets are absolute
+        // wall-clock times. Markets that the live session marked as
+        // unreachable show that label instead of a stale timer.
+        const tm = root.COR3.uiComponents && root.COR3.uiComponents.timer;
+        if (!tm) return;
+        let daily, market, dark, darkAvail, srm, srmAvail;
+        try {
+            [daily, market, dark, darkAvail, srm, srmAvail] = await Promise.all([
+                Store.local.getOne(C.STORAGE_LOCAL.DAILY_OPS),
+                Store.local.getOne(C.STORAGE_LOCAL.MARKET),
+                Store.local.getOne(C.STORAGE_LOCAL.DARK_MARKET),
+                Store.local.getOne(C.STORAGE_LOCAL.DARK_MARKET_AVAILABLE, true),
+                Store.local.getOne(C.STORAGE_LOCAL.SRM_MARKET),
+                Store.local.getOne(C.STORAGE_LOCAL.SRM_MARKET_AVAILABLE, true),
+            ]);
+        } catch (_) { return; }
+
+        const list = document.createElement('div');
+        list.className = 'nt-timers';
+
+        function row(label, target, isUnreachable) {
+            const r = document.createElement('div');
+            r.className = 'nt-timer-row';
+            const lab = document.createElement('span');
+            lab.className = 'nt-timer-label';
+            lab.textContent = label;
+            r.appendChild(lab);
+            if (isUnreachable) {
+                const un = document.createElement('span');
+                un.className = 'muted sm';
+                un.textContent = i18n.t('overview.unreachable');
+                r.appendChild(un);
+            } else if (target) {
+                const inst = tm.create(target);
+                noTabTimers.push(inst);
+                r.appendChild(inst.el);
+            } else {
+                const dash = document.createElement('span');
+                dash.className = 'muted sm';
+                dash.textContent = '—';
+                r.appendChild(dash);
+            }
+            return r;
+        }
+
+        list.appendChild(row(i18n.t('overview.dailyOps'), daily && daily.nextTaskTime, false));
+        list.appendChild(row(i18n.t('overview.homeMarket'), market && market.nextJobsResetAt, false));
+        list.appendChild(row(i18n.t('overview.darkMarket'), dark && dark.nextJobsResetAt, darkAvail === false));
+        list.appendChild(row(i18n.t('overview.srm'), srm && srm.nextJobsResetAt, srmAvail === false));
+        noTabEl.appendChild(list);
     }
+
+    // Re-render the no-tab placeholder when the storage values backing
+    // its timers change. Without a live cor3.gg tab they normally won't
+    // — but if the user opens cor3.gg in another window while the popup
+    // is still in this state, the data modules will land their first
+    // payloads and we want the timers to refresh once before
+    // syncTabState() flips the gate.
+    Store.local.onChanged((changes) => {
+        if (noTabEl.hidden) return;
+        if (changes[C.STORAGE_LOCAL.DAILY_OPS] ||
+            changes[C.STORAGE_LOCAL.MARKET] ||
+            changes[C.STORAGE_LOCAL.DARK_MARKET] || changes[C.STORAGE_LOCAL.DARK_MARKET_AVAILABLE] ||
+            changes[C.STORAGE_LOCAL.SRM_MARKET] || changes[C.STORAGE_LOCAL.SRM_MARKET_AVAILABLE]) {
+            renderNoTab();
+        }
+    });
 
     let lastTabState = null;
     async function syncTabState() {
@@ -229,10 +314,11 @@
         if (present) {
             appShell.hidden = false;
             noTabEl.hidden = true;
+            clearNoTabTimers();
         } else {
             appShell.hidden = true;
             noTabEl.hidden = false;
-            renderNoTab();
+            await renderNoTab();
         }
     }
 

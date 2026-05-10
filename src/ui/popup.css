@@ -138,6 +138,22 @@ a { color: var(--os-color-primary-hex); }
     word-wrap: break-word;
 }
 .no-tab .btn { display: inline-block; }
+.no-tab .nt-timers {
+    margin-top: 22px;
+    padding-top: 14px;
+    border-top: 1px solid var(--os-color-divider);
+    text-align: left;
+}
+.no-tab .nt-timer-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 4px;
+    font-size: 12px;
+    border-bottom: 1px solid var(--os-color-divider);
+}
+.no-tab .nt-timer-row:last-child { border-bottom: none; }
+.no-tab .nt-timer-label { color: var(--os-color-text-grey); }
 
 /* ─── Locked-tab placeholder (Expeditions under rework) ────────────── */
 .locked-tab {
