@@ -54,17 +54,14 @@
         // in the towel. The "Reset" button below will clear it.
         if (state.status === 'halted') {
             const banner = el('div', 'card aj-halted-banner');
-            const reason = state.haltReason || 'Unknown reason';
+            const reason = state.haltReason || t('autojobs.unknownReason');
             banner.innerHTML = `
                 <div class="card-row">
-                    <span class="card-label">⚠ Auto-Jobs HALTED</span>
+                    <span class="card-label">⚠ ${escape(t('autojobs.haltedBanner'))}</span>
                     <span class="pill err">halted</span>
                 </div>
                 <div class="state-desc xs">${escape(reason)}</div>
-                <div class="muted xs mt-sm">
-                    Reached ${escape('3×')} consecutive failures. Click <b>Reset</b> below to clear and resume,
-                    or check the activity log + Download Log for details.
-                </div>
+                <div class="muted xs mt-sm">${escape(t('autojobs.haltedHint'))}</div>
             `;
             host.appendChild(banner);
         }
@@ -93,7 +90,7 @@
 
         // State pill row + next-state hint
         const stateRow = el('div', 'card-row mt-sm');
-        const nextHint = nextMeta ? `<span class="muted xs">→ next: ${escapeAttr(nextMeta.title)}</span>` : '';
+        const nextHint = nextMeta ? `<span class="muted xs">→ ${escape(t('autojobs.nextLabel'))}: ${escapeAttr(nextMeta.title)}</span>` : '';
         stateRow.innerHTML = `
             <span class="card-label">${escape(t('autojobs.status'))}</span>
             <span class="pill aj-state aj-state-${escapeAttr(moduleStateClass)}">${escape(meta.title || canonical)}</span>
@@ -130,7 +127,7 @@
         toggleBtn.classList.toggle('btn-danger', !!settings.enabled);
         toggleBtn.classList.toggle('btn-success', !settings.enabled && !blocked);
         toggleBtn.disabled = blocked && !settings.enabled;
-        if (toggleBtn.disabled) toggleBtn.title = `Enable required solvers first: ${missingSolvers.map((s) => s.label).join(', ')}`;
+        if (toggleBtn.disabled) toggleBtn.title = t('autojobs.requiredSolversTip', { names: missingSolvers.map((s) => s.label).join(', ') });
         toggleBtn.addEventListener('click', async () => {
             if (toggleBtn.disabled) return;
             const nextSettings = Object.assign({}, settings, { enabled: !settings.enabled });
@@ -142,10 +139,10 @@
 
         const actionRow = el('div', 'aj-action-row mt-sm');
         // Reset — force the orchestrator out of any stuck state.
-        const resetBtn = el('button', 'btn small', 'Reset');
-        resetBtn.title = 'Force the orchestrator back to idle and clear the queue';
+        const resetBtn = el('button', 'btn small', t('autojobs.reset'));
+        resetBtn.title = t('autojobs.resetTip');
         resetBtn.addEventListener('click', async () => {
-            if (!confirm('Reset Auto-Jobs?\n\nThis aborts the current flow, clears the queue, and forces the orchestrator back to idle. Permanently rejected entries are kept (clear those separately).')) return;
+            if (!confirm(t('autojobs.resetConfirm'))) return;
             const tab = await getCor3Tab();
             if (tab) chrome.tabs.sendMessage(tab.id, { action: 'autoJobsReset' }).catch(() => {});
         });
@@ -153,24 +150,25 @@
 
         // Download Log — full debug bundle (settings + NM_GRAPH summary +
         // reachability + queue + rejected jobs + module logs).
-        const downloadBtn = el('button', 'btn small', 'Download Log');
-        downloadBtn.title = 'Save a full Auto-Jobs debug bundle as a .txt file';
+        const downloadLabel = t('autojobs.downloadLog');
+        const downloadBtn = el('button', 'btn small', downloadLabel);
+        downloadBtn.title = t('autojobs.downloadLogTip');
         downloadBtn.addEventListener('click', async () => {
             try {
                 const exporter = root.COR3.autoJobs && root.COR3.autoJobs.logExport;
                 if (!exporter || typeof exporter.downloadDebugBundle !== 'function') {
-                    alert('Log export helper is unavailable in this context.');
+                    alert(t('autojobs.downloadUnavailable'));
                     return;
                 }
                 downloadBtn.disabled = true;
-                downloadBtn.textContent = 'Building…';
+                downloadBtn.textContent = t('autojobs.downloadBuilding');
                 const bytes = await exporter.downloadDebugBundle();
-                downloadBtn.textContent = `Downloaded (${Math.ceil((bytes || 0) / 1024)} KB)`;
-                setTimeout(() => { downloadBtn.disabled = false; downloadBtn.textContent = 'Download Log'; }, 2500);
+                downloadBtn.textContent = t('autojobs.downloadDone', { kb: Math.ceil((bytes || 0) / 1024) });
+                setTimeout(() => { downloadBtn.disabled = false; downloadBtn.textContent = downloadLabel; }, 2500);
             } catch (err) {
                 downloadBtn.disabled = false;
-                downloadBtn.textContent = 'Download Log';
-                alert('Failed to build debug bundle: ' + (err && err.message || err));
+                downloadBtn.textContent = downloadLabel;
+                alert(t('autojobs.downloadFailed', { error: (err && err.message) || err }));
             }
         });
         actionRow.appendChild(downloadBtn);
@@ -289,17 +287,21 @@
         const ids = Object.keys(rejected || {});
         if (ids.length === 0) return;
         const card = el('div', 'card');
-        card.appendChild(el('div', 'card-row', `<span class="card-label">Permanently skipped (${ids.length})</span><span class="muted xs">No retry — markets refresh will clear automatically</span>`));
+        card.appendChild(el('div', 'card-row',
+            `<span class="card-label">${escape(t('autojobs.permanentlySkipped', { n: ids.length }))}</span>`
+            + `<span class="muted xs">${escape(t('autojobs.permanentlySkippedSub'))}</span>`));
         const list = el('div', 'mt-sm');
+        const skipPill = t('autojobs.pillSkip');
+        const unknown = t('autojobs.unknownReason');
         for (const id of ids.slice(0, 12)) {
             const e = rejected[id] || {};
             const desc = escape(e.descriptor || id);
-            const reason = escape(e.reason || 'unknown');
-            list.appendChild(el('div', 'sm', `<span class="pill warn">skip</span> ${desc} <span class="muted xs">⤷ ${reason}</span>`));
+            const reason = escape(e.reason || unknown);
+            list.appendChild(el('div', 'sm', `<span class="pill warn">${escape(skipPill)}</span> ${desc} <span class="muted xs">⤷ ${reason}</span>`));
         }
-        if (ids.length > 12) list.appendChild(el('div', 'muted sm mt-sm', `… +${ids.length - 12} more`));
+        if (ids.length > 12) list.appendChild(el('div', 'muted sm mt-sm', escape(t('autojobs.permanentlySkippedMore', { n: ids.length - 12 }))));
         card.appendChild(list);
-        const clear = el('button', 'btn btn-danger small mt-sm', 'Clear all');
+        const clear = el('button', 'btn btn-danger small mt-sm', t('autojobs.clearAll'));
         clear.addEventListener('click', async () => {
             const tab = await getCor3Tab();
             // Backend kept the legacy 'clearBuggedJobs' channel name —
@@ -480,7 +482,7 @@
         const skipCount = Object.values(priorities || {}).filter((v) => v === 'skip').length;
         const summary = document.createElement('summary');
         summary.className = 'section-title';
-        summary.textContent = `${t('autojobs.serverPriorities')}${skipCount > 0 ? ` · ${skipCount} skipped` : ''}`;
+        summary.textContent = `${t('autojobs.serverPriorities')}${skipCount > 0 ? ` · ${t('autojobs.skippedCount', { n: skipCount })}` : ''}`;
         wrap.appendChild(summary);
 
         const card = el('div', 'card');
@@ -501,12 +503,12 @@
         // fire even when the topology didn't actually change between calls.
         const updatedAt = nmGraph?.updatedAt ? new Date(nmGraph.updatedAt).toLocaleTimeString() : null;
         rescanRow.appendChild(el('span', 'muted xs',
-            `${targetable.length} known${nmGraph?.home ? ` · home: ${escape(nmGraph.home)}` : ''}${updatedAt ? ` · refreshed ${updatedAt}` : ''}`));
+            `${t('autojobs.knownDepth', { n: targetable.length })}${nmGraph?.home ? ` · home: ${escape(nmGraph.home)}` : ''}${updatedAt ? ` · refreshed ${updatedAt}` : ''}`));
         card.appendChild(rescanRow);
 
         const list = el('div', 'mt-sm');
         if (targetable.length === 0) {
-            list.appendChild(el('div', 'muted sm', 'No graph data yet — click Refresh graph (the extension fetches it automatically on connect; this button is for manual re-sync after maintenance).'));
+            list.appendChild(el('div', 'muted sm', t('autojobs.noGraphData')));
         } else {
             // Sort by depth ascending (shallowest at the top of the visible
             // list = closest to home), with name as tiebreaker. This is a
@@ -573,7 +575,7 @@
         const wrap = document.createElement('details');
         wrap.className = 'collapsible aj-timeline';
         const summary = document.createElement('summary');
-        summary.innerHTML = `<span class="card-label">State history</span><span class="muted xs">${history.length} transition(s)</span>`;
+        summary.innerHTML = `<span class="card-label">${escape(t('autojobs.stateHistory'))}</span><span class="muted xs">${escape(t('autojobs.transitions', { n: history.length }))}</span>`;
         wrap.appendChild(summary);
         const card = el('div', 'card aj-timeline-list');
         // Newest first so the most recent transition is at the top.
@@ -649,9 +651,9 @@
         renderJobTypes(jobTypesHost, settings);
         renderTimeline(timelineHost, history);
         renderJobs(jobsHost, [
-            { key: 'home', label: 'Home Market', data: home, enabled: settings.markets?.home !== false },
-            { key: 'dark', label: 'Dark Market', data: dark, enabled: settings.markets?.dark !== false },
-            { key: 'srm',  label: 'SRM7-M',      data: srm,  enabled: settings.markets?.srm  !== false },
+            { key: 'home', label: t('overview.homeMarket'), data: home, enabled: settings.markets?.home !== false },
+            { key: 'dark', label: t('overview.darkMarket'), data: dark, enabled: settings.markets?.dark !== false },
+            { key: 'srm',  label: t('overview.srm'),        data: srm,  enabled: settings.markets?.srm  !== false },
         ], settings, priorities, rejected, queue, state, nmGraph);
         renderServerPriorities(prioHost, nmGraph, priorities || {});
 
