@@ -88,6 +88,7 @@
             disableSystemMessages, disableBackground, disableNetworkFog, disableMapFx,
             alarms, exps,
             autoJobsQueue, autoJobsState,
+            selectedTheme,
         ] = await Promise.all([
             Store.local.getOne(C.STORAGE_LOCAL.DAILY_OPS),
             Store.local.getOne(C.STORAGE_LOCAL.DAILY_HACK_LOG),
@@ -109,6 +110,7 @@
             Store.local.getOne(C.STORAGE_LOCAL.EXPEDITIONS, []),
             Store.local.getOne(C.STORAGE_LOCAL.AUTOJOBS_QUEUE, []),
             Store.local.getOne(C.STORAGE_LOCAL.AUTOJOBS_STATE, { status: 'idle' }),
+            Store.sync.getOne(C.STORAGE_SYNC.SELECTED_THEME, 'cor3'),
         ]);
 
         const ar = autoRefresh || { home_jobs: false, dark_jobs: false, srm_jobs: false };
@@ -220,6 +222,27 @@
 
         // ─── Game appearance ──────────────────────────────────────────
         container.appendChild(el('div', 'section-title', t('overview.appearance')));
+
+        // Popup theme dropdown. Storage value is 'cor3' (default) or
+        // 'amber-console' (retro CRT, ported from cor3-auto-Mission).
+        // shell.js applies the corresponding body class on storage change,
+        // so we don't need to reload the popup after a switch.
+        const themeCard = el('div', 'card');
+        const currentTheme = (selectedTheme === 'amber-console') ? 'amber-console' : 'cor3';
+        themeCard.innerHTML = `
+            <div class="card-row">
+                <span class="card-label">${escape(t('overview.theme'))}</span>
+                <select id="theme-select">
+                    <option value="cor3" ${currentTheme === 'cor3' ? 'selected' : ''}>${escape(t('overview.themeCor3'))}</option>
+                    <option value="amber-console" ${currentTheme === 'amber-console' ? 'selected' : ''}>${escape(t('overview.themeAmber'))}</option>
+                </select>
+            </div>
+        `;
+        themeCard.querySelector('#theme-select').addEventListener('change', (e) => {
+            Store.sync.setOne(C.STORAGE_SYNC.SELECTED_THEME, e.target.value);
+        });
+        container.appendChild(themeCard);
+
         container.appendChild(appearanceToggle(t('overview.hideSysMsg'), C.STORAGE_SYNC.DISABLE_SYSTEM_MESSAGES, disableSystemMessages));
         container.appendChild(appearanceToggle(t('overview.disableBg'), C.STORAGE_SYNC.DISABLE_BACKGROUND, disableBackground));
         container.appendChild(appearanceToggle(t('overview.disableNetFog'), C.STORAGE_SYNC.DISABLE_NETWORK_FOG, disableNetworkFog));

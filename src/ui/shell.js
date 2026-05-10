@@ -27,6 +27,28 @@
     const params = new URLSearchParams(location.search);
     if (params.get('mode') === 'popout') document.body.classList.add('mode-popout');
 
+    // ─── Theme switcher ───────────────────────────────────────────────
+    // Default cor3-style theme is the palette baked into popup.css's :root.
+    // Optional themes are layered as `body.theme-<name>` overrides; the
+    // 'amber-console' theme mimics the retro CRT look from the
+    // cor3-auto-Mission competitor. selectedTheme is one of:
+    //   'cor3' (or undefined/null) — default; no class applied
+    //   'amber-console'           — body.theme-amber-console
+    const THEME_CLASSES = ['theme-amber-console'];
+    function applyTheme(name) {
+        for (const cls of THEME_CLASSES) document.body.classList.remove(cls);
+        if (name === 'amber-console') document.body.classList.add('theme-amber-console');
+    }
+    // Sync apply happens before tabs render — read storage and toggle the
+    // class. We don't await this (boot proceeds in parallel); the worst
+    // case is a single-frame flash of default colors before amber kicks in.
+    Store.sync.getOne(C.STORAGE_SYNC.SELECTED_THEME, 'cor3').then(applyTheme);
+    Store.sync.onChanged((changes) => {
+        if (changes[C.STORAGE_SYNC.SELECTED_THEME]) {
+            applyTheme(changes[C.STORAGE_SYNC.SELECTED_THEME].newValue);
+        }
+    });
+
     // ─── Language switcher ────────────────────────────────────────────
     // Hydrate the dropdown synchronously so the user sees something useful
     // even before chrome.storage.sync resolves; the chosen language is

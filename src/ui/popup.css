@@ -700,3 +700,116 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
     min-width: 56px;
     font-family: var(--os-font);
 }
+
+/* ─── Amber Console theme (opt-in) ────────────────────────────────────
+   Optional retro CRT-terminal palette inspired by the cor3-auto-Mission
+   competitor. Toggled by chrome.storage.sync.selectedTheme === 'amber-console'
+   — shell.js sets <body class="theme-amber-console">. The override block
+   redefines our --os-* variables onto an amber palette, then ::after
+   layers a scanline overlay on top of the popup. Reverts to default
+   palette by simply removing the body class. */
+body.theme-amber-console {
+    /* Backgrounds */
+    --os-color-bg:           #0d0600;
+    --os-color-bg-secondary: #1b0f02;
+    --os-color-bg-tertiary:  #2a1401;
+    --os-color-bg-card:      #140a01;
+    --os-color-bg-footer:    #1b0f02;
+    --os-color-input-bg:     #1b0f02;
+    --os-color-surface:      #1b0f02;
+
+    /* Text */
+    --os-color-text:                 #f8b23a;
+    --os-color-text-secondary:       #c58b33;
+    --os-color-text-tertiary:        #8f6524;
+    --os-color-text-grey:            #c58b33;
+    --os-color-text-grey-tertiary:   #8f6524;
+    --os-color-text-primary-light:   #ffd35c;
+    --os-color-text-primary-muted:   #8f6524;
+    --os-color-text-dim:             rgba(143, 101, 36, 0.7);
+    --os-color-text-black:           #0d0600;
+
+    /* Borders & dividers */
+    --os-color-border:           #c17a15;
+    --os-color-border-secondary: #6f430b;
+    --os-color-divider:          #6f430b;
+
+    /* Accents — primary = bright amber (replaces cor3 cyan), success
+       and warning are kept distinct so pills remain readable. */
+    --os-color-primary:         rgba(255, 211, 92, 1);
+    --os-color-primary-hex:     #ffd35c;
+    --os-color-primary-rgb:     255, 211, 92;
+    --os-color-primary-hover:   rgba(193, 122, 21, 1);
+    --os-color-primary-surface: #2a1401;
+    --os-color-hover-bg:        rgba(255, 211, 92, 0.10);
+
+    --os-color-secondary:    rgba(248, 178, 58, 1);
+    --os-color-success:      rgba(255, 211, 92, 1);   /* amber-bright instead of green */
+    --os-color-warning:      rgba(255, 179, 64, 1);
+    --os-color-danger:       #ff7b2b;
+    --os-color-accent-green: rgba(248, 178, 58, 1);
+
+    /* Force monospace look — the CRT vibe relies on it. */
+    --os-font: "Consolas", "Courier New", ui-monospace, monospace;
+
+    background: var(--os-color-bg);
+    color: var(--os-color-text);
+}
+
+/* Scanline overlay. mix-blend-mode: screen lightens only the amber
+   pixels underneath, so the lines read like a phosphor sweep instead
+   of a dark grid. pointer-events: none keeps clicks falling through. */
+body.theme-amber-console::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 9999;
+    background-image: repeating-linear-gradient(
+        to bottom,
+        rgba(255, 180, 60, 0.05) 0,
+        rgba(255, 180, 60, 0.05) 1px,
+        transparent 1px,
+        transparent 3px
+    );
+    mix-blend-mode: screen;
+}
+
+/* The default theme uses rounded-corner cards; amber console is
+   sharp-edged angular like the original. Strip border-radius across
+   the popup to match the retro-terminal aesthetic. */
+body.theme-amber-console .card,
+body.theme-amber-console .job-card,
+body.theme-amber-console .merc-card,
+body.theme-amber-console .module-card,
+body.theme-amber-console .alarm-row,
+body.theme-amber-console .btn,
+body.theme-amber-console input[type="text"],
+body.theme-amber-console input[type="number"],
+body.theme-amber-console select,
+body.theme-amber-console textarea,
+body.theme-amber-console .nm-hud-zoom,
+body.theme-amber-console .nm-hud-btn,
+body.theme-amber-console .log-stream {
+    border-radius: 0;
+}
+
+/* Subtle inset glow on the body to mimic the competitor's panel chrome. */
+body.theme-amber-console {
+    box-shadow: inset 0 0 22px rgba(255, 120, 10, 0.12);
+}
+
+/* Pills keep their colored tint but stay rectangular; the amber accent
+   gets a 1px outline so it stands out on the dark amber background. */
+body.theme-amber-console .pill {
+    border-radius: 0;
+    border: 1px solid currentColor;
+    background: transparent !important;
+}
+
+/* Auto-Jobs state pills inherit pill border-radius rules above; force
+   transparent fill so the amber accent reads as outlined text. */
+body.theme-amber-console .aj-state {
+    background: transparent !important;
+    border: 1px solid currentColor;
+}
