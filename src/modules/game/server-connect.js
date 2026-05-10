@@ -55,6 +55,32 @@
         return null;
     }
 
+    // Wrapper around __cor3EnsureHomeEndpoint that adds a settle delay
+    // when the endpoint actually flipped from a non-HOME server. Reason:
+    // even after cor3.gg WS-confirms set.endpoint(HOME), the server-side
+    // session machinery seems to hold a brief "just disconnected from X"
+    // reservation. The very next Connect click (within ~600 ms of the
+    // flip) bounces back as "rejected" even though path-to-target is
+    // reachable. A 1 s settle wait clears it; verified on 2026-05-10
+    // sessions where back-to-back jobs on different remote servers were
+    // failing 1-out-of-2 with this exact bounce-back pattern.
+    //
+    // No-op fast path when endpoint was already HOME (zero cost on the
+    // common case where ensureHome doesn't actually flip anything).
+    async function ensureHomeWithSettle(dbg) {
+        if (typeof root.__cor3EnsureHomeEndpoint !== 'function') return;
+        const before = (typeof root.__cor3CurrentEndpoint === 'string')
+            ? root.__cor3CurrentEndpoint : null;
+        await root.__cor3EnsureHomeEndpoint();
+        const after = (typeof root.__cor3CurrentEndpoint === 'string')
+            ? root.__cor3CurrentEndpoint : null;
+        if (dbg) dbg(`step 0 ok — endpoint after ensureHome=${after ? after.slice(-12) : '?'}`);
+        if (before && after && before !== after) {
+            if (dbg) dbg(`endpoint flipped ${before.slice(-12)} → ${after.slice(-12)}, 1s settle`);
+            await dom.sleep(1000);
+        }
+    }
+
     /**
      * Full connect flow with K/D + unreachable detection.
      * Returns true on success (Login submitted; SAI may or may not be open yet).
@@ -78,12 +104,9 @@
         // a remote endpoint does NOT visibly fail — server tile selection
         // works, Connect/Login click through, but the active-access click
         // can't resolve a path and SAI never opens. ensureHomeEndpoint
-        // tail-queues onto inflightAcceptChain so any in-flight remote dance
-        // settles before connect proceeds.
-        if (typeof root.__cor3EnsureHomeEndpoint === 'function') {
-            await root.__cor3EnsureHomeEndpoint();
-            dbg(`step 0 ok — endpoint after ensureHome=${(typeof root.__cor3CurrentEndpoint === 'string' ? root.__cor3CurrentEndpoint.slice(-12) : '?')}`);
-        }
+        // tail-queues onto inflightAcceptChain + inflightRemoteFetch so any
+        // in-flight WS dance settles before connect proceeds.
+        await ensureHomeWithSettle(dbg);
 
         // 1. locate
         const item = NM.findServerItemByName(serverName);
@@ -157,6 +180,13 @@
     //                                         panel didn't mount): caller may
     //                                         retry the whole chain.
     async function attemptConnectChain(serverName, item, log, dbg) {
+        // 3a. Re-ensure endpoint is HOME at the top of every attempt. The
+        // first attempt's click chain may have flipped the WS endpoint to
+        // the target server (after a partial login click that left the
+        // session half-open), so without this the second full reconnect
+        // would inherit a sticky endpoint and Connect would bounce back.
+        await ensureHomeWithSettle(dbg);
+
         // 3. select server — click icon, wait for side panel.
         const icon = item.querySelector(NM.SEL.SERVER_ICON);
         dom.clickEl(icon || item);
