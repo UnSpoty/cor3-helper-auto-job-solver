@@ -104,7 +104,7 @@
     // markets.{home,dark,srm} — which markets to scan and accept from.
     // debugMode was removed in the May 2026 audit (manual gating belongs in
     // job-types whitelist, not a global pause/confirm — too easy to forget on).
-    let settings = { enabled: false, markets: { home: true, dark: true, srm: true }, enabledJobTypes: {} };
+    let settings = { enabled: false, markets: { home: true, dark: true, srm: true }, enabledJobTypes: {}, autoDismissFailed: true };
     let serverPriorities = {};
     // Map serverName → depth (BFS hops from HOME). Filled when WS network-map.
     // get.map response arrives via onNmGraph. Deeper = higher priority in
@@ -117,6 +117,13 @@
     const kdSkipServers = new Map();
     const sentAcceptIds = new Map();
     const completedJobIds = new Map();
+    // Tracks FAILED jobs we've already dispatched a dismiss for, so a
+    // market refresh that still shows the job (cor3.gg can take a beat to
+    // remove it from recentJobs) doesn't trigger duplicate dismiss frames.
+    // Cleared per-id when the entry ages out, and scrubbed when the job
+    // disappears from every visible market list.
+    const dismissedFailedIds = new Map();
+    const DISMISSED_FAILED_TTL_MS = 5 * 60 * 1000;
     // Incremental persistence of completed jobs — survives reload/crash.
     // Loaded on start(); written on every successful complete. Bounded ring
     // (LIMITS.COMPLETED_LOG_RING) to keep storage size predictable.
@@ -249,6 +256,48 @@
         if (cleared > 0) {
             saveRejected();
             if (modRef) modRef.debug(`reject auto-clear: dropped ${cleared} stale entr(y/ies)`);
+        }
+    }
+
+    // Walk recentJobs across every market for status === 'FAILED' and
+    // dispatch a job.dismiss for each one we haven't already handled. A
+    // failed job is just clutter — the user can't do anything with it
+    // and it lingers in the "Active Jobs" panel until manually dismissed.
+    // The WS layer (ws-interceptor.__cor3DismissJob) handles the
+    // set.endpoint dance for DARK/SRM, so this scan is endpoint-agnostic.
+    function dismissFailedFromMarkets(marketsBundle) {
+        if (!settings.autoDismissFailed) return;
+        const now = Date.now();
+        // Prune the dedup map first so a job that vanished and reappeared
+        // (server-side glitch) gets re-dismissed instead of silently held.
+        for (const [id, ts] of dismissedFailedIds) {
+            if (now - ts > DISMISSED_FAILED_TTL_MS) dismissedFailedIds.delete(id);
+        }
+        // Collect first, dispatch with spacing. A user with a backlog of 50
+        // accumulated FAILED jobs would otherwise burst 50 wsSend frames in
+        // one tick — fine for the WS itself, but rude to cor3.gg. 600ms
+        // pacing is comfortably above any plausible rate-limit while still
+        // clearing a typical 5-job backlog inside one market refresh cycle.
+        const pending = [];
+        for (const data of marketsBundle) {
+            if (!data || !data.marketId) continue;
+            const recent = data.recentJobs;
+            if (!Array.isArray(recent)) continue;
+            for (const j of recent) {
+                if (!j || !j.id) continue;
+                if (String(j.status || '').toUpperCase() !== 'FAILED') continue;
+                if (dismissedFailedIds.has(j.id)) continue;
+                dismissedFailedIds.set(j.id, now);
+                pending.push({ jobId: j.id, marketId: data.marketId, name: j.name || j.id });
+            }
+        }
+        for (let i = 0; i < pending.length; i++) {
+            const p = pending[i];
+            setTimeout(() => {
+                Bus.window.post('COR3_DISMISS_JOB', { jobId: p.jobId, marketId: p.marketId });
+                pushUserLog(`Dismissed FAILED job "${p.name}"`, 'warn');
+                if (modRef) modRef.info(`dismiss FAILED ${p.jobId} on ${p.marketId}`);
+            }, i * 600);
         }
     }
 
@@ -1048,18 +1097,20 @@
                 // visible anywhere — cor3.gg either let someone else take
                 // the job, or its lifetime ran out. Either way, the reject
                 // is no longer informative.
-                if (Object.keys(rejectedJobs).length > 0) {
-                    try {
-                        const bundle = await Store.local.get([
-                            C.STORAGE_LOCAL.MARKET, C.STORAGE_LOCAL.DARK_MARKET, C.STORAGE_LOCAL.SRM_MARKET,
-                        ]);
-                        clearRejectedFromMarkets([
-                            bundle[C.STORAGE_LOCAL.MARKET],
-                            bundle[C.STORAGE_LOCAL.DARK_MARKET],
-                            bundle[C.STORAGE_LOCAL.SRM_MARKET],
-                        ]);
-                    } catch (_) { /* best-effort cleanup */ }
-                }
+                // Single fetch of all three market storage entries serves
+                // both rejected-job cleanup and FAILED-job auto-dismiss.
+                try {
+                    const bundle = await Store.local.get([
+                        C.STORAGE_LOCAL.MARKET, C.STORAGE_LOCAL.DARK_MARKET, C.STORAGE_LOCAL.SRM_MARKET,
+                    ]);
+                    const arr = [
+                        bundle[C.STORAGE_LOCAL.MARKET],
+                        bundle[C.STORAGE_LOCAL.DARK_MARKET],
+                        bundle[C.STORAGE_LOCAL.SRM_MARKET],
+                    ];
+                    if (Object.keys(rejectedJobs).length > 0) clearRejectedFromMarkets(arr);
+                    dismissFailedFromMarkets(arr);
+                } catch (_) { /* best-effort cleanup */ }
                 setTimeout(() => tryResumeInProgress(), 500);
                 if (state.status === 'idle') setTimeout(tick, 2000);
             };

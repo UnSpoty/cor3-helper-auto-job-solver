@@ -25,7 +25,7 @@
     // Default settings shape — kept in sync with auto-jobs.js. markets has
     // entries for every market we know about; missing keys are treated as
     // truthy by the orchestrator (settings.markets.foo !== false).
-    const DEFAULT_SETTINGS = { enabled: false, markets: { home: true, dark: true, srm: true }, enabledJobTypes: {} };
+    const DEFAULT_SETTINGS = { enabled: false, markets: { home: true, dark: true, srm: true }, enabledJobTypes: {}, autoDismissFailed: true };
 
     // The header card and the queue/bugged sections need to re-render on
     // state/queue changes; the activity log lives separately and uses its
@@ -196,12 +196,25 @@
             { key: 'srm',  label: t('overview.srm') },
         ];
         const m = settings.markets || {};
-        card.innerHTML = MARKET_LABELS.map((mk, i) => `
+        const marketRows = MARKET_LABELS.map((mk, i) => `
             <div class="card-row${i > 0 ? ' mt-sm' : ''}">
                 <span class="card-label">${escape(mk.label)}</span>
                 <label class="switch"><input type="checkbox" data-mkt="${mk.key}" ${m[mk.key] !== false ? 'checked' : ''}><span class="switch-slider"></span></label>
             </div>
         `).join('');
+        // Auto-dismiss FAILED jobs — one master switch. The orchestrator's
+        // dismissFailedFromMarkets walks recentJobs on every market arrival
+        // and dispatches a market.job.dismiss for any status==='FAILED'
+        // entry it hasn't seen yet. Kept ON by default — failed jobs are
+        // pure clutter and there's no reason to keep them around.
+        const dismissOn = settings.autoDismissFailed !== false;
+        const dismissRow = `
+            <div class="card-row mt-sm" title="${escape(t('autojobs.autoDismissHint'))}">
+                <span class="card-label">${escape(t('autojobs.autoDismiss'))}</span>
+                <label class="switch"><input type="checkbox" data-aj-toggle="autoDismissFailed" ${dismissOn ? 'checked' : ''}><span class="switch-slider"></span></label>
+            </div>
+        `;
+        card.innerHTML = marketRows + dismissRow;
         card.querySelectorAll('input[data-mkt]').forEach((inp) => {
             inp.addEventListener('change', async (e) => {
                 const cur = (await Store.sync.getOne(C.STORAGE_SYNC.AUTOJOBS_SETTINGS, settings)) || settings;
@@ -210,7 +223,61 @@
                 await Store.sync.setOne(C.STORAGE_SYNC.AUTOJOBS_SETTINGS, cur);
             });
         });
+        card.querySelectorAll('input[data-aj-toggle]').forEach((inp) => {
+            inp.addEventListener('change', async (e) => {
+                const cur = (await Store.sync.getOne(C.STORAGE_SYNC.AUTOJOBS_SETTINGS, settings)) || settings;
+                cur[e.target.dataset.ajToggle] = e.target.checked;
+                await Store.sync.setOne(C.STORAGE_SYNC.AUTOJOBS_SETTINGS, cur);
+            });
+        });
         host.appendChild(card);
+    }
+
+    // Per-job-type whitelist. Each toggle writes into
+    // settings.enabledJobTypes[type]; the orchestrator's findCandidates and
+    // tryResumeInProgress already skip any type whose value is === false
+    // (anything else — undefined, true — is treated as enabled). The list
+    // is hard-coded against UI_JOB_TYPE_KEYWORDS so adding a new job type
+    // means touching this file once + the orchestrator's dispatch table.
+    function renderJobTypes(host, settings) {
+        host.innerHTML = '';
+        const wrap = document.createElement('details');
+        wrap.className = 'collapsible';
+        wrap.open = true;
+        const enabledMap = settings.enabledJobTypes || {};
+        const disabledCount = Object.values(enabledMap).filter((v) => v === false).length;
+        const summary = document.createElement('summary');
+        summary.className = 'section-title';
+        summary.textContent = `${t('autojobs.jobTypes')}${disabledCount > 0 ? ` · ${disabledCount} ${t('autojobs.disabled')}` : ''}`;
+        wrap.appendChild(summary);
+
+        const card = el('div', 'card');
+        card.appendChild(el('div', 'muted xs', t('autojobs.jobTypesHint')));
+        const list = el('div', 'mt-sm');
+        const types = Object.keys(UI_JOB_TYPE_KEYWORDS);
+        for (const type of types) {
+            const on = enabledMap[type] !== false;
+            const label = t(`autojobs.jobType.${type}`);
+            const row = el('div', 'card-row mt-sm');
+            row.innerHTML = `
+                <span class="card-label">${escape(label)}</span>
+                <label class="switch"><input type="checkbox" data-jobtype="${escape(type)}" ${on ? 'checked' : ''}><span class="switch-slider"></span></label>
+            `;
+            list.appendChild(row);
+        }
+        list.addEventListener('change', async (e) => {
+            const type = e.target.dataset.jobtype;
+            if (!type) return;
+            const cur = (await Store.sync.getOne(C.STORAGE_SYNC.AUTOJOBS_SETTINGS, settings)) || settings;
+            cur.enabledJobTypes = cur.enabledJobTypes || {};
+            // Store explicit booleans so undefined keeps meaning "default-on"
+            // and we don't have to special-case missing entries elsewhere.
+            cur.enabledJobTypes[type] = !!e.target.checked;
+            await Store.sync.setOne(C.STORAGE_SYNC.AUTOJOBS_SETTINGS, cur);
+        });
+        card.appendChild(list);
+        wrap.appendChild(card);
+        host.appendChild(wrap);
     }
 
     // Renders the "Permanently skipped" subsection (replaces Phase-2 "Failed/
@@ -558,12 +625,14 @@
         const headerHost = el('div');
         const networkHost = el('div', 'aj-network-host');
         const sourcesHost = el('div');
+        const jobTypesHost = el('div');
         const timelineHost = el('div');
         const jobsHost = el('div');
         const prioHost = el('div');
         container.appendChild(headerHost);
         container.appendChild(networkHost);
         container.appendChild(sourcesHost);
+        container.appendChild(jobTypesHost);
         container.appendChild(timelineHost);
         container.appendChild(jobsHost);
         container.appendChild(prioHost);
@@ -577,6 +646,7 @@
         }
 
         renderSources(sourcesHost, settings);
+        renderJobTypes(jobTypesHost, settings);
         renderTimeline(timelineHost, history);
         renderJobs(jobsHost, [
             { key: 'home', label: 'Home Market', data: home, enabled: settings.markets?.home !== false },

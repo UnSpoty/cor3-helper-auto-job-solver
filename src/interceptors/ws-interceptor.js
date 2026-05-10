@@ -745,6 +745,47 @@
         return wsSend('42["event",{"event":{"name":"market","action":"job.complete"},"data":' + data + '}]');
     };
 
+    // Dismiss a FAILED job (`market.job.dismiss`) — clears it from the
+    // user's "Active Jobs" panel. Behaves like get.jobs: the WS endpoint
+    // must match the market's home server, otherwise cor3.gg replies
+    // {error:"market-not-reachable"}. For HOME we send directly; for
+    // remote markets we tail-queue behind inflightRemoteFetch with a
+    // set.endpoint→dismiss→revert dance, mirroring fetchRemoteMarketSequence.
+    root.__cor3DismissJob = function (jobId, marketId) {
+        const dismissFrame = (() => {
+            const data = JSON.stringify({ marketId, jobId });
+            return '42["event",{"event":{"name":"market","action":"job.dismiss"},"data":' + data + '}]';
+        })();
+        const cfg = MARKET_BY_ID[marketId];
+        const requiredServer = cfg ? cfg.serverId : null;
+        // HOME (or unknown market — best-effort) — endpoint already correct.
+        if (!requiredServer || requiredServer === HOME_SERVER_ID) {
+            return wsSend(dismissFrame);
+        }
+        // Remote market — flip endpoint, dismiss, revert. Sequenced behind
+        // inflightRemoteFetch so it can't interleave with get.jobs preflights.
+        const run = inflightRemoteFetch.then(async () => {
+            const lockDeadline = Date.now() + 60_000;
+            while (root.__pipelineLocked && Date.now() < lockDeadline) {
+                await sleep(500);
+            }
+            const saved = currentEndpoint;
+            const needPreflight = (saved !== requiredServer);
+            if (needPreflight) {
+                sendSetEndpoint(requiredServer);
+                await sleep(800);
+            }
+            wsSend(dismissFrame);
+            await sleep(800);
+            if (needPreflight && saved && saved !== requiredServer) {
+                sendSetEndpoint(saved);
+                await sleep(300);
+            }
+        }).catch((e) => { console.warn('[COR3] dismiss-with-endpoint failed', e); });
+        inflightRemoteFetch = run;
+        return true;
+    };
+
     root.__cor3RequestStash = function () {
         enterRooms(['stash']);
         return true;
@@ -1082,6 +1123,7 @@
         'COR3_KEEP_ALIVE': () => root.__cor3KeepAlive(),
         [MSG.GAME.ACCEPT_JOB]: (e) => root.__cor3AcceptJob(e.jobId, e.marketId),
         'COR3_COMPLETE_JOB': (e) => root.__cor3CompleteJob(e.jobId, e.marketId),
+        'COR3_DISMISS_JOB':  (e) => root.__cor3DismissJob(e.jobId, e.marketId),
     };
     for (const [type, fn] of Object.entries(handlers)) {
         Bus.window.on(type, fn);
