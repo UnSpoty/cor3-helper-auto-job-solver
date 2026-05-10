@@ -3,37 +3,34 @@
 //
 // Mechanic (verified live, May 2026):
 //   • Board = 10-row triangle of 100 small triangles (cells point up or
-//     down; 19-cell-wide bottom row, 1-cell apex). Cells are <g> groups
-//     with `transform="translate(X, Y)"` and optional `scale(1, -1)` for
-//     down-pointing.
-//   • Target preview = a 3-row SUB-triangle of 9 cells, drawn as a
-//     scaled-down preview on the sidebar.
-//   • The puzzle's challenge is to find WHERE on the big board a 3-row
-//     sub-triangle has the exact 9 cells (signature + orientation)
-//     matching the target preview. Three rounds total → counter 0/3 → 3/3.
-//   • To answer, click the apex (top up-pointing cell) of the matching
-//     sub-triangle.
+//     down; 19-cell-wide bottom row, 1-cell apex). Cells use
+//     `transform="translate(X, Y)"` with optional `scale(1, -1)` for
+//     down-pointing — coords align to a (col*31.5, row*54) grid.
+//   • Target preview = arbitrary shape of N cells. Each cell carries
+//     its own glyph signature.
+//   • Solve = find where on the board the same N cells appear at the
+//     same relative grid positions and matching signatures. 3 rounds
+//     per puzzle (counter 0/3 → 3/3).
+//   • Click target = LOWEST cell (max row) of the matched shape, tie-
+//     broken by closest-to-median col. For a 3-row sub-triangle this is
+//     "bottom-row centre". Verified empirically for the legacy 9-cell
+//     case and matches the centroid-closest-UP rule used by competing
+//     solvers in the cases we tested.
 //
-// Algorithm — position-aware matching:
-//   1. Read all 9 target cells; record their (x, y, mirror, signature)
-//      and offsets relative to the target apex.
-//   2. For each non-mirrored board cell as a candidate apex, check
-//      whether all 9 target cells appear at the corresponding
-//      board offset with matching signature AND matching mirror flag.
-//   3. There's typically exactly ONE such apex per round. Click it.
-//
-// Status (May 2026): the matcher is verified live — finds a unique
-// apex per round with 100% accuracy. Click DISPATCH is still the open
-// problem: MouseEvent / PointerEvent sequences, hover+down+up,
-// elementFromPoint, native .click(), AND directly invoking the React
-// onClick prop via __reactProps$<key> all fail to advance the counter.
-// The puzzle apparently requires `event.isTrusted === true`, which
-// JS-dispatched events can't satisfy from inside the page. Possible
-// next steps: chrome.debugger Input.dispatchMouseEvent from the SW, or
-// inspecting cor3.gg's onClick handler to find a state-setter we can
-// call instead of the event handler. `attemptClick()` is wired up so
-// the rest of the pipeline is exercisable end-to-end the moment the
-// click trigger is figured out.
+// Algorithm (this rewrite, adapted from competitor solver):
+//   1. Read target + board cells in grid coords (col, row, mirror).
+//   2. For each board cell with matching mirror and not in `excludeSet`,
+//      treat it as candidate-anchor and check whether each target cell's
+//      signature appears at the corresponding grid offset.
+//   3. Wait (MutationObserver, 80ms debounce) until either:
+//        a) some candidate has full match → commit
+//        b) exactly one candidate from positive matching → commit
+//        c) elimination matcher narrows to a unique survivor → commit
+//   4. Click the lowest cell of the matched shape. If the counter doesn't
+//      advance within 4s, mark the anchor as bad in `excludeSet` and
+//      retry — up to 20 attempts per round. This is the key robustness
+//      win: even if the click rule is occasionally wrong, retry-by-
+//      exclusion eventually lands on the correct anchor.
 //
 // Lives in MAIN world. Logger forwards via Bus.
 
@@ -51,18 +48,14 @@
         TIMER:      '[data-sentry-element="TimerBoxesStyled"]',
         EVENT_LOG:  '[data-sentry-element="EventLogStyled"]',
     };
-    const COLOR_LIT = '#76C1D1';     // visible / interactive
-    const MIN_LIT_PATHS = 4;          // a fully-rendered glyph has 4-9 cyan paths
+    const COL_PX = 31.5;
+    const ROW_PX = 54;
+    const COLOR_LIT = '#76C1D1';
+    const MIN_LIT_PATHS = 4;     // a fully-rendered glyph has 4-9 cyan paths
 
     // ─── Geometry helpers ────────────────────────────────────────────────
-    /**
-     * Build a stable signature for a glyph: sorted list of d= attributes
-     * for paths and the x,y,w,h,transform for rects, excluding the
-     * transparent bounding triangle (which is a hit area, not visual).
-     * Two glyphs with the same signature are visually identical.
-     */
+
     function glyphSignature(glyphGroup) {
-        // Each top-level glyph is <g class=…><g transform="translate(X,Y)">…shapes…</g></g>
         const inner = glyphGroup.children[0];
         const root = (inner && inner.tagName === 'g') ? inner : glyphGroup;
         const shapes = [];
@@ -85,12 +78,13 @@
         return cyan >= MIN_LIT_PATHS;
     }
 
-    function parseTransform(tStr) {
-        const t = tStr || '';
-        const m = t.match(/translate\(([^,]+),\s*([^)]+)\)/);
+    function parseGridPos(transformStr) {
+        const t = transformStr || '';
+        const m = t.match(/translate\(\s*([^,]+),\s*([^)]+)\)/);
+        if (!m) return null;
         return {
-            x: m ? parseFloat(m[1]) : 0,
-            y: m ? parseFloat(m[2]) : 0,
+            col: Math.round(parseFloat(m[1]) / COL_PX),
+            row: Math.round(parseFloat(m[2]) / ROW_PX),
             mirror: /scale\(1\s*,\s*-1\)/.test(t),
         };
     }
@@ -98,84 +92,207 @@
     function readTargetCells() {
         const target = document.querySelector(SEL.TARGET);
         if (!target) return [];
-        return Array.from(target.querySelectorAll(':scope > g')).map((g) => ({
-            ...parseTransform(g.getAttribute('transform')),
-            sig: glyphSignature(g),
-        }));
+        const cells = [];
+        for (const g of target.querySelectorAll(':scope > g')) {
+            const pos = parseGridPos(g.getAttribute('transform'));
+            if (!pos) continue;
+            cells.push({ ...pos, sig: glyphSignature(g) });
+        }
+        return cells;
     }
 
     function readBoardCells() {
         const wall = document.querySelector(SEL.WALL);
         if (!wall) return [];
-        return Array.from(wall.querySelectorAll(':scope > g > g')).map((g) => ({
-            ...parseTransform(g.children[0]?.getAttribute('transform')),
-            sig: glyphSignature(g),
-            lit: isGlyphLit(g),
-            group: g,
-        }));
+        const cells = [];
+        for (const g of wall.querySelectorAll(':scope > g > g')) {
+            const pos = parseGridPos(g.children[0]?.getAttribute('transform'));
+            if (!pos) continue;
+            cells.push({
+                ...pos,
+                sig: glyphSignature(g),
+                lit: isGlyphLit(g),
+                group: g,
+            });
+        }
+        return cells;
     }
 
     /**
-     * Partial matcher — counts evidence per candidate apex without
-     * requiring every cell to be lit. Dark (un-revealed) cells have a
-     * different signature than lit ones (just an outline vs the full
-     * glyph), so the old "all 9 must match" approach only converged once
-     * every cell was rendered. The puzzle reveals cells gradually over
-     * the 3-minute timer, and we have to commit BEFORE everything's lit
-     * — there are 3 rounds and they share that one timer.
-     *
-     * For each candidate apex, walk the 9 target offsets and classify
-     * each board cell as:
-     *   • match     — lit AND same signature as target → strong evidence
-     *   • mismatch  — lit AND different signature → contradicts; eliminates
-     *   • unknown   — dark (not revealed yet) → no evidence either way
-     *
-     * Each candidate also carries a `clickTarget`: the actual cell to
-     * dispatch the click on. Empirically this is NOT the apex of the
-     * sub-triangle — it's the centre cell of the BOTTOM row (offset
-     * +108 in Y, 0 in X from the apex). User confirmed: clicking the
-     * apex is a no-op, clicking bottom-centre advances the counter.
-     *
-     * Returns feasible candidates (mismatch === 0) sorted by match count
-     * descending. Caller decides confidence threshold.
+     * Pick the cell within the target shape that the user should click.
+     * Rule: lowest cell (max row), tie-broken by col closest to the
+     * median col of the bottom row. For the legacy 3-row sub-triangle
+     * this picks the bottom-centre cell.
      */
-    function findApexCandidates() {
+    function pickClickTarget(targetCells) {
+        if (targetCells.length === 0) return null;
+        const maxRow = Math.max(...targetCells.map((c) => c.row));
+        const bottom = targetCells.filter((c) => c.row === maxRow);
+        if (bottom.length === 1) return bottom[0];
+        const meanCol = bottom.reduce((s, c) => s + c.col, 0) / bottom.length;
+        return bottom.reduce((a, b) => (Math.abs(a.col - meanCol) <= Math.abs(b.col - meanCol) ? a : b));
+    }
+
+    function makeBoardMap(boardCells) {
+        const map = new Map();
+        for (const c of boardCells) map.set(`${c.col},${c.row},${c.mirror}`, c);
+        return map;
+    }
+
+    // ─── Candidate matching ──────────────────────────────────────────────
+
+    /**
+     * Positive matcher — cells where the board's lit signature matches
+     * the target. Returns { candidates, total } sorted by match count.
+     * Anchors in `excludeKeys` are skipped (used by the retry loop).
+     */
+    function findShapeCandidates(excludeKeys) {
         const targetCells = readTargetCells();
-        if (targetCells.length === 0) return [];
-        const targetApex = targetCells.reduce((a, b) => (a.y <= b.y ? a : b));
+        if (targetCells.length === 0) return { candidates: [], total: 0 };
+        const targetAnchor = targetCells.reduce((a, b) => (a.row <= b.row ? a : b));
+        const targetClick = pickClickTarget(targetCells);
 
         const boardCells = readBoardCells();
-        const boardByPos = new Map();
-        for (const c of boardCells) boardByPos.set(`${c.x},${c.y},${c.mirror}`, c);
+        const boardMap = makeBoardMap(boardCells);
 
         const out = [];
-        for (const apex of boardCells) {
-            if (apex.mirror) continue;     // apex must be up-pointing
+        for (const anchor of boardCells) {
+            if (anchor.mirror !== targetAnchor.mirror) continue;
+            const anchorKey = `${anchor.col},${anchor.row}`;
+            if (excludeKeys && excludeKeys.has(anchorKey)) continue;
+
             let match = 0, mismatch = 0, unknown = 0;
+            const cells = [];
             for (const t of targetCells) {
-                const key = `${apex.x + (t.x - targetApex.x)},${apex.y + (t.y - targetApex.y)},${t.mirror}`;
-                const found = boardByPos.get(key);
-                if (!found) { mismatch++; continue; } // out-of-bounds = elim
+                const cc = anchor.col + (t.col - targetAnchor.col);
+                const cr = anchor.row + (t.row - targetAnchor.row);
+                const found = boardMap.get(`${cc},${cr},${t.mirror}`);
+                cells.push({ col: cc, row: cr, mirror: t.mirror, isClick: t === targetClick });
+                if (!found) { mismatch++; continue; }
                 if (!found.lit) { unknown++; continue; }
                 if (found.sig === t.sig) match++;
                 else mismatch++;
             }
             if (mismatch > 0) continue;
-            // Pure unknowns (no evidence at all) aren't useful
             if (match === 0) continue;
-            // Click target = bottom-row centre cell (apex_x, apex_y + 108)
-            const clickKey = `${apex.x},${apex.y + 108},false`;
-            const clickCell = boardByPos.get(clickKey);
+
+            const clickCol = anchor.col + (targetClick.col - targetAnchor.col);
+            const clickRow = anchor.row + (targetClick.row - targetAnchor.row);
+            const clickCell = boardMap.get(`${clickCol},${clickRow},${targetClick.mirror}`);
             out.push({
-                x: apex.x, y: apex.y, group: apex.group,
-                clickGroup: clickCell ? clickCell.group : apex.group,
-                clickX: apex.x, clickY: apex.y + 108,
+                col: anchor.col, row: anchor.row,
+                cells,
+                clickGroup: clickCell ? clickCell.group : anchor.group,
+                clickCol, clickRow, clickMirror: targetClick.mirror,
                 match, unknown, mismatch,
+                total: targetCells.length,
             });
         }
         out.sort((a, b) => b.match - a.match);
+        return { candidates: out, total: targetCells.length };
+    }
+
+    /**
+     * Elimination matcher — returns candidates with NO mismatches and
+     * all neighbours present, regardless of match count. When positive
+     * matching gives 0 candidates, this can still uniquely identify the
+     * answer if partial reveals already eliminated everything else.
+     */
+    function findByElimination(excludeKeys) {
+        const targetCells = readTargetCells();
+        if (targetCells.length === 0) return [];
+        const targetAnchor = targetCells.reduce((a, b) => (a.row <= b.row ? a : b));
+        const targetClick = pickClickTarget(targetCells);
+
+        const boardCells = readBoardCells();
+        const boardMap = makeBoardMap(boardCells);
+
+        const out = [];
+        for (const anchor of boardCells) {
+            if (anchor.mirror !== targetAnchor.mirror) continue;
+            const anchorKey = `${anchor.col},${anchor.row}`;
+            if (excludeKeys && excludeKeys.has(anchorKey)) continue;
+
+            let eliminated = false;
+            const cells = [];
+            for (const t of targetCells) {
+                const cc = anchor.col + (t.col - targetAnchor.col);
+                const cr = anchor.row + (t.row - targetAnchor.row);
+                const found = boardMap.get(`${cc},${cr},${t.mirror}`);
+                cells.push({ col: cc, row: cr, mirror: t.mirror, isClick: t === targetClick });
+                if (!found) { eliminated = true; break; }
+                if (found.lit && found.sig !== t.sig) { eliminated = true; break; }
+            }
+            if (eliminated) continue;
+
+            const clickCol = anchor.col + (targetClick.col - targetAnchor.col);
+            const clickRow = anchor.row + (targetClick.row - targetAnchor.row);
+            const clickCell = boardMap.get(`${clickCol},${clickRow},${targetClick.mirror}`);
+            out.push({
+                col: anchor.col, row: anchor.row,
+                cells,
+                clickGroup: clickCell ? clickCell.group : anchor.group,
+                clickCol, clickRow, clickMirror: targetClick.mirror,
+                match: 0, unknown: 0, mismatch: 0,
+                total: targetCells.length,
+            });
+        }
         return out;
     }
+
+    // ─── Overlay ─────────────────────────────────────────────────────────
+
+    const OVERLAY_ID = 'cor3-icewall-overlay';
+    const TRI_PATH = 'M60.6914 53.0305 H1.73242 L31.21 1.99927 Z';
+
+    function clearOverlay() {
+        const wall = document.querySelector(SEL.WALL);
+        if (!wall) return;
+        const old = wall.querySelector('#' + OVERLAY_ID);
+        if (old) old.remove();
+    }
+
+    /**
+     * Outline each cell of the matched shape; brighten the click target.
+     * tentative = dim yellow / dashed; confident = solid orange.
+     */
+    function drawOverlay(candidate, confident) {
+        const wall = document.querySelector(SEL.WALL);
+        if (!wall) return;
+        clearOverlay();
+        const renderG = wall.querySelector(':scope > g') || wall;
+        const ns = 'http://www.w3.org/2000/svg';
+        const overlay = document.createElementNS(ns, 'g');
+        overlay.setAttribute('id', OVERLAY_ID);
+        overlay.setAttribute('pointer-events', 'none');
+
+        const color = confident ? '#FFB857' : '#FFE066';
+        const cellFill = confident ? '0.10' : '0.05';
+        const clickFill = confident ? '0.45' : '0.20';
+        const dash = confident ? null : '6,4';
+
+        for (const c of candidate.cells) {
+            const px = c.col * COL_PX;
+            const py = c.row * ROW_PX;
+            const path = document.createElementNS(ns, 'path');
+            const transform = c.mirror
+                ? `translate(${px}, ${py}) scale(1, -1)`
+                : `translate(${px}, ${py})`;
+            path.setAttribute('transform', transform);
+            path.setAttribute('d', TRI_PATH);
+            path.setAttribute('fill', color);
+            path.setAttribute('fill-opacity', c.isClick ? clickFill : cellFill);
+            path.setAttribute('stroke', c.isClick ? '#FFFFFF' : color);
+            path.setAttribute('stroke-width', c.isClick ? '2' : '3');
+            path.setAttribute('stroke-linejoin', 'round');
+            if (dash) path.setAttribute('stroke-dasharray', dash);
+            overlay.appendChild(path);
+        }
+
+        renderG.appendChild(overlay);
+    }
+
+    // ─── State probes + click ────────────────────────────────────────────
 
     function readCounter() {
         const txt = document.querySelector(SEL.COUNTER)?.textContent || '';
@@ -191,185 +308,164 @@
         return (+m[1]) * 60 + (+m[2]);
     }
 
-    // ─── Overlay: highlight the matched apex + sub-triangle ──────────────
-    // The puzzle isn't accepting our synthetic clicks (yet), so the most
-    // useful thing the solver can do is SHOW WHERE TO CLICK. We append an
-    // SVG overlay <g> inside the WallBoard's render group so it inherits
-    // the same coordinate space as the glyphs themselves.
-    //
-    // Each glyph's bounding triangle path is roughly a 60×54 isoceles
-    // triangle with vertices at (~1.7, 53), (~60.7, 53), (~31.2, 2)
-    // (relative to its translate origin). For a 3-row sub-triangle
-    // (apex + row 1 [Y+54] + row 2 [Y+108]), the bottom-left cell is at
-    // (apex.x - 63, apex.y + 108) and the bottom-right is at
-    // (apex.x + 63, apex.y + 108).
-    const OVERLAY_ID = 'cor3-icewall-overlay';
-    const APEX_TRI_W = 60.7, APEX_TRI_H = 51, APEX_TRI_TOP_X = 31.2, APEX_TRI_TOP_Y = 2;
-
-    function clearOverlay() {
-        const wall = document.querySelector(SEL.WALL);
-        if (!wall) return;
-        const old = wall.querySelector('#' + OVERLAY_ID);
-        if (old) old.remove();
-    }
-
     /**
-     * Draw the predicted sub-triangle plus a brighter highlight on the
-     * actual click target (bottom-row centre cell, not the apex).
-     * Two visual modes:
-     *   • tentative — dim yellow outline, dashed
-     *   • confident — solid orange, filled click cell
+     * Single `click` dispatch with proper coords. The legacy
+     * mousedown/mouseup/click triplet was unnecessary — competitors
+     * dispatch just one click. Using one event also eliminates any
+     * chance of double-trigger.
      */
-    function drawOverlay(apex, confident) {
-        const wall = document.querySelector(SEL.WALL);
-        if (!wall) return;
-        clearOverlay();
-        const renderG = wall.querySelector(':scope > g') || wall;
-        const ns = 'http://www.w3.org/2000/svg';
-        const overlay = document.createElementNS(ns, 'g');
-        overlay.setAttribute('id', OVERLAY_ID);
-        overlay.setAttribute('pointer-events', 'none');
-
-        const topX = apex.x + APEX_TRI_TOP_X;
-        const topY = apex.y + APEX_TRI_TOP_Y;
-        const blX  = apex.x - 63 + 1.7;
-        const blY  = apex.y + 108 + 53;
-        const brX  = apex.x + 63 + APEX_TRI_W;
-        const brY  = blY;
-
-        const color = confident ? '#FFB857' : '#FFE066';
-        const fillOp = confident ? '0.10' : '0.05';
-        const dash = confident ? null : '6,4';
-
-        const bigPath = document.createElementNS(ns, 'path');
-        bigPath.setAttribute('d', `M ${topX} ${topY} L ${blX} ${blY} L ${brX} ${brY} Z`);
-        bigPath.setAttribute('fill', color);
-        bigPath.setAttribute('fill-opacity', fillOp);
-        bigPath.setAttribute('stroke', color);
-        bigPath.setAttribute('stroke-width', '3');
-        bigPath.setAttribute('stroke-linejoin', 'round');
-        if (dash) bigPath.setAttribute('stroke-dasharray', dash);
-        overlay.appendChild(bigPath);
-
-        // Highlight the CLICK target (bottom-row centre cell), not the apex.
-        // The puzzle accepts the click on this cell; the apex highlight in
-        // the previous version was misleading — empirically clicks there
-        // are no-ops.
-        const clickX = apex.clickX !== undefined ? apex.clickX : apex.x;
-        const clickY = apex.clickY !== undefined ? apex.clickY : apex.y + 108;
-        const clickPath = document.createElementNS(ns, 'path');
-        clickPath.setAttribute('transform', `translate(${clickX}, ${clickY})`);
-        clickPath.setAttribute('d', 'M60.6914 53.0305 H1.73242 L31.21 1.99927 Z');
-        clickPath.setAttribute('fill', color);
-        clickPath.setAttribute('fill-opacity', confident ? '0.45' : '0.20');
-        clickPath.setAttribute('stroke', '#FFFFFF');
-        clickPath.setAttribute('stroke-width', '2');
-        if (dash) clickPath.setAttribute('stroke-dasharray', dash);
-        overlay.appendChild(clickPath);
-
-        renderG.appendChild(overlay);
-    }
-
-    // ─── Click attempt ───────────────────────────────────────────────────
-    /**
-     * Dispatch the click that advances the counter. mousedown + mouseup +
-     * click on the bounding triangle, with proper coordinates — verified
-     * live to round-trip cleanly against the May 2026 build.
-     *
-     * Earlier this function tried four tactics in sequence (native
-     * .click(), the mouse sequence, native .click() on ancestors, and a
-     * React-fiber onClick invocation). At least two of them registered
-     * with the puzzle's handler, so each call advanced the counter twice
-     * — round 1 went 0/3 → 2/3 in one click, etc. Sticking to one
-     * dispatch makes each click count exactly once.
-     */
-    async function attemptClick(glyphGroup, _mod) {
+    async function attemptClick(glyphGroup) {
         const tri = glyphGroup.querySelector(SEL.TRIANGLE);
         if (!tri) return false;
         const r = tri.getBoundingClientRect();
-        const opts = {
+        tri.dispatchEvent(new MouseEvent('click', {
             bubbles: true, cancelable: true, view: window,
             clientX: r.left + r.width / 2,
             clientY: r.top + r.height / 2,
-            button: 0, buttons: 1,
-        };
-        tri.dispatchEvent(new MouseEvent('mousedown', opts));
-        tri.dispatchEvent(new MouseEvent('mouseup',   { ...opts, buttons: 0 }));
-        tri.dispatchEvent(new MouseEvent('click',     { ...opts, buttons: 0 }));
+            button: 0,
+        }));
         return true;
     }
 
-    // ─── Main loop ───────────────────────────────────────────────────────
+    // ─── Reactive matching loop ──────────────────────────────────────────
+
     /**
-     * Run rounds until the counter shows N/N or the window closes. Each
-     * round: poll for the unique apex match, attempt-click, wait for the
-     * counter to tick over (which signals the puzzle has accepted our
-     * answer and rolled a new target).
+     * Watch the board (MutationObserver, 80ms debounce) until we have a
+     * confident candidate. Resolves with `{best, reason}` on success,
+     * `{timedOut: true}` on timeout, or `null` on app close.
+     *
+     * Confidence rules (in order):
+     *   • some candidate has full match (best.match === total) → commit
+     *   • exactly one candidate from positive matching → commit
+     *   • positive: 0 candidates BUT elimination narrows to 1 → commit
+     *   • otherwise wait
      */
-    // A candidate is "confident" once it has the unique highest match
-    // count among feasible candidates AND has at least this many cells
-    // matched. With 5 unique signatures across 9 target slots, ~3-4
-    // matches with 0 mismatches and a clear lead almost always pin the
-    // unique answer; waiting for higher confidence costs us seconds we
-    // need for rounds 2 and 3.
-    const MIN_CONFIDENT_MATCH = 3;
-    const MIN_LEAD = 1;     // best.match - second_best.match must be >=
+    function waitForCandidate(excludeKeys, timeoutMs, onTentative) {
+        return new Promise((resolve) => {
+            let done = false;
+            let observer = null;
+            let debounceTimer = null;
+            let hardTimer = null;
 
-    async function solveOnce(mod) {
-        const startTime = Date.now();
-        let lastDrawnApexKey = null;
-        let lastClickedApexKey = null;
+            const finish = (val) => {
+                if (done) return;
+                done = true;
+                if (observer) observer.disconnect();
+                clearTimeout(debounceTimer);
+                clearTimeout(hardTimer);
+                resolve(val);
+            };
 
-        while (!root.__iceWallAbort) {
-            if (!document.querySelector(SEL.APP)) { mod.info('puzzle window closed'); return true; }
-            const c = readCounter();
-            if (c && c.current >= c.total) { mod.info(`solved: ${c.current}/${c.total}`); clearOverlay(); return true; }
-            if (Date.now() - startTime > 240_000) { mod.warn('safety timeout (240s)'); clearOverlay(); return false; }
+            const check = () => {
+                if (done) return;
+                const wall = document.querySelector(SEL.WALL);
+                if (!wall) return finish(null);
 
-            const candidates = findApexCandidates();
-            if (candidates.length === 0) { await dom.sleep(250); continue; }
+                const { candidates, total } = findShapeCandidates(excludeKeys);
 
-            const best = candidates[0];
-            const second = candidates[1] || null;
-            const lead = best.match - (second ? second.match : 0);
-            const confident = best.match >= MIN_CONFIDENT_MATCH && lead >= MIN_LEAD;
-            const apexKey = `${best.x},${best.y}`;
+                const complete = candidates.find((c) => c.match === total);
+                if (complete) return finish({ best: complete, reason: 'complete' });
 
-            // Always keep the overlay reflecting the current best guess.
-            // While not-yet-confident, draw it tentatively (yellow); when
-            // confident, switch to the strong orange.
-            if (apexKey !== lastDrawnApexKey || /* tentativeness changed */ true) {
-                drawOverlay(best, confident);
-                if (apexKey !== lastDrawnApexKey) {
-                    mod.info(`apex hint (${best.x}, ${best.y}) — match=${best.match} unknown=${best.unknown} lead=${lead} confident=${confident}`);
-                    lastDrawnApexKey = apexKey;
+                if (candidates.length === 1) return finish({ best: candidates[0], reason: 'unique' });
+
+                if (candidates.length === 0) {
+                    const elim = findByElimination(excludeKeys);
+                    if (elim.length === 1) return finish({ best: elim[0], reason: 'elimination' });
+                }
+
+                if (onTentative && candidates.length > 0) onTentative(candidates[0]);
+            };
+
+            const scheduleCheck = () => {
+                if (done) return;
+                clearTimeout(debounceTimer);
+                debounceTimer = setTimeout(check, 80);
+            };
+
+            const wall = document.querySelector(SEL.WALL);
+            if (!wall) return finish(null);
+
+            observer = new MutationObserver(scheduleCheck);
+            observer.observe(wall, { subtree: true, childList: true, attributes: true });
+
+            hardTimer = setTimeout(() => finish({ timedOut: true }), timeoutMs);
+            scheduleCheck();
+        });
+    }
+
+    // ─── Round + main loop ───────────────────────────────────────────────
+
+    const MAX_RETRIES = 20;
+    const ROUND_MAX_MS = 240_000;
+
+    /**
+     * Solve one round: keep clicking until the counter advances or we
+     * exhaust retries. Each click that fails to advance the counter
+     * excludes that anchor from future matching, forcing the matcher to
+     * find a different candidate next time.
+     *
+     * Returns true if the counter advanced (round complete), false on
+     * retry exhaustion / timeout / app close / abort.
+     */
+    async function solveRound(mod) {
+        const excludeKeys = new Set();
+        const roundStart = Date.now();
+
+        for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+            if (root.__iceWallAbort) return false;
+            if (!document.querySelector(SEL.APP)) return false;
+            const counter = readCounter();
+            if (counter && counter.current >= counter.total) return true;
+
+            const remaining = Math.max(2000, ROUND_MAX_MS - (Date.now() - roundStart));
+            const result = await waitForCandidate(
+                excludeKeys, remaining,
+                (tentative) => drawOverlay(tentative, false),
+            );
+
+            if (root.__iceWallAbort) return false;
+            if (result === null) return false;     // app closed mid-watch
+
+            let best = result.best;
+            let reason = result.reason;
+            if (result.timedOut) {
+                const { candidates } = findShapeCandidates(excludeKeys);
+                if (candidates.length > 0) {
+                    best = candidates[0];
+                    reason = 'timeout-best';
+                } else {
+                    const elim = findByElimination(excludeKeys);
+                    if (elim.length > 0) {
+                        best = elim[0];
+                        reason = 'timeout-elim';
+                    } else {
+                        mod.warn(`round timeout, no candidate (${excludeKeys.size} excluded)`);
+                        clearOverlay();
+                        return false;
+                    }
                 }
             }
 
-            if (!confident) { await dom.sleep(250); continue; }
-
-            if (apexKey === lastClickedApexKey) { await dom.sleep(300); continue; }
-
             const counterCur = readCounter();
-            mod.info(`commit: apex (${best.x}, ${best.y}) → click bottom-centre (${best.clickX}, ${best.clickY}) — match ${best.match}/9, unknown ${best.unknown}, counter ${counterCur?.current}/${counterCur?.total}`);
-            await attemptClick(best.clickGroup, mod);
-            lastClickedApexKey = apexKey;
+            mod.info(`commit (${reason}): anchor=(${best.col},${best.row}) click=(${best.clickCol},${best.clickRow}) match=${best.match ?? 0}/${best.total} attempt=${attempt + 1}/${MAX_RETRIES}`);
+            drawOverlay(best, true);
+            await attemptClick(best.clickGroup);
 
             const ticked = await dom.waitFor(() => {
                 const cc = readCounter();
                 return cc && counterCur && cc.current > counterCur.current ? cc : null;
             }, { timeout: 4000 });
-            if (!ticked) {
-                mod.warn(`counter did not advance after click — likely click dispatch was ignored. Hand-click the highlighted apex.`);
-                await dom.sleep(3000);
-                lastClickedApexKey = null;
-            } else {
+
+            if (ticked) {
                 mod.info(`counter advanced: ${ticked.current}/${ticked.total}`);
-                lastClickedApexKey = null;
-                lastDrawnApexKey = null;
                 clearOverlay();
+                return true;
             }
+
+            mod.warn(`false positive at anchor (${best.col},${best.row}) — excluding & retrying (${attempt + 1}/${MAX_RETRIES})`);
+            excludeKeys.add(`${best.col},${best.row}`);
         }
+        mod.warn(`exhausted ${MAX_RETRIES} retries on this round`);
         clearOverlay();
         return false;
     }
@@ -379,8 +475,7 @@
             await dom.sleep(300);
             const app = document.querySelector(SEL.APP);
             if (!app) continue;
-            // Wait for stage to actually render (DecorativeIntro animation
-            // runs first; WallBoard and TargetPreview only mount after).
+
             const ready = await dom.waitFor(
                 () => document.querySelector(SEL.WALL) && document.querySelector(SEL.TARGET),
                 { timeout: 8000 }
@@ -390,9 +485,19 @@
             const start = readCounter();
             const timer = readTimerSeconds();
             mod.info(`ice-wall puzzle detected (counter ${start?.current ?? '?'}/${start?.total ?? '?'}, ${timer ?? '?'}s left)`);
-            await solveOnce(mod);
 
-            // Wait for puzzle to close before resuming the watch
+            // Solve all rounds within this puzzle
+            while (!root.__iceWallAbort && document.querySelector(SEL.APP)) {
+                const c = readCounter();
+                if (c && c.current >= c.total) {
+                    mod.info(`puzzle solved: ${c.current}/${c.total}`);
+                    break;
+                }
+                const ok = await solveRound(mod);
+                if (!ok) await dom.sleep(1500);     // brief pause before retry
+            }
+
+            // Wait for the puzzle window to close before resuming watch
             while (!root.__iceWallAbort && document.querySelector(SEL.APP)) {
                 await dom.sleep(400);
             }

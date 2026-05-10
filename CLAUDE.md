@@ -139,12 +139,19 @@ find src -name '*.js' -exec node --check {} \;
   text within 5 s. The standalone-page `solver-daily-hack` was deleted —
   cor3.gg moved the puzzle into Game Center, and the legacy toggle had
   no UI route to turn it on anymore.
-- ICE WALL Break solver — SAI's Porter-lite r4 minigame. Watcher matches
-  the 9-cell target preview against the 100-cell board, finds the
-  feasible apex with most lit-cell evidence, clicks the bottom-row
-  centre cell of the matched sub-triangle (NOT the apex — empirically
-  that's a no-op). Overlay paints the predicted sub-triangle so the
-  user can verify visually.
+- ICE WALL Break solver — SAI's Porter-lite r4 minigame. Cells are
+  parsed in grid coords (col*31.5, row*54). Matcher works on any
+  target-preview shape (used to be a fixed 3-row sub-triangle of 9
+  cells, now arbitrary). MutationObserver-driven loop with 80ms
+  debounce; commits when (a) some candidate has full match, (b) exactly
+  one candidate from positive matching, or (c) elimination matcher
+  narrows to a unique survivor. Click target = LOWEST cell (max row)
+  of the matched shape, tie-broken by closest-to-median col — for the
+  legacy 9-cell case this still resolves to "bottom-row centre".
+  Robustness: if a click doesn't advance the counter within 4s, the
+  anchor is added to an `excludeSet` and the matcher re-runs; up to 20
+  retries per round before giving up. Overlay outlines every cell of
+  the predicted shape and brightens the click cell.
 - Auto-send-merc with cheapest-AVAILABLE selection + stash-full re-enable
 - Multi-alarm system (alarms tick every second, audio via Web Audio API)
 - Pop-out window mode (`?mode=popout`)
