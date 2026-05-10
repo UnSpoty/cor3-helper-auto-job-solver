@@ -1,5 +1,8 @@
 // src/modules/game/flows/log-download.js
-// Job type: log_download. Downloads log entries by name (preferred) or seq.
+// Job type: log_download. Downloads log entries by seq (preferred) or name.
+// Seq is the row's positional index as the server expects it; matching by
+// name alone breaks when two log rows share a name (May 2026 reports) and
+// the server then rejects `complete` with `job-conditions-not-met`.
 
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
@@ -31,12 +34,35 @@
         }
         if (!await SAI.waitForSaiContent(sai)) { flows.sendTimeout(jobId, marketId); flows.setWatching(false); return; }
 
-        const downloadCount = (Array.isArray(logSeqs) && logSeqs.length > 0) ? logSeqs.length : 1;
-        flows.userLog(`Log Download: name "${logName}", downloading ${downloadCount}`, 'info');
+        const useSeqs = Array.isArray(logSeqs) && logSeqs.length > 0;
+        const downloadCount = useSeqs ? logSeqs.length : 1;
+        const label = useSeqs ? `seq [${logSeqs.join(', ')}]${logName ? ` ("${logName}")` : ''}` : `name "${logName}"`;
+        flows.userLog(`Log Download: ${label}, downloading ${downloadCount}`, 'info');
 
         let downloadedCount = 0;
 
-        if (logName) {
+        if (useSeqs) {
+            for (let i = 0; i < logSeqs.length && !root.__jobManagerAbort; i++) {
+                let row = null;
+                for (let attempt = 0; attempt < 15 && !root.__jobManagerAbort; attempt++) {
+                    row = SAI.findLogRowByIndex(sai, logSeqs[i]);
+                    if (row) break;
+                    await dom.sleep(300);
+                }
+                if (!row) {
+                    flows.userLog(`Log Download: seq ${logSeqs[i]} not found`, 'error');
+                    break;
+                }
+                const downloadBtn = row.querySelector(SAI.SEL.DOWNLOAD_ICON)?.closest('button');
+                if (!downloadBtn) {
+                    flows.userLog(`Log Download: download button not found for seq ${logSeqs[i]}`, 'error');
+                    break;
+                }
+                downloadBtn.click();
+                await dom.sleep(700);
+                downloadedCount++;
+            }
+        } else if (logName) {
             for (let i = 0; i < downloadCount && !root.__jobManagerAbort; i++) {
                 let rows = [];
                 for (let attempt = 0; attempt < 15 && !root.__jobManagerAbort; attempt++) {
@@ -53,27 +79,6 @@
                 const downloadBtn = row.querySelector(SAI.SEL.DOWNLOAD_ICON)?.closest('button');
                 if (!downloadBtn) {
                     flows.userLog(`Log Download: download button not found for row ${i + 1}`, 'error');
-                    break;
-                }
-                downloadBtn.click();
-                await dom.sleep(700);
-                downloadedCount++;
-            }
-        } else if (Array.isArray(logSeqs) && logSeqs.length > 0) {
-            for (let i = 0; i < logSeqs.length && !root.__jobManagerAbort; i++) {
-                let row = null;
-                for (let attempt = 0; attempt < 15 && !root.__jobManagerAbort; attempt++) {
-                    row = SAI.findLogRowByIndex(sai, logSeqs[i]);
-                    if (row) break;
-                    await dom.sleep(300);
-                }
-                if (!row) {
-                    flows.userLog(`Log Download: seq ${logSeqs[i]} not found`, 'error');
-                    break;
-                }
-                const downloadBtn = row.querySelector(SAI.SEL.DOWNLOAD_ICON)?.closest('button');
-                if (!downloadBtn) {
-                    flows.userLog(`Log Download: download button not found for seq ${logSeqs[i]}`, 'error');
                     break;
                 }
                 downloadBtn.click();

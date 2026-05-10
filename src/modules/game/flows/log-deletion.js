@@ -1,5 +1,8 @@
 // src/modules/game/flows/log-deletion.js
-// Job type: log_deletion. Deletes log entries by name (preferred) or seq.
+// Job type: log_deletion. Deletes log entries by seq (preferred) or name.
+// Seq is the row's positional index as the server expects it; matching by
+// name alone breaks when two log rows share a name and the server then
+// rejects `complete` with `job-conditions-not-met` (mirrors log-download).
 // Note: legacy content.js packs logName as `fileCondition` field on the
 // START message — we follow that contract.
 
@@ -35,50 +38,16 @@
         }
         if (!await SAI.waitForSaiContent(sai)) { flows.sendTimeout(jobId, marketId); flows.setWatching(false); return; }
 
-        const deleteCount = (Array.isArray(logSeqs) && logSeqs.length > 0) ? logSeqs.length : 1;
+        const useSeqs = Array.isArray(logSeqs) && logSeqs.length > 0;
+        const deleteCount = useSeqs ? logSeqs.length : 1;
         let deletedCount = 0;
 
-        if (logName) {
-            flows.userLog(`Log Deletion: name "${logName}", deleting ${deleteCount}`, 'info');
-            while (!root.__jobManagerAbort && deletedCount < deleteCount) {
-                let row = null;
-                for (let i = 0; i < 15 && !root.__jobManagerAbort; i++) {
-                    row = SAI.findLogRowByName(sai, logName);
-                    if (row) break;
-                    await dom.sleep(300);
-                }
-                if (!row) {
-                    if (deletedCount === 0) {
-                        // The whole list rendered, the named log just isn't
-                        // there — likely the server's existing logs predate
-                        // the job, or it was already deleted. Permanent skip
-                        // (not 2 h bug); markets refresh will confirm if
-                        // the job stays around.
-                        mod.warn(`log not found by name: ${logName}`);
-                        flows.userLog(`Log Deletion: log "${logName}" not in list on "${serverName}" — permanently skipping`, 'warn');
-                        flows.sendResult(jobId, marketId, { success: true, didWork: false, reason: 'log-not-in-list' });
-                        flows.setWatching(false);
-                        return;
-                    }
-                    break;
-                }
-                mod.info(`deleting (${deletedCount + 1}/${deleteCount}): ${logName}`);
-                const deleteBtn = row.querySelector(SAI.SEL.TRASH_ICON)?.closest('button');
-                if (!deleteBtn) {
-                    mod.warn('delete button not found');
-                    flows.sendTimeout(jobId, marketId);
-                    flows.setWatching(false);
-                    return;
-                }
-                deleteBtn.click();
-                await dom.sleep(400);
-                await SAI.confirmDeleteDialog();
-                await dom.sleep(500);
-                deletedCount++;
-            }
-        } else {
+        if (useSeqs) {
+            // Deleting shifts indices below the target, so go highest-first
+            // to keep remaining seqs stable through the loop.
             const targets = [...logSeqs].sort((a, b) => b - a);
-            flows.userLog(`Log Deletion: seq fallback [${targets.join(', ')}]`, 'info');
+            const label = `seq [${targets.join(', ')}]${logName ? ` ("${logName}")` : ''}`;
+            flows.userLog(`Log Deletion: ${label}, deleting ${deleteCount}`, 'info');
             for (const seq of targets) {
                 if (root.__jobManagerAbort) { flows.setWatching(false); return; }
                 let row = null;
@@ -97,6 +66,42 @@
                 const deleteBtn = row.querySelector(SAI.SEL.TRASH_ICON)?.closest('button');
                 if (!deleteBtn) {
                     mod.warn(`delete button not found, seq: ${seq}`);
+                    flows.sendTimeout(jobId, marketId);
+                    flows.setWatching(false);
+                    return;
+                }
+                deleteBtn.click();
+                await dom.sleep(400);
+                await SAI.confirmDeleteDialog();
+                await dom.sleep(500);
+                deletedCount++;
+            }
+        } else {
+            // Seq missing — fall back to name matching. Single-pass since
+            // there's no count signal from the server, and ambiguous-name
+            // cases will have surfaced via logSeqs (the seq branch above).
+            flows.userLog(`Log Deletion: name "${logName}", deleting ${deleteCount}`, 'info');
+            while (!root.__jobManagerAbort && deletedCount < deleteCount) {
+                let row = null;
+                for (let i = 0; i < 15 && !root.__jobManagerAbort; i++) {
+                    row = SAI.findLogRowByName(sai, logName);
+                    if (row) break;
+                    await dom.sleep(300);
+                }
+                if (!row) {
+                    if (deletedCount === 0) {
+                        mod.warn(`log not found by name: ${logName}`);
+                        flows.userLog(`Log Deletion: log "${logName}" not in list on "${serverName}" — permanently skipping`, 'warn');
+                        flows.sendResult(jobId, marketId, { success: true, didWork: false, reason: 'log-not-in-list' });
+                        flows.setWatching(false);
+                        return;
+                    }
+                    break;
+                }
+                mod.info(`deleting (${deletedCount + 1}/${deleteCount}): ${logName}`);
+                const deleteBtn = row.querySelector(SAI.SEL.TRASH_ICON)?.closest('button');
+                if (!deleteBtn) {
+                    mod.warn('delete button not found');
                     flows.sendTimeout(jobId, marketId);
                     flows.setWatching(false);
                     return;
