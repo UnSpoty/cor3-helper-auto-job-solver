@@ -431,14 +431,20 @@
         return { retried: false };
     }
 
-    function requestMarketRefresh(reason) {
+    function requestMarketRefresh(reason, opts) {
+        const skipRemote = !!(opts && opts.skipRemote);
         lastMarketRefreshAt = Date.now();
-        if (modRef) modRef.debug(`market refresh [${reason || 'manual'}]`);
+        if (modRef) modRef.debug(`market refresh [${reason || 'manual'}]${skipRemote ? ' home-only' : ''}`);
         Bus.window.post(MSG.GAME.REFRESH_MARKET, null);
-        // Only refresh remote markets when the user actually opted them in.
-        // Each remote refresh triggers a set.endpoint preflight in MAIN (the
-        // markets are unreachable from HOME), which briefly hijacks the
-        // user's network-map endpoint — too disruptive to fire blindly.
+        // Remote markets (DARK / SRM) are unreachable from HOME, so each refresh
+        // does a set.endpoint preflight to flip onto their market server. That's
+        // fine for fresh-start / accept-batch-done / idle-poll moments, but
+        // racy for post-job-completed: the preflights are still in flight when
+        // the next SAI job's connect() runs, so cor3.gg sees endpoint mismatch
+        // and rejects the login ("Connect btn reappeared" in server-connect).
+        // skipRemote=true keeps the home refresh (so the popup counter updates)
+        // without churning the WS endpoint.
+        if (skipRemote) return;
         if (settings.markets && settings.markets.dark) Bus.window.post(MSG.GAME.REFRESH_DARK_MARKET, null);
         if (settings.markets && settings.markets.srm)  Bus.window.post(MSG.GAME.REFRESH_SRM_MARKET,  null);
     }
@@ -1266,7 +1272,13 @@
             } else {
                 setStatus('idle', 'job complete');
             }
-            setTimeout(() => requestMarketRefresh('job-completed'), 2000);
+            // Phase 5+: refresh ONLY home market here. Remote (DARK/SRM)
+            // refreshes do a set.endpoint preflight that races the next
+            // SAI job's connect() and gets the login rejected by cor3.gg.
+            // Remote markets get fresh data via the regular idle-poll
+            // (every 30s) and accept-batch-done — neither overlaps with
+            // an active flow.
+            setTimeout(() => requestMarketRefresh('job-completed', { skipRemote: true }), 2000);
             if (queue.length > 0) setTimeout(executeNextFromQueue, 3000);
         }
 
