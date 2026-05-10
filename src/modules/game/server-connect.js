@@ -101,13 +101,68 @@
             return false;
         }
 
-        // 3. select server
+        // 3-6. Run the full Connect → Login → access-row chain through
+        // attemptConnectChain so we can re-do the whole thing if SAI fails
+        // to open. The single-row click retry inside step 6 isn't enough
+        // when cor3.gg drops the click silently — a fresh login chain
+        // (re-click NM icon, re-click Connect, re-click Login, re-click
+        // access row) is what actually unsticks it. Bug history: before
+        // this loop, `connect()` happily reported "Connected" after 3
+        // failed access-row clicks, then findOrOpenSai burned 15 s
+        // waiting for an SAI that was never going to appear, the flow
+        // timed out, auto-jobs retried it, and the *flow's* second
+        // attempt usually succeeded — so the user paid ~30 s of dead
+        // time per occurrence. Doing the reconnect here pays the same
+        // cost in only one extra second.
+        const MAX_FULL_ATTEMPTS = 2;
+        let chainResult = { saiOpened: false, fatal: false };
+        for (let attempt = 1; attempt <= MAX_FULL_ATTEMPTS; attempt++) {
+            if (attempt > 1) {
+                dbg(`full reconnect attempt ${attempt}/${MAX_FULL_ATTEMPTS} — re-clicking from NM icon`);
+                Bus.window.post(MSG.JOB.LOG, {
+                    msg: `Reconnecting to "${serverName}" (attempt ${attempt}/${MAX_FULL_ATTEMPTS}) — first SAI-open didn't take`,
+                    level: 'info',
+                });
+                await dom.sleep(800);
+            }
+            chainResult = await attemptConnectChain(serverName, item, log, dbg);
+            if (chainResult.saiOpened) break;
+            if (chainResult.fatal) break;     // K/D, unreachable, missing buttons — retrying won't help
+            if (root.__jobManagerAbort) break; // user aborted mid-flow
+        }
+
+        if (chainResult.saiOpened) {
+            Bus.window.post(MSG.JOB.LOG, { msg: `Connected to server: "${serverName}"`, level: 'ok' });
+            return true;
+        }
+        // Specific reason was already logged inside attemptConnectChain
+        // (KD / unreachable / SAI-did-not-open); just translate to the
+        // return value here so the caller doesn't waste 15 s in
+        // findOrOpenSai's SAI-wait loop.
+        Bus.window.post(MSG.JOB.LOG, { msg: `Failed to connect to "${serverName}" — SAI did not open`, level: 'warn' });
+        return false;
+    }
+
+    // Execute one full Connect → Login → access-row sequence on the named
+    // server. Steps 0–2 (HOME-endpoint preflight, NM lookup, K/D check)
+    // are expected to have run in the caller already.
+    //
+    // Returns:
+    //   { saiOpened: true }                 — success, SAI is open for serverName
+    //   { saiOpened: false, fatal: true  }  — abort outright (K/D, unreachable,
+    //                                         buttons missing): another full
+    //                                         attempt won't change anything.
+    //   { saiOpened: false, fatal: false }  — transient miss (SAI didn't open
+    //                                         after access-row retries / login
+    //                                         panel didn't mount): caller may
+    //                                         retry the whole chain.
+    async function attemptConnectChain(serverName, item, log, dbg) {
+        // 3. select server — click icon, wait for side panel.
         const icon = item.querySelector(NM.SEL.SERVER_ICON);
         dom.clickEl(icon || item);
         await dom.sleep(400);
         dbg('step 3 — clicked server icon');
 
-        // wait for side panel to reflect this server
         let panelReady = false;
         for (let i = 0; i < 20 && !root.__jobManagerAbort; i++) {
             const nameEl = document.querySelector(NM.SEL.PANEL_NAME);
@@ -118,7 +173,7 @@
             const nameNow = document.querySelector(NM.SEL.PANEL_NAME)?.textContent?.trim();
             dbg(`step 3 FAIL — side panel name "${nameNow || '(none)'}" ≠ "${serverName}"`);
             log('warn', `Side panel did not update for "${serverName}"`);
-            return false;
+            return { saiOpened: false, fatal: true };
         }
         dbg('step 3 ok — panel name updated');
 
@@ -137,7 +192,7 @@
             } else if (!queryLoginBtn()) {
                 dbg('step 4 FAIL — Connect btn not found, Login also missing');
                 log('warn', `Connect button not found for "${serverName}"`);
-                return false;
+                return { saiOpened: false, fatal: true };
             }
         }
 
@@ -150,13 +205,13 @@
             if (getSaiForServer(serverName)) {
                 dbg('step 5 — SAI opened directly');
                 log('info', `SAI opened directly after Connect for "${serverName}"`);
-                return true;
+                return { saiOpened: true };
             }
             if (queryConnectBtn()) {
                 dbg('step 5 FAIL — Connect btn reappeared (rejected)');
                 log('warn', `Connect button reappeared — rejected for "${serverName}"`);
                 Bus.window.post(MSG.JOB.SERVER_UNREACHABLE, { serverName });
-                return false;
+                return { saiOpened: false, fatal: true };
             }
             if (root.__serverPathFailed > (root.__connectStartedAt || 0)) {
                 dbg('step 5 FAIL — no-path-to-server WS error');
@@ -164,14 +219,14 @@
                 root.__serverPathFailed = 0;
                 const blockedByKD = NM.listServersOnKD(serverName);
                 Bus.window.post(MSG.JOB.SERVER_UNREACHABLE, { serverName, blockedByKD });
-                return false;
+                return { saiOpened: false, fatal: true };
             }
             await dom.sleep(200);
         }
         if (!loginBtn) {
             dbg('step 5 FAIL — Login btn did not appear in 12s');
             log('warn', `Login button did not appear after Connect for "${serverName}"`);
-            return false;
+            return { saiOpened: false, fatal: false };
         }
         dbg('step 5 ok — clicking Login');
         dom.clickEl(loginBtn.closest('button') || loginBtn);
@@ -181,46 +236,42 @@
         let loginPanel = await dom.waitForEl(SEL.LOGIN_PANEL, { timeout: 5_000 });
         if (!loginPanel) {
             dbg('step 6 FAIL — login panel did not mount in 5s');
-        } else {
-            // What's actually IN the panel? Helps when Active Access "exists"
-            // but its list is in some unexpected state.
-            const aaEl = loginPanel.querySelector(SEL.ACTIVE_ACCESS);
-            const aaList = aaEl?.querySelector(SEL.ACCESS_LIST);
-            const htEl = loginPanel.querySelector(SEL.HACK_TOOLS);
-            const htList = htEl?.querySelector(SEL.ACCESS_LIST);
-            dbg(`step 6 — panel mounted. ActiveAccess=${!!aaEl}/${aaList ? aaList.children.length + ' rows' : 'no list'} HackTools=${!!htEl}/${htList ? htList.children.length + ' rows' : 'no list'}`);
+            return { saiOpened: false, fatal: false };
+        }
+        // What's actually IN the panel? Helps when Active Access "exists"
+        // but its list is in some unexpected state.
+        const aaEl = loginPanel.querySelector(SEL.ACTIVE_ACCESS);
+        const aaList = aaEl?.querySelector(SEL.ACCESS_LIST);
+        const htEl = loginPanel.querySelector(SEL.HACK_TOOLS);
+        const htList = htEl?.querySelector(SEL.ACCESS_LIST);
+        dbg(`step 6 — panel mounted. ActiveAccess=${!!aaEl}/${aaList ? aaList.children.length + ' rows' : 'no list'} HackTools=${!!htEl}/${htList ? htList.children.length + ' rows' : 'no list'}`);
 
-            let firstRow = await waitForActiveAccessRow(loginPanel, 5_000);
-            if (!firstRow) {
-                Bus.window.post(MSG.JOB.LOG, { msg: `Server "${serverName}" has no Active Access — attempting hack-tool path`, level: 'info' });
-                const hacked = await runHackToolForAccess(loginPanel, serverName, log);
-                if (hacked) {
-                    loginPanel = document.querySelector(SEL.LOGIN_PANEL) || loginPanel;
-                    firstRow = await waitForActiveAccessRow(loginPanel, 8_000);
-                }
-            }
-            if (firstRow) {
-                // Click + verify with retry. cor3.gg occasionally swallows the
-                // first click on a freshly-mounted access row (animation-frame
-                // timing? React fiber re-render mid-handler?) — the row visibly
-                // highlights but no SAI window opens. Re-clicking after a brief
-                // pause typically opens it, so we try up to 3 times before
-                // giving up (findOrOpenSai's 15 s wait is a separate safety
-                // net for the rare "SAI opens late after first click" case).
-                const opened = await clickAccessRowUntilSaiOpens(loginPanel, serverName, dbg, log);
-                if (opened) {
-                    log('info', `SAI opened for "${serverName}"`);
-                } else {
-                    Bus.window.post(MSG.JOB.LOG, { msg: `SAI did not open after ${SAI_CLICK_MAX_ATTEMPTS} click attempts on "${serverName}"`, level: 'warn' });
-                }
-            } else {
-                dbg('step 6 FAIL — no row to click after hack attempt');
-                Bus.window.post(MSG.JOB.LOG, { msg: `SAI login: no Active Access entry for "${serverName}" after hack attempt — solver will fail`, level: 'warn' });
+        let firstRow = await waitForActiveAccessRow(loginPanel, 5_000);
+        if (!firstRow) {
+            Bus.window.post(MSG.JOB.LOG, { msg: `Server "${serverName}" has no Active Access — attempting hack-tool path`, level: 'info' });
+            const hacked = await runHackToolForAccess(loginPanel, serverName, log);
+            if (hacked) {
+                loginPanel = document.querySelector(SEL.LOGIN_PANEL) || loginPanel;
+                firstRow = await waitForActiveAccessRow(loginPanel, 8_000);
             }
         }
-
-        Bus.window.post(MSG.JOB.LOG, { msg: `Connected to server: "${serverName}"`, level: 'ok' });
-        return true;
+        if (!firstRow) {
+            dbg('step 6 FAIL — no row to click after hack attempt');
+            Bus.window.post(MSG.JOB.LOG, { msg: `SAI login: no Active Access entry for "${serverName}" after hack attempt — solver will fail`, level: 'warn' });
+            return { saiOpened: false, fatal: false };
+        }
+        // Click + verify with row-level retry. cor3.gg occasionally swallows
+        // the first click on a freshly-mounted access row; re-clicking the
+        // same row sometimes works (handled inside clickAccessRowUntilSaiOpens),
+        // but if all SAI_CLICK_MAX_ATTEMPTS misses, the caller will redo
+        // the whole chain — which is what actually fixes the stuck state.
+        const opened = await clickAccessRowUntilSaiOpens(loginPanel, serverName, dbg, log);
+        if (opened) {
+            log('info', `SAI opened for "${serverName}"`);
+            return { saiOpened: true };
+        }
+        Bus.window.post(MSG.JOB.LOG, { msg: `SAI did not open after ${SAI_CLICK_MAX_ATTEMPTS} click attempts on "${serverName}"`, level: 'warn' });
+        return { saiOpened: false, fatal: false };
     }
 
     // Wait up to timeoutMs for SaiActiveAccess > SaiPanelListStyled to have
