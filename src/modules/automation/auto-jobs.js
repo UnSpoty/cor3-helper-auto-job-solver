@@ -1234,7 +1234,14 @@
                 Bus.window.post(C.MSG.GAME.REVERT_ENDPOINT_TO_HOME, null);
                 resetRecoveryCounter();   // accept-batch success — reset rolling failure count
                 resetState('accept-batch-complete');
-                setTimeout(() => requestMarketRefresh('accept-batch-done'), 500);
+                // Home-only refresh here. Remote markets (DARK/SRM) each do
+                // a set.endpoint→get.jobs→revert dance that takes ~2.6 s,
+                // and the first flow's connect() runs ~3 s later — close
+                // enough to overlap and get rejected by cor3.gg. Remote
+                // markets refresh on idle-poll (every 30 s) and at toggle-on,
+                // so skipping them here only delays a remote refresh by at
+                // most one poll cycle. 2026-05-10 race fix.
+                setTimeout(() => requestMarketRefresh('accept-batch-done', { skipRemote: true }), 500);
                 // Phase 5+: 3s instead of 1s gives the REVERT_ENDPOINT_TO_HOME
                 // post above time to actually flip the WS endpoint before
                 // we kick off the first flow. Was the root cause of the
@@ -1257,7 +1264,9 @@
                 bulkPendingJobs = []; bulkSentOrder = []; bulkAcceptCount = 0; bulkAcceptTotal = 0; bulkAcceptStartedAt = 0;
                 Bus.window.post(C.MSG.GAME.REVERT_ENDPOINT_TO_HOME, null);
                 resetState('accept-batch-complete');
-                setTimeout(() => requestMarketRefresh('accept-batch-done'), 500);
+                // skipRemote=true here for the same race reason as the
+                // success path above — remote refreshes overlap connect().
+                setTimeout(() => requestMarketRefresh('accept-batch-done', { skipRemote: true }), 500);
                 // Phase 5+: 3s settle delay (see acceptCandidatesBatch closure
                 // above) — same reasoning, post-revert WS endpoint flip needs
                 // to land before the first flow's connect() runs.

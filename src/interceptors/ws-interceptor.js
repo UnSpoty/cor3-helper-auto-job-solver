@@ -862,12 +862,19 @@
 
     // Ensure currentEndpoint is HOME before something endpoint-sensitive
     // runs (server-connect's first click on a HOME-network server tile, in
-    // particular). Tail-queues onto inflightAcceptChain so any in-flight
-    // accept dance (and its trailing REVERT) finishes first. Returns a
-    // promise that resolves once endpoint is HOME (or 5 s elapsed,
-    // whichever first — best-effort).
+    // particular). Tail-queues onto BOTH the accept chain and the remote-
+    // market-fetch chain so any in-flight set.endpoint(remote)→get.jobs→
+    // revert dance finishes before we touch the endpoint. Skipping the
+    // remote-fetch chain was the root cause of a 2026-05-10 incident:
+    // accept-batch-done fired a remote market refresh that overlapped the
+    // first flow's connect(), cor3.gg saw an endpoint mid-flap, and the
+    // Connect button bounced back ("rejected") within ~600 ms — far too
+    // fast for a real path-rejection.
+    //
+    // Returns a promise that resolves once endpoint is HOME (or 5 s
+    // elapsed, whichever first — best-effort).
     root.__cor3EnsureHomeEndpoint = function () {
-        const run = inflightAcceptChain.then(async () => {
+        const run = Promise.all([inflightAcceptChain, inflightRemoteFetch]).then(async () => {
             if (currentEndpoint === HOME_SERVER_ID) return;
             sendSetEndpoint(HOME_SERVER_ID);
             // Wait for the response to flip currentEndpoint, capped at 5 s.
@@ -876,7 +883,11 @@
                 await sleep(150);
             }
         }).catch(() => {});
+        // Tail onto both chains so anything queued *after* this ensure call
+        // waits for the endpoint to actually be HOME before starting its
+        // own dance.
         inflightAcceptChain = run;
+        inflightRemoteFetch = run;
         return run;
     };
 
@@ -1034,14 +1045,20 @@
         'COR3_REQUEST_SRM_MARKET': () => root.__cor3RequestSrmMarket(),
         [MSG.GAME.REQUEST_NM_MAP]: () => root.__cor3RequestNetworkMap(),
         [MSG.GAME.REVERT_ENDPOINT_TO_HOME]: () => {
-            // Serialise behind any in-flight accept dance so we don't fire
+            // Serialise behind any in-flight WS dance — both the accept
+            // chain and the remote-market-fetch chain — so we don't fire
             // a revert that races a still-pending set.endpoint(remote).
-            inflightAcceptChain = inflightAcceptChain.then(async () => {
+            // Without the remote-fetch wait, REVERT could land while
+            // fetchRemoteMarketSequence was mid-dance and ping-pong the
+            // endpoint into a state where the next connect() got rejected.
+            const run = Promise.all([inflightAcceptChain, inflightRemoteFetch]).then(async () => {
                 if (currentEndpoint !== HOME_SERVER_ID) {
                     sendSetEndpoint(HOME_SERVER_ID);
                     await sleep(300);
                 }
             }).catch(() => {});
+            inflightAcceptChain = run;
+            inflightRemoteFetch = run;
         },
         [MSG.GAME.REFRESH_MARKET]: () => root.__cor3RefreshMarket(),
         [MSG.GAME.REFRESH_DARK_MARKET]: () => root.__cor3RefreshDarkMarket(),
