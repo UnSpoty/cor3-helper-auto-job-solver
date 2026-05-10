@@ -117,6 +117,10 @@
     const kdSkipServers = new Map();
     const sentAcceptIds = new Map();
     const completedJobIds = new Map();
+    // Incremental persistence of completed jobs — survives reload/crash.
+    // Loaded on start(); written on every successful complete. Bounded ring
+    // (LIMITS.COMPLETED_LOG_RING) to keep storage size predictable.
+    let completedJobsLog = [];
 
     let bulkPendingJobs = [];
     let bulkSentOrder = [];
@@ -155,6 +159,16 @@
     function saveQueue() { Store.local.setOne(C.STORAGE_LOCAL.AUTOJOBS_QUEUE, queue); }
     function saveRejected() { Store.local.setOne(C.STORAGE_LOCAL.AJ_REJECTED_JOBS, rejectedJobs); }
     function saveState() { Store.local.setOne(C.STORAGE_LOCAL.AUTOJOBS_STATE, { ...state, updatedAt: Date.now() }); }
+    function saveCompletedLog() {
+        Store.local.setOne(C.STORAGE_LOCAL.AJ_COMPLETED_JOBS_LOG, completedJobsLog);
+    }
+    function recordCompletedJob(entry) {
+        if (!entry || !entry.jobId) return;
+        completedJobsLog.unshift(entry);
+        const ring = (C.LIMITS && C.LIMITS.COMPLETED_LOG_RING) || 50;
+        if (completedJobsLog.length > ring) completedJobsLog.length = ring;
+        saveCompletedLog();
+    }
 
     // Phase 4: emit a state-transition event whenever the runtime status
     // changes. The orchestrator helper (root.COR3.autoJobs.states) owns the
@@ -685,7 +699,23 @@
         const d = nmDepths.get(job.serverName);
         return Number.isFinite(d) ? d : 0;
     }
-    function sortQueueByPriority() { queue.sort((a, b) => jobPriority(b) - jobPriority(a)); }
+    // Within a server-priority tier, transit jobs (IP inject / IP cleanup) run
+    // first. Rationale: they affect *who can route through this server next*,
+    // so doing them early avoids losing access mid-cycle. Pattern lifted from
+    // the Femtocel11 competitor's JOB_TYPE_PRIORITY scheme — but as a
+    // tie-breaker rather than the dominant key, so depth-based draining still
+    // wins on the primary axis.
+    const TRANSIT_JOB_TYPES = new Set([C.FLOW.IP_INJECTION, C.FLOW.IP_CLEANUP]);
+    function jobTypeBonus(job) {
+        return TRANSIT_JOB_TYPES.has(job.jobType) ? 1 : 0;
+    }
+    function sortQueueByPriority() {
+        queue.sort((a, b) => {
+            const pa = jobPriority(a), pb = jobPriority(b);
+            if (pa !== pb) return pb - pa;
+            return jobTypeBonus(b) - jobTypeBonus(a);
+        });
+    }
 
     async function executeNextFromQueue() {
         if (queue.length === 0) {
@@ -946,8 +976,12 @@
                 C.STORAGE_LOCAL.AUTOJOBS_STATE,
                 C.STORAGE_LOCAL.AUTOJOBS_QUEUE,
                 C.STORAGE_LOCAL.AJ_REJECTED_JOBS,
+                C.STORAGE_LOCAL.AJ_COMPLETED_JOBS_LOG,
                 C.STORAGE_LOCAL.BUGGED_JOBS,           // legacy — read once to flush
             ]);
+            if (Array.isArray(local[C.STORAGE_LOCAL.AJ_COMPLETED_JOBS_LOG])) {
+                completedJobsLog = local[C.STORAGE_LOCAL.AJ_COMPLETED_JOBS_LOG];
+            }
             if (local[C.STORAGE_LOCAL.AUTOJOBS_STATE] && local[C.STORAGE_LOCAL.AUTOJOBS_STATE].status !== 'idle') {
                 const ls = local[C.STORAGE_LOCAL.AUTOJOBS_STATE];
                 const age = Date.now() - (ls.updatedAt || 0);
@@ -1258,7 +1292,17 @@
             } else {
                 pushUserLog('Job completed!', 'ok');
             }
-            if (completedJobId) completedJobIds.set(completedJobId, Date.now());
+            if (completedJobId) {
+                completedJobIds.set(completedJobId, Date.now());
+                recordCompletedJob({
+                    jobId: completedJobId,
+                    completedAt: Date.now(),
+                    descriptor: state.jobName || null,
+                    jobType: state.jobType || null,
+                    serverName: state.serverName || null,
+                    marketId: state.marketId || null,
+                });
+            }
             const qi = queue.findIndex((j) => j.jobId === completedJobId);
             if (qi !== -1) { queue.splice(qi, 1); saveQueue(); }
             completingStartedAt = 0;

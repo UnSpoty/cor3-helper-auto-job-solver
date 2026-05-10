@@ -191,6 +191,11 @@
         // timeline without an open subscription to MSG.JOB.STATE_TRANSITIONED (popup is
         // a separate context from the orchestrator).
         AJ_STATE_HISTORY: 'ajStateHistory',
+        // Most-recent completed jobs ring (LIMITS.COMPLETED_LOG_RING). Persisted
+        // incrementally so a crash mid-cycle doesn't lose history. Shape:
+        // [{ jobId, jobType, serverName, marketId, descriptor, completedAt }, …]
+        // newest-first.
+        AJ_COMPLETED_JOBS_LOG: 'ajCompletedJobsLog',
 
         // Solver runtime
         DAILY_HACK_LOG: 'dailyHackLog',
@@ -300,6 +305,8 @@
         ACTION_COOLDOWN_MS: 3000,
         // Auto-jobs state-history ring buffer (UI timeline)
         STATE_HISTORY_RING: 20,
+        // Auto-jobs completed-jobs ring buffer (incremental persistence)
+        COMPLETED_LOG_RING: 50,
     };
 
     root.COR3.constants = { MSG, STORAGE_LOCAL, STORAGE_SYNC, FLOW, LOG_LEVEL, CATEGORY, LIMITS };
