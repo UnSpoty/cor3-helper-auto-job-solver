@@ -17,7 +17,7 @@
 
     const TABS = [
         { id: 'overview',    labelKey: 'tabs.overview' },
-        { id: 'expeditions', labelKey: 'tabs.expeditions', locked: true },
+        { id: 'expeditions', labelKey: 'tabs.expeditions' },
         { id: 'autojobs',    labelKey: 'tabs.autojobs' },
         { id: 'modules',     labelKey: 'tabs.modules' },
         { id: 'logs',        labelKey: 'tabs.logs' },
@@ -117,16 +117,10 @@
         for (const id of Object.keys(sections)) {
             const on = id === tabId;
             sections[id].classList.toggle('active', on);
-            if (on) {
-                if (id === 'expeditions') {
-                    // Locked tab: always render the placeholder, never the
-                    // real expeditions UI.
-                    renderLockedTab(sections[id]);
-                } else if (root.COR3.ui && root.COR3.ui[id] && typeof root.COR3.ui[id].activate === 'function') {
-                    root.COR3.ui[id].activate(sections[id]);
-                }
+            if (on && root.COR3.ui && root.COR3.ui[id] && typeof root.COR3.ui[id].activate === 'function') {
+                root.COR3.ui[id].activate(sections[id]);
             }
-            if (!on && id !== 'expeditions' && root.COR3.ui && root.COR3.ui[id] && typeof root.COR3.ui[id].deactivate === 'function') {
+            if (!on && root.COR3.ui && root.COR3.ui[id] && typeof root.COR3.ui[id].deactivate === 'function') {
                 root.COR3.ui[id].deactivate(sections[id]);
             }
         }
@@ -137,29 +131,13 @@
         tabsEl.innerHTML = '';
         for (const t of TABS) {
             const btn = document.createElement('button');
-            btn.className = 'tab' + (t.locked ? ' disabled' : '');
+            btn.className = 'tab';
             btn.dataset.tab = t.id;
             btn.dataset.labelKey = t.labelKey;
             btn.textContent = i18n.t(t.labelKey);
-            if (t.locked) btn.title = i18n.t('expeditions.locked');
             btn.addEventListener('click', () => activate(t.id));
             tabsEl.appendChild(btn);
         }
-    }
-
-    function renderLockedTab(container) {
-        container.innerHTML = '';
-        const wrap = document.createElement('div');
-        wrap.className = 'locked-tab';
-        const title = document.createElement('div');
-        title.className = 'lt-title';
-        title.textContent = i18n.t('expeditions.locked');
-        const body = document.createElement('div');
-        body.className = 'lt-body';
-        body.textContent = i18n.t('expeditions.lockedBody');
-        wrap.appendChild(title);
-        wrap.appendChild(body);
-        container.appendChild(wrap);
     }
 
     function applyStaticTranslations() {
@@ -191,12 +169,9 @@
         activate(active.dataset.tab);
     }
 
-    // ─── Mount sections (skip the locked Expeditions section so it never
-    //     calls into the original module that wires storage subscribers we
-    //     don't want firing). ────────────────────────────────────────────
+    // ─── Mount sections ─────────────────────────────────────────────
     function mountSections() {
         for (const id of Object.keys(sections)) {
-            if (id === 'expeditions') continue;
             try {
                 if (root.COR3.ui && root.COR3.ui[id] && typeof root.COR3.ui[id].mount === 'function') {
                     root.COR3.ui[id].mount(sections[id]);

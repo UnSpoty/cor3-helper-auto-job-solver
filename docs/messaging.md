@@ -45,7 +45,7 @@ in `MSG.WS`:
 
 - `COR3_WS_STASH_FULL` — `{ error, requestId }`. Auto-send disables on this.
 - `COR3_WS_ENDPOINT_RESULT` — `{ success, data }`. Internal.
-- `COR3_WS_ARCHIVED_EXPEDITIONS` — `{ data }`. Archived feature is dropped from the new UI but the WS event is still relayed.
+- `MSG.WS.ARCHIVED_EXPEDITIONS` (`COR3_WS_ARCHIVED_EXPEDITIONS`) — `{ expeditions }`. Owned by `archived-expeditions.js`; surfaced as the "Recent runs" block in the Expeditions UI.
 
 ---
 
@@ -92,7 +92,7 @@ the game-module helpers.
 - `COR3_REQUEST_DARK_MARKET` — sets dark endpoint then `get.options`.
 - `COR3_REQUEST_MERCENARIES` — `expeditions.get.mercenaries`.
 - `COR3_REQUEST_EXPEDITION_CONFIG` — `expeditions.get.config`.
-- `COR3_REQUEST_ARCHIVED_EXPEDITIONS` — archived expedition list (UI dropped, WS retained).
+- `MSG.GAME.REQUEST_ARCHIVED_EXPEDITIONS` (`COR3_REQUEST_ARCHIVED_EXPEDITIONS`) — re-fetch archived expedition list; popup's "Refresh" button on the Recent runs block triggers this via runtime-bridge.
 - `COR3_LEAVE_STASH` — leaves the stash room.
 - `COR3_SELL_ITEM` — `{itemId, quantity}` → `stash.sell.item`.
 - `COR3_KEEP_ALIVE` — no-op marker the SW pings to keep the page-side socket awake.

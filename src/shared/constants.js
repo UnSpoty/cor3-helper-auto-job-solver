@@ -15,6 +15,7 @@
         // Game data relayed from WS interceptor (MAIN → isolated)
         WS: {
             EXPEDITIONS: 'COR3_WS_EXPEDITIONS',
+            ARCHIVED_EXPEDITIONS: 'COR3_WS_ARCHIVED_EXPEDITIONS',
             DECISIONS: 'COR3_WS_DECISIONS',
             MARKET: 'COR3_WS_MARKET',
             DARK_MARKET: 'COR3_WS_DARK_MARKET',
@@ -48,6 +49,7 @@
         // Game-control commands (isolated → MAIN, executed by interceptor)
         GAME: {
             REQUEST_EXPEDITIONS: 'COR3_REQUEST_EXPEDITIONS',
+            REQUEST_ARCHIVED_EXPEDITIONS: 'COR3_REQUEST_ARCHIVED_EXPEDITIONS',
             REFRESH_MARKET: 'COR3_REFRESH_MARKET',
             REFRESH_DARK_MARKET: 'COR3_REFRESH_DARK_MARKET',
             REFRESH_SRM_MARKET: 'COR3_REFRESH_SRM_MARKET',
@@ -129,6 +131,11 @@
         // Game data
         EXPEDITIONS: 'expeditionsData',
         EXPEDITIONS_AT: 'expeditionsDataUpdatedAt',
+        // Archived expeditions: paginated history pulled via expeditions:get.archived.
+        // Re-enabled May 2026 — data was always being relayed but no module was
+        // subscribed; UI now renders the most recent runs with their loot/cost.
+        ARCHIVED_EXPEDITIONS: 'archivedExpeditionsData',
+        ARCHIVED_EXPEDITIONS_AT: 'archivedExpeditionsUpdatedAt',
         DECISIONS: 'expeditionDecisions',
         STASH: 'stashData',
         MARKET: 'marketData',

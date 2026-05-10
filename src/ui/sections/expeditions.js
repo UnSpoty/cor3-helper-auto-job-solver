@@ -46,8 +46,9 @@
         clearTimers();
         container.innerHTML = '';
 
-        const [exps, decisions, mercs, mercConfigs, autoSend, stash, autoChooseEnabled, riskThreshold] = await Promise.all([
+        const [exps, archived, decisions, mercs, mercConfigs, autoSend, stash, autoChooseEnabled, riskThreshold] = await Promise.all([
             Store.local.getOne(C.STORAGE_LOCAL.EXPEDITIONS, []),
+            Store.local.getOne(C.STORAGE_LOCAL.ARCHIVED_EXPEDITIONS, []),
             Store.local.getOne(C.STORAGE_LOCAL.DECISIONS, []),
             Store.local.getOne(C.STORAGE_LOCAL.MERCENARIES),
             Store.local.getOne(C.STORAGE_LOCAL.MERC_CONFIG, {}),
@@ -58,7 +59,12 @@
         ]);
 
         // ─── Active expeditions ───────────────────────────────────────
-        container.appendChild(el('div', 'section-title', 'Active expeditions'));
+        const activeHeader = el('div', 'row between');
+        activeHeader.appendChild(el('div', 'section-title', 'Active expeditions'));
+        const activeRefresh = el('button', 'btn small', 'Refresh');
+        activeRefresh.addEventListener('click', () => sendToContent('requestExpeditions'));
+        activeHeader.appendChild(activeRefresh);
+        container.appendChild(activeHeader);
         if (!exps || exps.length === 0) {
             container.appendChild(el('div', 'empty', 'No active expeditions.'));
         } else {
@@ -79,6 +85,57 @@
                     tRow.appendChild(t.el);
                     card.appendChild(tRow);
                 }
+                container.appendChild(card);
+            }
+        }
+
+        // ─── Recent runs (archived) ───────────────────────────────────
+        // Pulled via expeditions:get.archived. The list is paginated — we
+        // show the most recent 8 entries with status/loot/cost. Refresh
+        // button re-issues the WS request via runtime-bridge.
+        const archivedHeader = el('div', 'row between mt-md');
+        archivedHeader.appendChild(el('div', 'section-title', 'Recent runs'));
+        const archivedRefresh = el('button', 'btn small', 'Refresh');
+        archivedRefresh.addEventListener('click', () =>
+            sendToContent('requestArchivedExpeditions'));
+        archivedHeader.appendChild(archivedRefresh);
+        container.appendChild(archivedHeader);
+
+        const archList = Array.isArray(archived) ? archived : [];
+        if (archList.length === 0) {
+            container.appendChild(el('div', 'empty', 'No archived runs yet — click Refresh.'));
+        } else {
+            for (const run of archList.slice(0, 8)) {
+                const status = run.status || run.outcome || '';
+                const loc = run.locationName || run.location || '';
+                const zone = run.zoneName || run.zone || '';
+                const merc = run.mercenaryCallsign || run.mercenaryName || '';
+                const card = el('div', 'card compact');
+                const head = el('div', 'card-row');
+                head.appendChild(el('span', 'card-label',
+                    `${escape(loc)}${zone ? ' · ' + escape(zone) : ''}`));
+                const pillCls = /complet|success|return|won/i.test(status) ? 'ok'
+                    : /fail|lost|dead|killed/i.test(status) ? 'err'
+                    : 'idle';
+                head.appendChild(el('span', `pill ${pillCls}`, escape(status || '?')));
+                card.appendChild(head);
+
+                const meta = [];
+                if (merc) meta.push(`👤 ${escape(merc)}`);
+                if (run.totalCost != null) meta.push(`💸 ${run.totalCost}`);
+                // cor3.gg shapes loot in many forms — handle the common ones.
+                const loot = run.rewards || run.loot || run.payout;
+                if (loot && typeof loot === 'object') {
+                    if (loot.credits) meta.push(`💰 ${loot.credits}`);
+                    if (loot.reputation) meta.push(`⭐ ${loot.reputation}`);
+                    if (loot.renown) meta.push(`🏅 ${loot.renown}`);
+                    if (Array.isArray(loot.items) && loot.items.length) meta.push(`📦 ${loot.items.length}`);
+                }
+                if (run.completedAt || run.endedAt) {
+                    const ts = new Date(run.completedAt || run.endedAt);
+                    if (!isNaN(ts.getTime())) meta.push(ts.toLocaleString());
+                }
+                if (meta.length) card.appendChild(el('div', 'muted xs mt-sm', meta.join(' · ')));
                 container.appendChild(card);
             }
         }
@@ -227,6 +284,7 @@
             unsubs.push(Store.local.onChanged((changes) => {
                 if (!container.classList.contains('active')) return;
                 if (changes[C.STORAGE_LOCAL.EXPEDITIONS] || changes[C.STORAGE_LOCAL.DECISIONS]
+                    || changes[C.STORAGE_LOCAL.ARCHIVED_EXPEDITIONS]
                     || changes[C.STORAGE_LOCAL.MERCENARIES] || changes[C.STORAGE_LOCAL.MERC_CONFIG]
                     || changes[C.STORAGE_LOCAL.STASH]) {
                     render(container);

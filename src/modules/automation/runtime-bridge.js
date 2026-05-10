@@ -36,7 +36,7 @@
             fwd('refreshSrmMarket',   MSG.GAME.REFRESH_SRM_MARKET);
             fwd('leaveStash',         'COR3_LEAVE_STASH');
             fwd('keepWorkerAlive',    'COR3_KEEP_ALIVE');
-            fwd('requestArchivedExpeditions', 'COR3_REQUEST_ARCHIVED_EXPEDITIONS');
+            fwd('requestArchivedExpeditions', MSG.GAME.REQUEST_ARCHIVED_EXPEDITIONS);
             fwd('requestMercenaries',         'COR3_REQUEST_MERCENARIES');
             fwd('requestExpeditionConfig',    'COR3_REQUEST_EXPEDITION_CONFIG');
 

@@ -100,6 +100,7 @@
         "src/core/registry.js",
         "src/modules/data/auth.js",
         "src/modules/data/expeditions.js",
+        "src/modules/data/archived-expeditions.js",
         "src/modules/data/decisions.js",
         "src/modules/data/market.js",
         "src/modules/data/dark-market.js",

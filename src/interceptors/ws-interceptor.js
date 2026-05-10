@@ -245,9 +245,14 @@
             }
 
             if (action === 'get.archived') {
-                // Archived feature dropped for new UI; legacy popup may still display it.
-                // We pass through so legacy content.js can still write the storage key.
-                post('COR3_WS_ARCHIVED_EXPEDITIONS', { data: payload.data });
+                // Archived expeditions: re-wired May 2026 to a real data module.
+                // The interceptor unwraps data.expeditions when present so the
+                // module can subscribe with the same envelope shape as
+                // MSG.WS.EXPEDITIONS — keeps consumers symmetrical.
+                const archived = (payload.data && Array.isArray(payload.data.expeditions))
+                    ? payload.data.expeditions
+                    : (Array.isArray(payload.data) ? payload.data : []);
+                post(MSG.WS.ARCHIVED_EXPEDITIONS, { expeditions: archived });
                 return;
             }
 
