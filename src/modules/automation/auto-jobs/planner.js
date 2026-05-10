@@ -1,0 +1,200 @@
+// src/modules/automation/auto-jobs/planner.js
+// Per-job verdict for STATE_CHECK_JOB_CONDITIONS.
+//
+// Phase 2 (log-only): planner is run *alongside* auto-jobs.js findCandidates
+// to produce verdicts that surface in the activity log. The actual filter
+// decision is still made by the existing per-job server/K/D checks. This
+// gives us confidence the new logic agrees with the legacy path before
+// flipping the gate in Phase 3.
+//
+// Phase 3: planner verdicts become enforced — the orchestrator's
+// CHECK_JOB_CONDITIONS state will use this output verbatim to decide
+// what enters TAKE_ALL_VALID_JOBS.
+//
+// Verdict reasons (kebab-case, stable for log grepping):
+//   accept
+//   reject:no-server                — job names a server but extractor returned null
+//   reject:server-skip              — user manually skipped this server (priorities='skip')
+//   reject:server-kd                — server itself is in K/D (NM_GRAPH.isInMaintenance)
+//   reject:path-kd                  — at least one transit node is in K/D
+//   reject:no-logs-section          — D4RK + log_* job, AJ_SERVER_CAPS.hasLogs=false
+//   reject:already-rejected         — job already in AJ_REJECTED_JOBS map (Phase 3)
+//   reject:bugged                   — job in legacy buggedJobs map and TTL still active
+//   reject:unknown-type             — job type doesn't map to any flow
+
+(function () {
+    const root = (typeof globalThis !== 'undefined') ? globalThis : self;
+    if (!root.COR3 || !root.COR3.constants) return;
+    const { Store, constants: C } = root.COR3;
+    const SL = C.STORAGE_LOCAL;
+
+    const KNOWN_JOB_TYPES = new Set([
+        'file_decryption', 'ip_injection', 'ip_cleanup', 'data_upload',
+        'log_deletion', 'log_download', 'file_elimination', 'data_download',
+        'decrypt_extract',
+    ]);
+
+    const LOG_FLOW_TYPES = new Set(['log_deletion', 'log_download']);
+
+    function isFiniteBuggedActive(entry, now) {
+        if (!entry) return false;
+        const ttl = entry.ttl || (C.LIMITS && C.LIMITS.BUGGED_JOB_TTL_MS) || 0;
+        if (!ttl) return false;
+        const ts = entry.ts || entry;
+        return (now - ts) < ttl;
+    }
+
+    /**
+     * Per-job verdict.
+     *
+     * @param {object} job              - Candidate job object as built by findCandidates:
+     *                                    { id, marketId, type, name?, … } and (when known)
+     *                                    a `serverName` resolved by extractServerFromJob.
+     * @param {object} ctx              - Pre-loaded context bundle (see filterCandidates).
+     * @returns {object} { accept, reason, severity }
+     */
+    function evaluateJob(job, ctx) {
+        if (!job || !job.id) return { accept: false, reason: 'reject:no-job', severity: 'warn' };
+
+        const type = job.type;
+        if (!type || !KNOWN_JOB_TYPES.has(type)) {
+            return { accept: false, reason: 'reject:unknown-type', severity: 'warn' };
+        }
+
+        // Already permanently rejected this cycle (Phase 3+ — Phase 2 ctx.rejected
+        // is empty so this branch is a no-op until enforcement turns on).
+        if (ctx && ctx.rejected && ctx.rejected[job.id]) {
+            return { accept: false, reason: 'reject:already-rejected', severity: 'info' };
+        }
+
+        // Legacy bugged-jobs map is still authoritative in Phase 2; Phase 3
+        // removes it. Until then, mirror the old skip behaviour so verdicts
+        // line up with what auto-jobs actually does.
+        if (ctx && ctx.bugged && ctx.bugged[job.id]) {
+            if (isFiniteBuggedActive(ctx.bugged[job.id], ctx.now)) {
+                return { accept: false, reason: 'reject:bugged', severity: 'info' };
+            }
+        }
+
+        const serverName = job.serverName || (ctx && ctx.extractServer && ctx.extractServer(job)) || null;
+        const needsServer = type !== 'file_decryption';
+
+        if (needsServer) {
+            if (!serverName) return { accept: false, reason: 'reject:no-server', severity: 'warn' };
+
+            if (ctx && ctx.serverPriorities && ctx.serverPriorities[serverName] === 'skip') {
+                return { accept: false, reason: 'reject:server-skip', severity: 'info' };
+            }
+
+            if (ctx && ctx.kdSkipServers && ctx.kdSkipServers.has && ctx.kdSkipServers.has(serverName)) {
+                const expiry = ctx.kdSkipServers.get(serverName);
+                if (ctx.now < expiry) return { accept: false, reason: 'reject:server-kd', severity: 'info' };
+            }
+
+            if (ctx && ctx.graphByName) {
+                const node = ctx.graphByName.get(serverName);
+                if (node && node.isInMaintenance) {
+                    return { accept: false, reason: 'reject:server-kd', severity: 'info' };
+                }
+                // Path K/D: the server itself is fine, but at least one
+                // transit node on the way to it is in maintenance.
+                if (ctx.pathHasKD && ctx.pathHasKD(serverName)) {
+                    return { accept: false, reason: 'reject:path-kd', severity: 'info' };
+                }
+            }
+
+            // Server-cap reject: D4RK server + log_* flow but we've previously
+            // observed no Logs section there. Surfaces the issue at planning
+            // time instead of dispatching the flow just to discover it again.
+            if (ctx && ctx.serverCaps && LOG_FLOW_TYPES.has(type)) {
+                const cap = ctx.serverCaps[serverName];
+                if (cap && cap.hasLogs === false) {
+                    return { accept: false, reason: 'reject:no-logs-section', severity: 'info' };
+                }
+            }
+        }
+
+        return { accept: true, reason: 'accept', severity: 'info' };
+    }
+
+    /**
+     * Run the verdicts across a candidate list. Returns the same shape used
+     * by auto-jobs.js findCandidates plus a `rejected` array. Phase 2 the
+     * caller only logs `rejected`; Phase 3 the caller drops them from the
+     * accept-batch.
+     */
+    function filterCandidates(candidates, ctx) {
+        const accepted = [];
+        const rejected = [];
+        for (const job of (candidates || [])) {
+            const v = evaluateJob(job, ctx);
+            if (v.accept) accepted.push(job);
+            else rejected.push({ job, reason: v.reason, severity: v.severity });
+        }
+        return { accepted, rejected };
+    }
+
+    /**
+     * Build the planner context for a single planning pass. Reads the
+     * needed storage keys + builds in-memory derivatives (graph-by-name
+     * map, path-K/D lookup) so per-job evaluation is fast.
+     *
+     * Caller is expected to pass live runtime maps that aren't stored:
+     *   { kdSkipServers, serverPriorities, bugged }
+     */
+    async function buildContext(runtime) {
+        const [graph, serverCaps, rejected] = await Promise.all([
+            Store.local.getOne(SL.NM_GRAPH, null),
+            Store.local.getOne(SL.AJ_SERVER_CAPS, {}),
+            Store.local.getOne(SL.AJ_REJECTED_JOBS, {}),
+        ]);
+        const graphByName = new Map();
+        if (graph && Array.isArray(graph.servers)) {
+            for (const s of graph.servers) graphByName.set(s.name, s);
+        }
+        function pathHasKD(name) {
+            const visited = new Set();
+            let cur = graphByName.get(name);
+            let safety = 64;
+            while (cur && safety-- > 0) {
+                if (visited.has(cur.name)) break;
+                visited.add(cur.name);
+                if (cur.name !== name && cur.isInMaintenance) return true;
+                if (!cur.parentName) break;
+                cur = graphByName.get(cur.parentName);
+            }
+            return false;
+        }
+        return {
+            now: Date.now(),
+            graph, graphByName, pathHasKD,
+            serverCaps: serverCaps || {},
+            rejected: rejected || {},
+            kdSkipServers: (runtime && runtime.kdSkipServers) || null,
+            serverPriorities: (runtime && runtime.serverPriorities) || {},
+            bugged: (runtime && runtime.bugged) || {},
+            extractServer: (runtime && runtime.extractServer) || null,
+        };
+    }
+
+    /**
+     * Format a rejected list for the activity log. Keeps lines short so a
+     * batch of 10 candidates doesn't flood the popup.
+     */
+    function summarizeRejected(rejected) {
+        if (!Array.isArray(rejected) || rejected.length === 0) return null;
+        const byReason = {};
+        for (const r of rejected) {
+            byReason[r.reason] = (byReason[r.reason] || 0) + 1;
+        }
+        return Object.entries(byReason).map(([k, n]) => `${k}=${n}`).join(', ');
+    }
+
+    root.COR3.autoJobs = root.COR3.autoJobs || {};
+    root.COR3.autoJobs.planner = {
+        evaluateJob,
+        filterCandidates,
+        buildContext,
+        summarizeRejected,
+    };
+})();

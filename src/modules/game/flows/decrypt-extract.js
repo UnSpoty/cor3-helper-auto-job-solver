@@ -37,8 +37,11 @@
                 await dom.sleep(300);
             }
             if (!row) {
+                // 4.5 s of polling, file genuinely isn't on the server.
+                // Permanent skip — re-checking in 2 h won't help.
                 mod.warn(`file not found on server: ${fileName}`);
-                flows.sendTimeout(jobId, marketId);
+                flows.userLog(`Decrypt & Extract: file "${fileName}" not on "${serverName}" — permanently skipping`, 'warn');
+                flows.sendResult(jobId, marketId, { success: true, didWork: false, reason: 'file-not-on-server' });
                 flows.setWatching(false);
                 return;
             }

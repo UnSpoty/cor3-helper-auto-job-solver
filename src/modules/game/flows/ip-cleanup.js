@@ -61,8 +61,8 @@
         }
 
         if (ips.length === 0) {
-            flows.userLog('IP Cleanup: no target IPs parsed — aborting to avoid clearing the entire transit list', 'error');
-            flows.sendTimeout(jobId, marketId);
+            flows.userLog('IP Cleanup: no target IPs parsed — permanently skipping (avoids clearing entire transit list)', 'error');
+            flows.sendResult(jobId, marketId, { success: true, didWork: false, reason: 'no-ips' });
             flows.setWatching(false);
             return;
         }

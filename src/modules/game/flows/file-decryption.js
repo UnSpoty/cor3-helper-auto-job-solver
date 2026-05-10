@@ -19,8 +19,8 @@
         flows.setWatching(true);
 
         if (!fileCondition) {
-            flows.userLog('File Decryption: no fileCondition — aborting', 'error');
-            flows.sendTimeout(jobId, marketId);
+            flows.userLog('File Decryption: no fileCondition — permanently skipping', 'error');
+            flows.sendResult(jobId, marketId, { success: true, didWork: false, reason: 'no-file-condition' });
             flows.setWatching(false);
             return;
         }
@@ -51,8 +51,11 @@
 
         if (!fileEl) {
             if (root.__jobManagerAbort) { flows.setWatching(false); return; }
-            flows.userLog(`File Decryption: file not found ("${fileCondition}") — failing job`, 'error');
-            flows.sendTimeout(jobId, marketId);
+            // 60 s of polling and the file never appeared in Downloads.
+            // This isn't a runtime crash — the file genuinely isn't there.
+            // Treat as a structural skip until next refresh confirms.
+            flows.userLog(`File Decryption: file "${fileCondition}" not in Downloads — permanently skipping`, 'warn');
+            flows.sendResult(jobId, marketId, { success: true, didWork: false, reason: 'file-not-in-downloads' });
             flows.setWatching(false);
             return;
         }

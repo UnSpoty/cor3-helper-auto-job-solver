@@ -13,8 +13,8 @@
         flows.setWatching(true);
 
         if (!ips || ips.length === 0) {
-            flows.userLog('IP Injection: no target IPs parsed — aborting to avoid injecting nothing', 'error');
-            flows.sendTimeout(jobId, marketId);
+            flows.userLog('IP Injection: no target IPs parsed — permanently skipping (no work to do)', 'error');
+            flows.sendResult(jobId, marketId, { success: true, didWork: false, reason: 'no-ips' });
             flows.setWatching(false);
             return;
         }

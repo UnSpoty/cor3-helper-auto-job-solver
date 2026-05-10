@@ -18,7 +18,7 @@
 
         if (names.length === 0) {
             mod.warn('no file names supplied');
-            flows.sendTimeout(jobId, marketId);
+            flows.sendResult(jobId, marketId, { success: true, didWork: false, reason: 'no-file-names' });
             flows.setWatching(false);
             return;
         }
@@ -48,7 +48,8 @@
 
         if (rows.length === 0) {
             mod.warn(`no matching files found: ${names.join(', ')}`);
-            flows.sendTimeout(jobId, marketId);
+            flows.userLog(`Data Download: no files match [${names.join(', ')}] on "${serverName}" — permanently skipping`, 'warn');
+            flows.sendResult(jobId, marketId, { success: true, didWork: false, reason: 'files-not-on-server' });
             flows.setWatching(false);
             return;
         }

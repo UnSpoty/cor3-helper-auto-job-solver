@@ -53,10 +53,13 @@
             await dom.sleep(300);
         }
         if (!downloadsItem) {
+            // 4.5 s of polling and Downloads folder never rendered. This is
+            // a runtime issue, not a structural one — keep legacy behaviour
+            // (transient timeout) so we retry on the next cycle.
             mod.warn('Downloads folder not found in file picker');
             const closeBtn = document.querySelector(FILE_PICKER_CLOSE_SEL);
             if (closeBtn) closeBtn.click();
-            flows.sendTimeout(jobId, marketId);
+            flows.sendTimeout(jobId, marketId, { transient: true });
             flows.setWatching(false);
             return;
         }
@@ -72,7 +75,7 @@
 
         if (!fileCondition) {
             mod.warn('no fileCondition');
-            flows.sendTimeout(jobId, marketId);
+            flows.sendResult(jobId, marketId, { success: true, didWork: false, reason: 'no-file-condition' });
             flows.setWatching(false);
             return;
         }
@@ -84,10 +87,14 @@
             if (!fileItem) await dom.sleep(300);
         }
         if (!fileItem) {
+            // 6 s of polling, file truly isn't in Downloads. Permanent skip
+            // (the user needs to grab it off another server first or the
+            // job is stale).
             mod.warn(`File not found in Downloads: ${fileCondition}`);
+            flows.userLog(`File Upload: file "${fileCondition}" not in Downloads — permanently skipping`, 'warn');
             const closeBtn = document.querySelector(FILE_PICKER_CLOSE_SEL);
             if (closeBtn) closeBtn.click();
-            flows.sendTimeout(jobId, marketId);
+            flows.sendResult(jobId, marketId, { success: true, didWork: false, reason: 'file-not-in-downloads' });
             flows.setWatching(false);
             return;
         }

@@ -43,31 +43,75 @@
         ];
     }
 
+    // Phase 4 header: state pill + description + next-hint, plus action
+    // buttons (Start/Stop, Reset, Download Log). Reads STATE_LABELS from
+    // the orchestrator helper (loaded into popup.html in Phase 4).
     function renderHeader(host, settings, state, solverFlags) {
         host.innerHTML = '';
+
+        // Phase 5: HALTED banner. Renders ABOVE the regular header card so
+        // it's the first thing the user sees when the orchestrator threw
+        // in the towel. The "Reset" button below will clear it.
+        if (state.status === 'halted') {
+            const banner = el('div', 'card aj-halted-banner');
+            const reason = state.haltReason || 'Unknown reason';
+            banner.innerHTML = `
+                <div class="card-row">
+                    <span class="card-label">⚠ Auto-Jobs HALTED</span>
+                    <span class="pill err">halted</span>
+                </div>
+                <div class="state-desc xs">${escape(reason)}</div>
+                <div class="muted xs mt-sm">
+                    Reached ${escape('3×')} consecutive failures. Click <b>Reset</b> below to clear and resume,
+                    or check the activity log + Download Log for details.
+                </div>
+            `;
+            host.appendChild(banner);
+        }
+
         const head = el('div', 'card');
 
         const required = requiredSolvers();
         const missingSolvers = required.filter((s) => !solverFlags[s.key]);
         const blocked = missingSolvers.length > 0;
 
-        head.innerHTML = `
-            <div class="card-row">
-                <span class="card-label">${escape(t('autojobs.title'))}</span>
-                <span class="pill ${settings.enabled ? 'active' : 'idle'}">${settings.enabled ? t('common.on') : t('common.off')}</span>
-            </div>
-            <div class="card-row mt-sm">
-                <span class="card-label">${escape(t('autojobs.status'))}</span>
-                <span class="pill ${state.status === 'idle' ? 'idle' : (state.status === 'solving' ? 'active' : 'warn')}">${state.status}</span>
-            </div>
-            ${state.jobName ? `<div class="sm mt-sm">${escape(state.jobName)} <span class="muted">[${escape(state.jobType || '')}]</span></div>` : ''}
-            ${state.serverName ? `<div class="sm muted">server: ${escape(state.serverName)}</div>` : ''}
+        const states = root.COR3.autoJobs && root.COR3.autoJobs.states;
+        const canonical = (states && states.mapLegacyToCanonical(state.status)) || state.status || 'idle';
+        const labels = states && states.STATE_LABELS;
+        const meta = (labels && labels[canonical]) || { title: state.status || '?', description: '', nextHint: null };
+        const nextMeta = (labels && meta.nextHint && labels[meta.nextHint]) || null;
+
+        const moduleStateClass = canonical.replace(/_/g, '-');
+
+        // Top row: title + ON/OFF pill
+        const topRow = el('div', 'card-row');
+        topRow.innerHTML = `
+            <span class="card-label">${escape(t('autojobs.title'))}</span>
+            <span class="pill ${settings.enabled ? 'active' : 'idle'}">${settings.enabled ? t('common.on') : t('common.off')}</span>
         `;
+        head.appendChild(topRow);
+
+        // State pill row + next-state hint
+        const stateRow = el('div', 'card-row mt-sm');
+        const nextHint = nextMeta ? `<span class="muted xs">→ next: ${escapeAttr(nextMeta.title)}</span>` : '';
+        stateRow.innerHTML = `
+            <span class="card-label">${escape(t('autojobs.status'))}</span>
+            <span class="pill aj-state aj-state-${escapeAttr(moduleStateClass)}">${escape(meta.title || canonical)}</span>
+            ${nextHint}
+        `;
+        head.appendChild(stateRow);
+
+        if (meta.description) {
+            head.appendChild(el('div', 'state-desc xs muted mt-sm', escape(meta.description)));
+        }
+
+        if (state.jobName) {
+            head.appendChild(el('div', 'sm mt-sm',
+                `${escape(state.jobName)} <span class="muted">[${escape(state.jobType || '')}]</span>`
+                + (state.serverName ? ` <span class="muted">@ ${escape(state.serverName)}</span>` : '')));
+        }
 
         if (blocked && !settings.enabled) {
-            // Render a small warn-card listing exactly which solvers to enable
-            // and why. Lives between status and the START button so the user
-            // sees the gate before they click.
             const warn = el('div', 'card-row mt-sm');
             warn.innerHTML = `
                 <span class="pill warn">${escape(t('autojobs.requiredSolvers'))}</span>
@@ -81,10 +125,10 @@
             head.appendChild(list);
         }
 
+        // Action buttons: primary Start/Stop, secondary Reset + Download Log.
         const toggleBtn = el('button', 'btn btn-block mt-sm', settings.enabled ? t('common.stop') : t('common.start'));
         toggleBtn.classList.toggle('btn-danger', !!settings.enabled);
         toggleBtn.classList.toggle('btn-success', !settings.enabled && !blocked);
-        // Stop is always allowed; start is gated on solvers being on.
         toggleBtn.disabled = blocked && !settings.enabled;
         if (toggleBtn.disabled) toggleBtn.title = `Enable required solvers first: ${missingSolvers.map((s) => s.label).join(', ')}`;
         toggleBtn.addEventListener('click', async () => {
@@ -95,8 +139,50 @@
             if (tab) chrome.tabs.sendMessage(tab.id, { action: 'toggleAutoJobs', settings: nextSettings }).catch(() => {});
         });
         head.appendChild(toggleBtn);
+
+        const actionRow = el('div', 'aj-action-row mt-sm');
+        // Reset — force the orchestrator out of any stuck state.
+        const resetBtn = el('button', 'btn small', 'Reset');
+        resetBtn.title = 'Force the orchestrator back to idle and clear the queue';
+        resetBtn.addEventListener('click', async () => {
+            if (!confirm('Reset Auto-Jobs?\n\nThis aborts the current flow, clears the queue, and forces the orchestrator back to idle. Permanently rejected entries are kept (clear those separately).')) return;
+            const tab = await getCor3Tab();
+            if (tab) chrome.tabs.sendMessage(tab.id, { action: 'autoJobsReset' }).catch(() => {});
+        });
+        actionRow.appendChild(resetBtn);
+
+        // Download Log — full debug bundle (settings + NM_GRAPH summary +
+        // reachability + queue + rejected jobs + module logs).
+        const downloadBtn = el('button', 'btn small', 'Download Log');
+        downloadBtn.title = 'Save a full Auto-Jobs debug bundle as a .txt file';
+        downloadBtn.addEventListener('click', async () => {
+            try {
+                const exporter = root.COR3.autoJobs && root.COR3.autoJobs.logExport;
+                if (!exporter || typeof exporter.downloadDebugBundle !== 'function') {
+                    alert('Log export helper is unavailable in this context.');
+                    return;
+                }
+                downloadBtn.disabled = true;
+                downloadBtn.textContent = 'Building…';
+                const bytes = await exporter.downloadDebugBundle();
+                downloadBtn.textContent = `Downloaded (${Math.ceil((bytes || 0) / 1024)} KB)`;
+                setTimeout(() => { downloadBtn.disabled = false; downloadBtn.textContent = 'Download Log'; }, 2500);
+            } catch (err) {
+                downloadBtn.disabled = false;
+                downloadBtn.textContent = 'Download Log';
+                alert('Failed to build debug bundle: ' + (err && err.message || err));
+            }
+        });
+        actionRow.appendChild(downloadBtn);
+        head.appendChild(actionRow);
+
         host.appendChild(head);
     }
+
+    // Helper: HTML-attr escape for class names / titles. Reuses `escape` for
+    // the same encoding but exists as a named import so it's clear what
+    // context the value is going into.
+    function escapeAttr(s) { return escape(s); }
 
     function renderSources(host, settings) {
         host.innerHTML = '';
@@ -127,29 +213,30 @@
         host.appendChild(card);
     }
 
-    // Renders the "Failed" subsection (formerly "Bugged") that lists jobs
-    // currently in the soft/hard bug TTL. Lives inside the Jobs section now;
-    // queue items are visualised via per-row chips in renderJobs instead of
-    // a separate Queue list (they were duplicate info).
-    function renderFailed(host, bugged) {
-        const buggedKeys = Object.keys(bugged || {});
-        if (buggedKeys.length === 0) return;
+    // Renders the "Permanently skipped" subsection (replaces Phase-2 "Failed/
+    // Bugged" with TTL'd entries). Lists rejectedJobs entries with the
+    // human-readable reason the flow gave so the user knows exactly why
+    // their queue moved on. Auto-cleared when markets refresh and confirm
+    // the job is gone, or via the "Clear" button.
+    function renderFailed(host, rejected) {
+        const ids = Object.keys(rejected || {});
+        if (ids.length === 0) return;
         const card = el('div', 'card');
-        card.appendChild(el('div', 'card-row', `<span class="card-label">${escape(t('autojobs.failedTitle'))} (${buggedKeys.length})</span><span class="muted xs">${escape(t('autojobs.failedSub'))}</span>`));
+        card.appendChild(el('div', 'card-row', `<span class="card-label">Permanently skipped (${ids.length})</span><span class="muted xs">No retry — markets refresh will clear automatically</span>`));
         const list = el('div', 'mt-sm');
-        const now = Date.now();
-        for (const id of buggedKeys.slice(0, 12)) {
-            const e = bugged[id] || {};
-            const ttlMs = e.ttl || 2 * 60 * 60 * 1000;
-            const remainingMs = Math.max(0, (e.ts || 0) + ttlMs - now);
-            const remainingMin = Math.ceil(remainingMs / 60000);
-            list.appendChild(el('div', 'sm', `<span class="pill warn">bug</span> ${escape(e.name || id)} <span class="muted xs">— retry in ${remainingMin}m</span>`));
+        for (const id of ids.slice(0, 12)) {
+            const e = rejected[id] || {};
+            const desc = escape(e.descriptor || id);
+            const reason = escape(e.reason || 'unknown');
+            list.appendChild(el('div', 'sm', `<span class="pill warn">skip</span> ${desc} <span class="muted xs">⤷ ${reason}</span>`));
         }
-        if (buggedKeys.length > 12) list.appendChild(el('div', 'muted sm mt-sm', `… +${buggedKeys.length - 12} more`));
+        if (ids.length > 12) list.appendChild(el('div', 'muted sm mt-sm', `… +${ids.length - 12} more`));
         card.appendChild(list);
-        const clear = el('button', 'btn btn-danger small mt-sm', t('autojobs.clearFailed'));
+        const clear = el('button', 'btn btn-danger small mt-sm', 'Clear all');
         clear.addEventListener('click', async () => {
             const tab = await getCor3Tab();
+            // Backend kept the legacy 'clearBuggedJobs' channel name —
+            // it now wipes rejectedJobs instead.
             if (tab) chrome.tabs.sendMessage(tab.id, { action: 'clearBuggedJobs' }).catch(() => {});
         });
         card.appendChild(clear);
@@ -188,8 +275,7 @@
     // Build a single available-jobs row. State chips:
     //   • "queued" — already accepted into autoJobsQueue
     //   • "running" — current state.jobId
-    //   • "skip" — server is in serverPriorities[name]==='skip'
-    //   • "bug" — job id in buggedJobs (still TTL'd)
+    //   • "skip" — server in priorities[name]==='skip', OR job permanently rejected
     //   • "off" — market disabled OR job-type disabled
     function jobRow(job, source, ctx) {
         const type = detectJobType(job);
@@ -201,7 +287,7 @@
         if (!ctx.marketEnabled) { tags.push('off'); dim = true; }
         if (type && ctx.enabledJobTypes && ctx.enabledJobTypes[type] === false) { tags.push('off'); dim = true; }
         if (server && ctx.priorities[server] === 'skip') { tags.push('skip'); dim = true; }
-        if (ctx.buggedJobs[job.id]) { tags.push('bug'); dim = true; }
+        if (ctx.rejectedJobs[job.id]) { tags.push('skip'); dim = true; }
         if (ctx.queuedIds.has(job.id)) tags.push('queued');
         if (ctx.runningJobId === job.id) tags.push('running');
 
@@ -240,7 +326,7 @@
         };
     }
 
-    function renderJobs(host, marketsData, settings, priorities, buggedJobs, queue, state, nmGraph) {
+    function renderJobs(host, marketsData, settings, priorities, rejectedJobs, queue, state, nmGraph) {
         host.innerHTML = '';
 
         // Lookup tables shared across rows
@@ -255,7 +341,7 @@
         const ctx = {
             nmDepths,
             priorities: priorities || {},
-            buggedJobs: buggedJobs || {},
+            rejectedJobs: rejectedJobs || {},
             queuedIds,
             runningJobId,
             enabledJobTypes: settings?.enabledJobTypes || {},
@@ -265,7 +351,7 @@
         // Section title with global breakdown so user sees totals at a glance.
         const totalAvailable = marketsData.reduce((n, m) => n + (m.data?.jobs?.length || 0), 0);
         const totalQueued = (queue || []).length;
-        const totalFailed = Object.keys(buggedJobs || {}).length;
+        const totalFailed = Object.keys(rejectedJobs || {}).length;
         const totalAll = totalAvailable + totalQueued + totalFailed;
         host.appendChild(el('div', 'section-title',
             `${escape(t('autojobs.jobs'))} (${totalAll}) <span class="muted xs">· ${totalAvailable} ${escape(t('autojobs.available'))} · ${totalQueued} ${escape(t('overview.inProgress'))} · ${totalFailed} ${escape(t('autojobs.failed'))}</span>`));
@@ -314,9 +400,9 @@
             host.appendChild(card);
         }
 
-        // Failed (bugged) jobs — at the bottom of Jobs section. Includes
-        // soft-bugs (transient timeouts, 15 min) and hard-bugs (2 h).
-        renderFailed(host, buggedJobs);
+        // Permanently rejected jobs — at the bottom of Jobs section.
+        // No TTL — auto-cleared on market refresh, or via "Clear" button.
+        renderFailed(host, rejectedJobs);
     }
 
     function renderServerPriorities(host, nmGraph, priorities) {
@@ -407,12 +493,49 @@
         host.appendChild(wrap);
     }
 
+    // Phase 4: state-history timeline. Reads STORAGE_LOCAL.AJ_STATE_HISTORY
+    // (orchestrator persists last STATE_HISTORY_RING transitions). Collapsed
+    // by default — most users don't need it but it's invaluable when
+    // debugging "stuck" reports.
+    function renderTimeline(host, history) {
+        host.innerHTML = '';
+        if (!Array.isArray(history) || history.length === 0) return;
+
+        const states = root.COR3.autoJobs && root.COR3.autoJobs.states;
+        const labels = states && states.STATE_LABELS;
+        const wrap = document.createElement('details');
+        wrap.className = 'collapsible aj-timeline';
+        const summary = document.createElement('summary');
+        summary.innerHTML = `<span class="card-label">State history</span><span class="muted xs">${history.length} transition(s)</span>`;
+        wrap.appendChild(summary);
+        const card = el('div', 'card aj-timeline-list');
+        // Newest first so the most recent transition is at the top.
+        for (const entry of history.slice().reverse()) {
+            const ts = entry.ts ? new Date(entry.ts) : null;
+            const tsTxt = ts ? `${String(ts.getHours()).padStart(2, '0')}:${String(ts.getMinutes()).padStart(2, '0')}:${String(ts.getSeconds()).padStart(2, '0')}` : '?';
+            const toMeta = labels && entry.to && labels[entry.to];
+            const toLabel = toMeta ? toMeta.title : (entry.to || '?');
+            const fromTxt = entry.from
+                ? `<span class="muted xs">${escape((labels && labels[entry.from] && labels[entry.from].title) || entry.from)} →</span> `
+                : '';
+            const reasonTxt = entry.reason ? `<span class="muted xs"> (${escape(String(entry.reason))})</span>` : '';
+            const stateClass = (entry.to || '').replace(/_/g, '-');
+            card.appendChild(el('div', 'aj-timeline-row sm',
+                `<span class="muted xs aj-timeline-ts">${escape(tsTxt)}</span> ${fromTxt}<span class="pill aj-state aj-state-${escape(stateClass)}">${escape(toLabel)}</span>${reasonTxt}`));
+        }
+        wrap.appendChild(card);
+        host.appendChild(wrap);
+    }
+
+    let liveNetworkMap = null;
+
     async function render(container) {
-        const [settings, state, queue, bugged, nmGraph, priorities, home, dark, srm, autoDecrypt, autoIceWall] = await Promise.all([
+        const [settings, state, queue, rejected, history, nmGraph, priorities, home, dark, srm, autoDecrypt, autoIceWall] = await Promise.all([
             Store.sync.getOne(C.STORAGE_SYNC.AUTOJOBS_SETTINGS, DEFAULT_SETTINGS),
             Store.local.getOne(C.STORAGE_LOCAL.AUTOJOBS_STATE, { status: 'idle' }),
             Store.local.getOne(C.STORAGE_LOCAL.AUTOJOBS_QUEUE, []),
-            Store.local.getOne(C.STORAGE_LOCAL.BUGGED_JOBS, {}),
+            Store.local.getOne(C.STORAGE_LOCAL.AJ_REJECTED_JOBS, {}),
+            Store.local.getOne(C.STORAGE_LOCAL.AJ_STATE_HISTORY, []),
             Store.local.getOne(C.STORAGE_LOCAL.NM_GRAPH, null),
             Store.sync.getOne(C.STORAGE_SYNC.SERVER_PRIORITIES, {}),
             Store.local.getOne(C.STORAGE_LOCAL.MARKET, null),
@@ -426,36 +549,44 @@
             [C.STORAGE_SYNC.AUTO_ICE_WALL_ENABLED]: !!autoIceWall,
         };
 
-        // Tear down a previous logViewer if we're re-rendering — its storage
-        // listener leaks otherwise.
-        if (liveLogViewer) { try { liveLogViewer.destroy(); } catch (_) {} liveLogViewer = null; }
+        // Tear down previous live components so their storage listeners don't leak.
+        if (liveLogViewer)  { try { liveLogViewer.destroy();  } catch (_) {} liveLogViewer  = null; }
+        if (liveNetworkMap) { try { liveNetworkMap.destroy(); } catch (_) {} liveNetworkMap = null; }
 
         container.innerHTML = '';
 
         const headerHost = el('div');
+        const networkHost = el('div', 'aj-network-host');
         const sourcesHost = el('div');
+        const timelineHost = el('div');
         const jobsHost = el('div');
         const prioHost = el('div');
         container.appendChild(headerHost);
+        container.appendChild(networkHost);
         container.appendChild(sourcesHost);
+        container.appendChild(timelineHost);
         container.appendChild(jobsHost);
         container.appendChild(prioHost);
 
         renderHeader(headerHost, settings, state, solverFlags);
+
+        // Local Network Map — sits between header and sources. Component
+        // owns its own storage subscriptions for granular re-renders.
+        if (uiComponents.networkMap && typeof uiComponents.networkMap.attach === 'function') {
+            liveNetworkMap = uiComponents.networkMap.attach(networkHost);
+        }
+
         renderSources(sourcesHost, settings);
-        // Unified Jobs section: per-market lists with chips for state
-        // (queued/running/skip/bug/off) + a Failed card at the bottom.
-        // Replaces the separate "Queue" and "Bugged" sections.
+        renderTimeline(timelineHost, history);
         renderJobs(jobsHost, [
             { key: 'home', label: 'Home Market', data: home, enabled: settings.markets?.home !== false },
             { key: 'dark', label: 'Dark Market', data: dark, enabled: settings.markets?.dark !== false },
             { key: 'srm',  label: 'SRM7-M',      data: srm,  enabled: settings.markets?.srm  !== false },
-        ], settings, priorities, bugged, queue, state, nmGraph);
+        ], settings, priorities, rejected, queue, state, nmGraph);
         renderServerPriorities(prioHost, nmGraph, priorities || {});
 
         // Activity log — Logger ring filtered to module='auto-jobs'. The
-        // logViewer subscribes to cor3_logs storage changes itself, so we
-        // don't need to re-render it on every tick.
+        // logViewer subscribes to cor3_logs storage changes itself.
         container.appendChild(el('div', 'section-title', t('autojobs.activityLog')));
         const stream = el('div', 'log-stream');
         container.appendChild(stream);
@@ -473,7 +604,8 @@
                 if (!container.classList.contains('active')) return;
                 if (changes[C.STORAGE_LOCAL.AUTOJOBS_STATE] ||
                     changes[C.STORAGE_LOCAL.AUTOJOBS_QUEUE] ||
-                    changes[C.STORAGE_LOCAL.BUGGED_JOBS] ||
+                    changes[C.STORAGE_LOCAL.AJ_REJECTED_JOBS] ||
+                    changes[C.STORAGE_LOCAL.AJ_STATE_HISTORY] ||
                     changes[C.STORAGE_LOCAL.NM_GRAPH] ||
                     changes[C.STORAGE_LOCAL.MARKET] ||
                     changes[C.STORAGE_LOCAL.DARK_MARKET] ||
@@ -490,7 +622,8 @@
         },
         activate(container) { render(container); },
         deactivate() {
-            if (liveLogViewer) { try { liveLogViewer.destroy(); } catch (_) {} liveLogViewer = null; }
+            if (liveLogViewer)  { try { liveLogViewer.destroy();  } catch (_) {} liveLogViewer  = null; }
+            if (liveNetworkMap) { try { liveNetworkMap.destroy(); } catch (_) {} liveNetworkMap = null; }
         },
     };
 })();

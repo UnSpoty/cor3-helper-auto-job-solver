@@ -449,3 +449,238 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
 ::-webkit-scrollbar-track { background: var(--os-color-bg-secondary); }
 ::-webkit-scrollbar-thumb { background: var(--os-color-border-secondary); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--os-color-border); }
+
+/* ─── Auto-Jobs Phase 4 UI ─────────────────────────────────────────────
+   State-pill colour palette. The canonical state names from
+   src/modules/automation/auto-jobs/orchestrator.js are projected onto
+   class names by replacing underscores with hyphens (e.g. STATE
+   `flow_log_deletion` → CSS class `aj-state-flow-log-deletion`). */
+.aj-state                                  { font-size: 10px; padding: 2px 6px; }
+.aj-state-idle,
+.aj-state-paused                           { background: rgba(107,120,136,0.15); color: var(--os-color-text-secondary); }
+.aj-state-starting,
+.aj-state-drawing-local-map,
+.aj-state-dlm-check-servers-accessability,
+.aj-state-dlm-fix-servers-accesability,
+.aj-state-waiting-jobs,
+.aj-state-timer-expired-time-to-upd,
+.aj-state-check-job-conditions,
+.aj-state-take-all-valid-jobs,
+.aj-state-open-sai,
+.aj-state-flow-file-decryption,
+.aj-state-flow-ip-injection,
+.aj-state-flow-ip-cleanup,
+.aj-state-flow-file-upload,
+.aj-state-flow-log-deletion,
+.aj-state-flow-log-download,
+.aj-state-flow-file-elimination,
+.aj-state-flow-data-download,
+.aj-state-flow-decrypt-extract,
+.aj-state-completing-job                   { background: rgba(118,193,209,0.18); color: var(--os-color-primary-hex); }
+.aj-state-all-jobs-done                    { background: rgba(74,222,128,0.18); color: var(--os-color-success); }
+.aj-state-recovering                       { background: rgba(255,200,87,0.18); color: var(--os-color-warning); }
+.aj-state-halted,
+.aj-state-error                            { background: rgba(254,73,73,0.18); color: var(--os-color-danger); }
+
+/* State-description line under the pill row in the header card. */
+.state-desc {
+    line-height: 1.4;
+    border-left: 2px solid var(--os-color-border-secondary);
+    padding-left: 8px;
+    margin-top: 6px;
+}
+
+/* HALTED banner — sits above the regular header card when the recovery
+   limit gets hit. The Reset button below clears it. */
+.aj-halted-banner {
+    border: 1px solid rgba(254, 73, 73, 0.55);
+    background: linear-gradient(
+        180deg,
+        rgba(254, 73, 73, 0.10) 0%,
+        rgba(254, 73, 73, 0.04) 100%
+    );
+    box-shadow: 0 0 0 1px rgba(254, 73, 73, 0.18) inset;
+    margin-bottom: 8px;
+}
+.aj-halted-banner .card-label { color: var(--os-color-danger); }
+.aj-halted-banner .state-desc {
+    border-left-color: var(--os-color-danger);
+    color: var(--os-color-text);
+    font-size: 11px;
+}
+
+/* Action button row beneath Start/Stop (Reset, Download Log). */
+.aj-action-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.aj-action-row .btn.small { flex: 1; min-width: 0; }
+
+/* ─── Network Map (component) ─────────────────────────────────────────
+   Card-style nodes + pan/zoom (camera = single <g> transform). The
+   visual goal is a compact echo of the in-game Network Map: rectangular
+   server cards with a faction-tinted left stripe, dashed parent→child
+   curves, and a small HUD overlay for the zoom %. */
+.aj-network-host { margin-top: 8px; }
+.network-map-wrap {
+    background: var(--os-color-bg-card);
+    border: 1px solid var(--os-color-border-secondary);
+    border-radius: 6px;
+    padding: 8px 10px;
+}
+.network-map-title {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.network-map-canvas {
+    position: relative;
+    margin-top: 6px;
+    overflow: hidden;
+    border-radius: 4px;
+    background: var(--os-color-bg-secondary);
+    /* touch-action: none stops the browser from interpreting wheel /
+       pinch / pan gestures inside the canvas as outer scroll. Without
+       this the popup's parent scroller would eat wheel events on
+       trackpads even when our handler calls preventDefault(). */
+    touch-action: none;
+    overscroll-behavior: contain;
+}
+.network-map-svg {
+    display: block;
+    width: 100%;
+    cursor: grab;
+    user-select: none;
+    touch-action: none;
+    /* Faint grid hint matching the in-game look — not strictly required
+       but it gives the viewport a "this is a map" affordance. */
+    background-image:
+        linear-gradient(rgba(118,193,209,0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(118,193,209,0.04) 1px, transparent 1px);
+    background-size: 24px 24px;
+}
+.network-map-svg.nm-grabbing { cursor: grabbing; }
+
+.nm-hud {
+    position: absolute;
+    top: 6px;
+    right: 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    z-index: 2;
+    pointer-events: none;
+}
+.nm-hud-zoom {
+    background: rgba(10,16,21,0.7);
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: var(--os-font);
+    font-size: 10px;
+}
+.nm-hud-btn {
+    pointer-events: auto;
+    padding: 2px 10px;
+    background: rgba(10,16,21,0.85);
+    color: var(--os-color-primary-hex);
+    border: 1px solid rgba(118,193,209,0.35);
+    border-radius: 3px;
+    font-family: var(--os-font);
+    font-size: 10px;
+    line-height: 1.4;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s;
+}
+.nm-hud-btn:hover {
+    background: rgba(118,193,209,0.18);
+    border-color: var(--os-color-primary);
+}
+.nm-hud-btn:active {
+    background: rgba(118,193,209,0.28);
+}
+
+.network-map-legend {
+    margin-top: 6px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+}
+.nm-legend-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 3px;
+    vertical-align: middle;
+    border: 1px solid rgba(255,255,255,0.15);
+}
+
+/* ─── SVG primitives ──────────────────────────────────────────────── */
+.nm-empty       { fill: var(--os-color-text-tertiary); font-size: 11px; }
+.nm-edge        { stroke: rgba(107,120,136,0.55); stroke-width: 1.4; fill: none; }
+.nm-edge-hidden { stroke-dasharray: 3 4; opacity: 0.6; }
+
+/* Card body */
+.nm-card-bg     { fill: var(--os-color-bg-card); stroke: rgba(255,255,255,0.08); stroke-width: 1; }
+.nm-card-stripe { fill: var(--os-color-text-tertiary); }
+.nm-card-label  { font-size: 11px; fill: var(--os-color-text); font-weight: 500; pointer-events: none; }
+.nm-card-sub    { font-size: 8px; fill: var(--os-color-text-tertiary); letter-spacing: 0.4px; pointer-events: none; }
+.nm-status-dot  { fill: var(--os-color-text-tertiary); stroke: rgba(0,0,0,0.4); stroke-width: 0.5; }
+
+/* K/D corner badge */
+.nm-kd-bg       { fill: var(--os-color-danger); }
+.nm-kd-text     { font-size: 7px; fill: var(--os-color-text); font-weight: 700; text-anchor: middle; letter-spacing: 0.5px; pointer-events: none; }
+
+/* Jobs corner badge */
+.nm-badge-circle{ fill: var(--os-color-warning); stroke: var(--os-color-bg); stroke-width: 1.2; }
+.nm-badge-text  { font-size: 9px; fill: var(--os-color-text-black); font-weight: 700; pointer-events: none; }
+
+/* ─── Node states ─────────────────────────────────────────────────────
+   Each state tints the status-dot (and the legend-dot inline) — the
+   stripe stays faction-coloured so users can read both axes at once. */
+.nm-state-home .nm-status-dot,
+.nm-legend-dot.nm-state-home  { fill: var(--os-color-primary); background: var(--os-color-primary); }
+.nm-state-ok   .nm-status-dot,
+.nm-legend-dot.nm-state-ok    { fill: var(--os-color-success); background: var(--os-color-success); }
+.nm-state-kd   .nm-status-dot,
+.nm-legend-dot.nm-state-kd    { fill: var(--os-color-danger);  background: var(--os-color-danger); }
+.nm-state-skip .nm-status-dot,
+.nm-legend-dot.nm-state-skip  { fill: var(--os-color-text-tertiary); background: var(--os-color-text-tertiary); }
+.nm-state-off  .nm-status-dot,
+.nm-legend-dot.nm-state-off   { fill: rgba(107,120,136,0.35); background: rgba(107,120,136,0.35); }
+
+/* Card-body emphasis per state. Home gets a subtle blue glow ring; K/D
+   gets a red border so the affected card stands out at any zoom level. */
+.nm-state-home .nm-card-bg { stroke: var(--os-color-primary); stroke-width: 1.5; }
+.nm-state-kd   .nm-card-bg { stroke: var(--os-color-danger);  stroke-width: 1.5; }
+.nm-state-skip .nm-card-label { text-decoration: line-through; opacity: 0.7; }
+.nm-state-off  .nm-card-bg    { opacity: 0.45; stroke-dasharray: 3 3; }
+.nm-state-off  .nm-card-label,
+.nm-state-off  .nm-card-sub   { opacity: 0.55; }
+
+/* ─── Faction tint for the left stripe ────────────────────────────── */
+.nm-faction-home    .nm-card-stripe { fill: var(--os-color-primary); }
+.nm-faction-d4rk    .nm-card-stripe { fill: rgba(167, 139, 250, 0.85); }
+.nm-faction-srm     .nm-card-stripe { fill: rgba(248, 113, 113, 0.7); }
+.nm-faction-cemit   .nm-card-stripe { fill: rgba(74, 222, 128, 0.7); }
+.nm-faction-uni     .nm-card-stripe { fill: rgba(255, 200, 87, 0.7); }
+.nm-faction-unknown .nm-card-stripe { fill: rgba(107,120,136,0.45); }
+
+.nm-node { cursor: default; }
+.nm-node:hover .nm-card-bg { stroke: var(--os-color-primary); stroke-width: 1.5; }
+
+/* ─── State-history timeline ─────────────────────────────────────────── */
+.aj-timeline-list {
+    max-height: 220px;
+    overflow-y: auto;
+    padding: 6px 8px;
+}
+.aj-timeline-row {
+    padding: 3px 0;
+    border-bottom: 1px dashed rgba(107,120,136,0.15);
+    line-height: 1.5;
+}
+.aj-timeline-row:last-child { border-bottom: 0; }
+.aj-timeline-ts {
+    display: inline-block;
+    min-width: 56px;
+    font-family: var(--os-font);
+}

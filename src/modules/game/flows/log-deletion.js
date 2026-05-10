@@ -15,15 +15,24 @@
         flows.setWatching(true);
 
         if (!logName && (!logSeqs || !logSeqs.length)) {
-            flows.userLog('Log Deletion: no logName or logSeqs — aborting', 'error');
-            flows.sendTimeout(jobId, marketId);
+            flows.userLog('Log Deletion: no logName or logSeqs — permanently skipping', 'error');
+            flows.sendResult(jobId, marketId, { success: true, didWork: false, reason: 'no-log-target' });
             flows.setWatching(false);
             return;
         }
 
         const sai = await SAI.findOrOpenSai(serverName);
         if (!sai) { flows.sendTimeout(jobId, marketId, { transient: true }); flows.setWatching(false); return; }
-        if (!await SAI.navigateToSection(sai, SAI.SEL.LOGS)) { flows.sendTimeout(jobId, marketId); flows.setWatching(false); return; }
+
+        // Same D4RK guard as log-download: if the Logs tab simply isn't
+        // present, we'd silently delete from whatever section is open.
+        const navigated = await SAI.navigateToSection(sai, SAI.SEL.LOGS);
+        if (!navigated || !sai.querySelector(SAI.SEL.LOGS)) {
+            flows.userLog(`Log Deletion: server "${serverName}" has no Logs section — permanently skipping`, 'warn');
+            flows.sendResult(jobId, marketId, { success: true, didWork: false, reason: 'no-logs-section' });
+            flows.setWatching(false);
+            return;
+        }
         if (!await SAI.waitForSaiContent(sai)) { flows.sendTimeout(jobId, marketId); flows.setWatching(false); return; }
 
         const deleteCount = (Array.isArray(logSeqs) && logSeqs.length > 0) ? logSeqs.length : 1;
@@ -40,8 +49,14 @@
                 }
                 if (!row) {
                     if (deletedCount === 0) {
+                        // The whole list rendered, the named log just isn't
+                        // there — likely the server's existing logs predate
+                        // the job, or it was already deleted. Permanent skip
+                        // (not 2 h bug); markets refresh will confirm if
+                        // the job stays around.
                         mod.warn(`log not found by name: ${logName}`);
-                        flows.sendTimeout(jobId, marketId);
+                        flows.userLog(`Log Deletion: log "${logName}" not in list on "${serverName}" — permanently skipping`, 'warn');
+                        flows.sendResult(jobId, marketId, { success: true, didWork: false, reason: 'log-not-in-list' });
                         flows.setWatching(false);
                         return;
                     }
@@ -74,7 +89,8 @@
                 }
                 if (!row) {
                     mod.warn(`log not found by seq: ${seq}`);
-                    flows.sendTimeout(jobId, marketId);
+                    flows.userLog(`Log Deletion: seq ${seq} not in list on "${serverName}" — permanently skipping`, 'warn');
+                    flows.sendResult(jobId, marketId, { success: true, didWork: false, reason: 'log-not-in-list' });
                     flows.setWatching(false);
                     return;
                 }

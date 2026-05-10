@@ -18,24 +18,46 @@
     function isWatching() { return watchingJob; }
     function setWatching(v) { watchingJob = !!v; }
 
-    function sendDone(jobId, marketId) {
-        Bus.window.post(MSG.JOB.MINIGAME_DONE, { jobId, marketId });
-    }
     /**
-     * Signal the orchestrator that this flow couldn't finish.
-     * @param {string}  jobId
-     * @param {string}  marketId
-     * @param {object} [opts]
-     * @param {boolean}[opts.transient=false] — flow gave up on a probably-
-     *   recoverable condition (DOM not ready yet, list virtualised, server
-     *   lag) rather than a definitive failure. Orchestrator buggs the job
-     *   with a shorter TTL so the user doesn't have to wait 2h to retry
-     *   something that may already work the next time the scan runs.
+     * Unified flow result. Phase-3 contract (single envelope, no legacy bridge).
+     *
+     *   { success: true,  didWork: true  }                  → orchestrator sends COR3_COMPLETE_JOB
+     *   { success: true,  didWork: false, reason: 'X' }     → PERMANENT reject. There was nothing to do
+     *                                                          (log not in list, no Logs section on D4RK,
+     *                                                          file not on server). No completion sent.
+     *                                                          Job stays rejected until it disappears
+     *                                                          from markets, or user clicks "Clear".
+     *   { success: false, reason: 'crash|timeout|…' }       → RUNTIME failure. Orchestrator retries the
+     *                                                          job once after a short delay; the second
+     *                                                          failure becomes a permanent reject with
+     *                                                          the runtime details exposed in UI.
+     *
+     * sendResult is the SINGLE message a flow ever posts back. The legacy
+     * MINIGAME_DONE / MINIGAME_TIMEOUT envelopes were dropped in Phase 3 —
+     * the auto-jobs orchestrator now reads MINIGAME_RESULT exclusively.
+     */
+    function sendResult(jobId, marketId, result = {}) {
+        const env = { jobId, marketId };
+        if (result.success != null) env.success = result.success === true;
+        if (result.didWork != null) env.didWork = result.didWork === true;
+        if (result.reason)          env.reason  = String(result.reason);
+        Bus.window.post(MSG.JOB.MINIGAME_RESULT, env);
+    }
+
+    function sendDone(jobId, marketId) {
+        sendResult(jobId, marketId, { success: true, didWork: true });
+    }
+
+    /**
+     * Runtime failure shortcut. The orchestrator routes !success to
+     * retry-once semantics, so `transient` is no longer a separate axis;
+     * the reason string carries enough detail for the user-facing log.
      */
     function sendTimeout(jobId, marketId, opts = {}) {
-        const env = { jobId, marketId };
-        if (opts.transient) env.transient = true;
-        Bus.window.post(MSG.JOB.MINIGAME_TIMEOUT, env);
+        sendResult(jobId, marketId, {
+            success: false,
+            reason: opts && opts.transient ? 'flow-transient-timeout' : 'flow-timeout',
+        });
     }
     function userLog(msg, level = 'info') {
         Bus.window.post(MSG.JOB.LOG, { msg, level });
@@ -111,5 +133,5 @@
 
     // Expose
     root.COR3.game = root.COR3.game || {};
-    root.COR3.game.flows = { isWatching, setWatching, sendDone, sendTimeout, userLog, startFlow };
+    root.COR3.game.flows = { isWatching, setWatching, sendDone, sendTimeout, sendResult, userLog, startFlow };
 })();

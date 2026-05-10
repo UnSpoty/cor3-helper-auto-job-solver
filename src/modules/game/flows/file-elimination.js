@@ -25,8 +25,11 @@
             await dom.sleep(300);
         }
         if (initialRows.length === 0) {
+            // List rendered, file isn't in it — already deleted, or job is
+            // stale. Permanent skip until next markets refresh confirms.
             mod.warn(`file not found: ${fileName}`);
-            flows.sendTimeout(jobId, marketId);
+            flows.userLog(`File Elimination: file "${fileName}" not on "${serverName}" — permanently skipping`, 'warn');
+            flows.sendResult(jobId, marketId, { success: true, didWork: false, reason: 'file-not-on-server' });
             flows.setWatching(false);
             return;
         }

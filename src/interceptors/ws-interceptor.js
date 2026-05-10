@@ -431,24 +431,37 @@
             }
         }
 
+        // BFS returning depth + parent map. Parents let consumers (Phase 2
+        // reachability planner, popup Network Map UI) reconstruct the
+        // HOME → server path one hop at a time without re-doing the BFS.
         function bfsFrom(rootId, adj) {
-            const out = {};
-            if (!rootId) return out;
-            out[rootId] = 0;
+            const depths = {};
+            const parents = {};
+            if (!rootId) return { depths, parents };
+            depths[rootId] = 0;
             const q = [rootId];
             while (q.length) {
                 const cur = q.shift();
                 for (const n of (adj[cur] || [])) {
-                    if (out[n] === undefined) { out[n] = out[cur] + 1; q.push(n); }
+                    if (depths[n] === undefined) {
+                        depths[n] = depths[cur] + 1;
+                        parents[n] = cur;
+                        q.push(n);
+                    }
                 }
             }
-            return out;
+            return { depths, parents };
         }
 
         // HOME marker: serverTypeName === 'Home' OR faction === 'HOME'.
         const home = servers.find((s) => s && (s.serverTypeName === 'Home' || s.faction === 'HOME'));
-        const depthsVisible = bfsFrom(home?.id, adjVisible);
-        const depthsAll     = bfsFrom(home?.id, adjAll);
+        const visible = bfsFrom(home?.id, adjVisible);
+        const all     = bfsFrom(home?.id, adjAll);
+        const depthsVisible = visible.depths;
+        const depthsAll     = all.depths;
+        // id → name lookup for parent name materialisation.
+        const nameById = {};
+        for (const s of servers) if (s && s.id) nameById[s.id] = s.serverName;
 
         return {
             home: home ? home.serverName : null,
@@ -457,22 +470,36 @@
             // Timestamp so UI can show last-refresh time (helps confirm the
             // Refresh button actually fired even when topology didn't change).
             updatedAt: Date.now(),
-            servers: servers.map((s) => ({
-                id: s.id,
-                name: s.serverName,
-                // depth: visible-edge BFS if reachable, else fall back to
-                // all-edges BFS (so D4RK/SRM still show a finite number).
-                depth: depthsVisible[s.id] ?? depthsAll[s.id] ?? null,
-                // viaHidden: true when the only path from HOME goes through
-                // a gateway edge marked isHidden by the server (D4RK side
-                // network etc.). UI can use this for visual distinction.
-                viaHidden: depthsVisible[s.id] === undefined && depthsAll[s.id] !== undefined,
-                faction: s.faction,
-                cluster: s.serverCluster,
-                marketId: s.marketId || null,
-                canSetEndpoint: !!s.canSetEndpoint,
-                isInMaintenance: !!s.isInMaintenance,
-            })),
+            servers: servers.map((s) => {
+                // Pick the parent from whichever BFS first found this node.
+                // Visible-tree parent wins when available; the all-edges
+                // tree fills in for nodes only reachable via a hidden edge
+                // (D4RK side network).
+                const pid = visible.parents[s.id] !== undefined
+                    ? visible.parents[s.id]
+                    : all.parents[s.id];
+                return {
+                    id: s.id,
+                    name: s.serverName,
+                    // depth: visible-edge BFS if reachable, else fall back to
+                    // all-edges BFS (so D4RK/SRM still show a finite number).
+                    depth: depthsVisible[s.id] ?? depthsAll[s.id] ?? null,
+                    // parentName: previous hop on the BFS path from HOME.
+                    // null for HOME itself or for orphaned nodes. Used by
+                    // reachability.js to walk the path and check K/D state
+                    // on every transit node, not just the destination.
+                    parentName: pid !== undefined ? (nameById[pid] || null) : null,
+                    // viaHidden: true when the only path from HOME goes through
+                    // a gateway edge marked isHidden by the server (D4RK side
+                    // network etc.). UI can use this for visual distinction.
+                    viaHidden: depthsVisible[s.id] === undefined && depthsAll[s.id] !== undefined,
+                    faction: s.faction,
+                    cluster: s.serverCluster,
+                    marketId: s.marketId || null,
+                    canSetEndpoint: !!s.canSetEndpoint,
+                    isInMaintenance: !!s.isInMaintenance,
+                };
+            }),
         };
     }
 

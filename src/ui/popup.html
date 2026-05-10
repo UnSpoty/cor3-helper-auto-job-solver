@@ -53,6 +53,15 @@
     <script src="components/timer.js"></script>
     <script src="components/module-card.js"></script>
     <script src="components/log-viewer.js"></script>
+    <script src="components/network-map.js"></script>
+
+    <!-- Phase 4: orchestrator + log-export run in the isolated content script
+         too, but the popup needs read-only access to STATE_LABELS/STATES and
+         the buildDebugBundle helper. action-cooldown is loaded for symmetry
+         (its Bus posts are no-ops here). -->
+    <script src="../modules/automation/auto-jobs/action-cooldown.js"></script>
+    <script src="../modules/automation/auto-jobs/log-export.js"></script>
+    <script src="../modules/automation/auto-jobs/orchestrator.js"></script>
 
     <script src="sections/overview.js"></script>
     <script src="sections/expeditions.js"></script>

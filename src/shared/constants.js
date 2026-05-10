@@ -101,10 +101,24 @@
             // Job-flow signals (MAIN → isolated)
             MINIGAME_DONE: 'COR3_JOB_MINIGAME_DONE',
             MINIGAME_TIMEOUT: 'COR3_JOB_MINIGAME_TIMEOUT',
+            // Unified flow result. Carries { success, didWork, reason }.
+            // success=true,didWork=true   → orchestrator sends COR3_COMPLETE_JOB.
+            // success=true,didWork=false  → permanent reject (structurally
+            //   nothing to do — log not in list, no section on server, etc).
+            //   No completion sent. UI shows the reason next to the job.
+            // success=false               → runtime crash/timeout — retry once,
+            //   then permanent reject with runtime details.
+            // sendDone/sendTimeout in flows/_shared.js are thin wrappers over
+            // sendResult; flows can adopt the new contract incrementally.
+            MINIGAME_RESULT: 'COR3_JOB_MINIGAME_RESULT',
             KD_DETECTED: 'COR3_JOB_KD_DETECTED',
             SERVER_UNREACHABLE: 'COR3_SERVER_UNREACHABLE',
             LOG: 'COR3_JOB_LOG',
             AUTOJOBS_ACTIVE_CHANGED: 'COR3_AUTOJOBS_ACTIVE_CHANGED',
+            // Orchestrator → UI: a state transition just occurred. Carries
+            // { from, to, reason?, ts }. Used by the popup to render the
+            // state pill, "next state" hint, and the state-history timeline.
+            STATE_TRANSITIONED: 'COR3_AUTOJOBS_STATE_TRANSITIONED',
         },
     };
 
@@ -154,7 +168,22 @@
         // Auto-jobs runtime
         AUTOJOBS_STATE: 'autoJobsState',
         AUTOJOBS_QUEUE: 'autoJobsQueue',
-        BUGGED_JOBS: 'buggedJobIds',
+        BUGGED_JOBS: 'buggedJobIds',  // legacy TTL-based; replaced by AJ_REJECTED_JOBS in Phase 3
+        // Phase 2/3: per-cycle reachability snapshot
+        // Shape: { computedAt, markets: { home: {reachable, blockers, path}, dark, srm }, servers: {...} }
+        AJ_REACHABILITY: 'ajReachability',
+        // Phase 2/3: lazy-learned per-server capabilities (e.g. whether D4RK
+        // server has a Logs tab). Shape: { [serverName]: { hasLogs?: bool, ... } }
+        AJ_SERVER_CAPS: 'ajServerCaps',
+        // Phase 3: permanent rejects for *this cycle*. No TTL — auto-cleared
+        // when the job vanishes from markets, or via UI "Clear" button.
+        // Shape: { [jobId]: { reason, since, descriptor } }
+        AJ_REJECTED_JOBS: 'ajRejectedJobs',
+        // Phase 4: ring buffer of the last N state transitions (LIMITS.STATE_HISTORY_RING).
+        // Shape: [{ ts, from, to, reason? }, …]. Persisted so the popup can render the
+        // timeline without an open subscription to MSG.JOB.STATE_TRANSITIONED (popup is
+        // a separate context from the orchestrator).
+        AJ_STATE_HISTORY: 'ajStateHistory',
 
         // Solver runtime
         DAILY_HACK_LOG: 'dailyHackLog',
@@ -253,8 +282,17 @@
     const LIMITS = {
         LOG_RING_PER_MODULE: 200,    // entries kept per module in cor3_logs
         ERRORS_RING: 200,             // entries in cor3_errors
-        BUGGED_JOB_TTL_MS: 2 * 60 * 60 * 1000,  // 2h
+        BUGGED_JOB_TTL_MS: 2 * 60 * 60 * 1000,  // 2h — legacy, removed in Phase 3
         AUTOJOBS_STATE_TTL_MS: 5 * 60 * 1000,   // 5min
+        // Buffer added to a server's K/D MaintenanceTimer before we attempt to
+        // reach it again. Covers timer-text rounding + WS staleness.
+        KD_BUFFER_MS: 5 * 60 * 1000,
+        // Default cooldown between distinct auto-jobs actions (state
+        // transitions, flow start, heavy SAI clicks). Per-call override
+        // available via cooldown.gate(label, { override: ms }).
+        ACTION_COOLDOWN_MS: 3000,
+        // Auto-jobs state-history ring buffer (UI timeline)
+        STATE_HISTORY_RING: 20,
     };
 
     root.COR3.constants = { MSG, STORAGE_LOCAL, STORAGE_SYNC, FLOW, LOG_LEVEL, CATEGORY, LIMITS };

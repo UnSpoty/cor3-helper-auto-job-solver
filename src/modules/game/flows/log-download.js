@@ -14,7 +14,21 @@
 
         const sai = await SAI.findOrOpenSai(serverName);
         if (!sai) { flows.sendTimeout(jobId, marketId, { transient: true }); flows.setWatching(false); return; }
-        if (!await SAI.navigateToSection(sai, SAI.SEL.LOGS)) { flows.sendTimeout(jobId, marketId); flows.setWatching(false); return; }
+
+        // navigateToSection clicks the Logs tab. On servers that have NO
+        // Logs section at all (D4RK), the click silently no-ops and we end
+        // up acting on whatever tab was open. Detect this immediately so
+        // we don't fire "row not found" against unrelated rows. The
+        // orchestrator listens for reason='no-logs-section' and caches the
+        // capability in AJ_SERVER_CAPS so the planner can refuse the same
+        // job-server pair next cycle without round-tripping.
+        const navigated = await SAI.navigateToSection(sai, SAI.SEL.LOGS);
+        if (!navigated || !sai.querySelector(SAI.SEL.LOGS)) {
+            flows.userLog(`Log Download: server "${serverName}" has no Logs section — permanently skipping`, 'warn');
+            flows.sendResult(jobId, marketId, { success: true, didWork: false, reason: 'no-logs-section' });
+            flows.setWatching(false);
+            return;
+        }
         if (!await SAI.waitForSaiContent(sai)) { flows.sendTimeout(jobId, marketId); flows.setWatching(false); return; }
 
         const downloadCount = (Array.isArray(logSeqs) && logSeqs.length > 0) ? logSeqs.length : 1;
@@ -67,16 +81,23 @@
                 downloadedCount++;
             }
         } else {
-            flows.userLog('Log Download: no logName or logSeqs — aborting', 'error');
-            flows.sendTimeout(jobId, marketId);
+            // Both logName and logSeqs missing — orchestrator handed us a job
+            // it shouldn't have. Structural reject so the next planner pass
+            // skips it permanently.
+            flows.userLog('Log Download: no logName or logSeqs — permanently skipping', 'error');
+            flows.sendResult(jobId, marketId, { success: true, didWork: false, reason: 'no-log-target' });
             flows.setWatching(false);
             return;
         }
 
         if (root.__jobManagerAbort) { flows.setWatching(false); return; }
         if (downloadedCount === 0) {
-            flows.userLog('Log Download: nothing downloaded', 'error');
-            flows.sendTimeout(jobId, marketId);
+            // No matching log row was visible. This is the "log not in list"
+            // case the user complained about — don't keep retrying it on a
+            // 2 h cooldown, surface it as a permanent skip until the markets
+            // refresh and confirm the job is gone (or comes back).
+            flows.userLog(`Log Download: target log(s) not in list on "${serverName}" — permanently skipping`, 'warn');
+            flows.sendResult(jobId, marketId, { success: true, didWork: false, reason: 'log-not-in-list' });
             flows.setWatching(false);
             return;
         }
