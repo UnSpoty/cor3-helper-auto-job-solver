@@ -57,10 +57,13 @@
     const ROW_PX = 54;
     const COLOR_LIT = '#76C1D1';
     const COLOR_EMPTY = '#00121D';
-    // Minimum revealed-cell matches required to commit on a "unique
-    // candidate" partial. With only 1-2 cells matched the position is
-    // still ambiguous (next reveal might split it into multiple anchors
-    // or invalidate this one). User-tuned rule: 3+ glyphs = confident.
+    // Commit thresholds tuned with user feedback ("1 = nothing,
+    // 3 = confident enough to try, 5+ = fire even with alternatives"):
+    //   STRONG_PARTIAL_MATCH: any candidate with this many matches
+    //     wins, even when other candidates have the same anchor sig.
+    //   MIN_PARTIAL_MATCH: candidate needs to be either the only one
+    //     left OR dominant (ahead of second-best by >=2) to commit.
+    const STRONG_PARTIAL_MATCH = 5;
     const MIN_PARTIAL_MATCH = 3;
 
     // ─── Geometry helpers ────────────────────────────────────────────────
@@ -493,20 +496,31 @@
                 const complete = candidates.find((c) => c.match === total);
                 if (complete) return finish({ best: complete, reason: 'complete' });
 
-                // 2. Exactly one candidate survives AND it has at least
-                //    MIN_PARTIAL_MATCH cells revealed — commit. User
-                //    rule: "1 match = nothing useful, 3 confirmed
-                //    glyphs is enough to be confident". The
-                //    placeholder-strict filter keeps singletons
-                //    trustworthy once they pass this threshold.
-                const onlyCand = candidates.length === 1 ? candidates[0] : null;
-                if (onlyCand && onlyCand.match >= MIN_PARTIAL_MATCH) {
-                    return finish({ best: onlyCand, reason: 'unique-partial' });
+                const best = candidates[0]; // sorted desc by match
+                const second = candidates[1];
+
+                // 2. Strong partial — high match wins even against
+                //    alternatives. With 5+ revealed cells matched the
+                //    chance of a coincidental same-anchor match
+                //    elsewhere is negligible.
+                if (best && best.match >= STRONG_PARTIAL_MATCH) {
+                    return finish({ best, reason: 'strong-partial' });
                 }
 
-                // 3. Elimination fallback — covers the case where the
-                //    sig-anchor filter rejected all positive candidates
-                //    but elimination narrows to one.
+                // 3. Mid partial — needs to be unique OR dominate the
+                //    runner-up by at least 2 cells. Dominance check
+                //    lets us fire even when several anchors still
+                //    survive but one is clearly the answer.
+                if (best && best.match >= MIN_PARTIAL_MATCH) {
+                    const isUnique = candidates.length === 1;
+                    const isDominant = !second || best.match - second.match >= 2;
+                    if (isUnique || isDominant) {
+                        return finish({ best, reason: isUnique ? 'unique-partial' : 'dominant-partial' });
+                    }
+                }
+
+                // 4. Elimination fallback when sig-anchor filtering
+                //    has zero positives but elimination narrows to one.
                 if (candidates.length === 0) {
                     const elim = findByElimination(excludeKeys);
                     if (elim.length === 1) return finish({ best: elim[0], reason: 'elimination' });
