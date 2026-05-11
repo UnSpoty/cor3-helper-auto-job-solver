@@ -1,8 +1,12 @@
 // src/modules/game/flows/log-download.js
-// Job type: log_download. Downloads log entries by seq (preferred) or name.
-// Seq is the row's positional index as the server expects it; matching by
-// name alone breaks when two log rows share a name (May 2026 reports) and
-// the server then rejects `complete` with `job-conditions-not-met`.
+// Job type: log_download. Matches log rows by NAME first; uses logSeqs only
+// to disambiguate when several rows share a name.
+//
+// We tried "seq-first" briefly (May 2026) after a duplicate-name complaint,
+// but a follow-up showed seq from the server doesn't always map to a
+// position in the visible DOM list (virtualised list / server-side absolute
+// seq) — so seq-first regressed the common case where only one row matches
+// the name. Name-first is the conservative baseline; seq is the tiebreaker.
 
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
@@ -34,14 +38,50 @@
         }
         if (!await SAI.waitForSaiContent(sai)) { flows.sendTimeout(jobId, marketId); flows.setWatching(false); return; }
 
-        const useSeqs = Array.isArray(logSeqs) && logSeqs.length > 0;
-        const downloadCount = useSeqs ? logSeqs.length : 1;
-        const label = useSeqs ? `seq [${logSeqs.join(', ')}]${logName ? ` ("${logName}")` : ''}` : `name "${logName}"`;
+        const haveSeqs = Array.isArray(logSeqs) && logSeqs.length > 0;
+        const downloadCount = haveSeqs ? logSeqs.length : 1;
+        const label = logName
+            ? `name "${logName}"${haveSeqs ? ` (seq tiebreaker [${logSeqs.join(', ')}])` : ''}`
+            : `seq [${logSeqs.join(', ')}]`;
         flows.userLog(`Log Download: ${label}, downloading ${downloadCount}`, 'info');
 
         let downloadedCount = 0;
 
-        if (useSeqs) {
+        if (logName) {
+            for (let i = 0; i < downloadCount && !root.__jobManagerAbort; i++) {
+                let rows = [];
+                for (let attempt = 0; attempt < 15 && !root.__jobManagerAbort; attempt++) {
+                    rows = SAI.findAllLogRowsByName(sai, logName);
+                    if (rows.length > 0) break;
+                    await dom.sleep(300);
+                }
+                let row = null;
+                if (rows.length === 0) {
+                    mod.warn(`no row found by name: ${logName}`);
+                    flows.userLog(`Log Download: name "${logName}" not in list`, 'error');
+                    break;
+                }
+                if (rows.length === 1) {
+                    row = rows[0];
+                } else if (haveSeqs && Number.isInteger(logSeqs[i])) {
+                    // Duplicate names — try seq as a positional tiebreaker.
+                    // Only accept the seq-row if it's one of the name matches,
+                    // otherwise the seq is server-absolute and meaningless here.
+                    const seqRow = SAI.findLogRowByIndex(sai, logSeqs[i]);
+                    row = (seqRow && rows.includes(seqRow)) ? seqRow : (rows[i] || rows[0]);
+                } else {
+                    row = rows[i] || rows[0];
+                }
+                const downloadBtn = row.querySelector(SAI.SEL.DOWNLOAD_ICON)?.closest('button');
+                if (!downloadBtn) {
+                    flows.userLog(`Log Download: download button not found for row ${i + 1}`, 'error');
+                    break;
+                }
+                downloadBtn.click();
+                await dom.sleep(700);
+                downloadedCount++;
+            }
+        } else if (haveSeqs) {
             for (let i = 0; i < logSeqs.length && !root.__jobManagerAbort; i++) {
                 let row = null;
                 for (let attempt = 0; attempt < 15 && !root.__jobManagerAbort; attempt++) {
@@ -56,29 +96,6 @@
                 const downloadBtn = row.querySelector(SAI.SEL.DOWNLOAD_ICON)?.closest('button');
                 if (!downloadBtn) {
                     flows.userLog(`Log Download: download button not found for seq ${logSeqs[i]}`, 'error');
-                    break;
-                }
-                downloadBtn.click();
-                await dom.sleep(700);
-                downloadedCount++;
-            }
-        } else if (logName) {
-            for (let i = 0; i < downloadCount && !root.__jobManagerAbort; i++) {
-                let rows = [];
-                for (let attempt = 0; attempt < 15 && !root.__jobManagerAbort; attempt++) {
-                    rows = SAI.findAllLogRowsByName(sai, logName);
-                    if (rows.length > i) break;
-                    await dom.sleep(300);
-                }
-                const row = rows[i] || null;
-                if (!row) {
-                    mod.warn(`row ${i} not found for: ${logName}`);
-                    flows.userLog(`Log Download: row ${i + 1}/${downloadCount} not found`, 'error');
-                    break;
-                }
-                const downloadBtn = row.querySelector(SAI.SEL.DOWNLOAD_ICON)?.closest('button');
-                if (!downloadBtn) {
-                    flows.userLog(`Log Download: download button not found for row ${i + 1}`, 'error');
                     break;
                 }
                 downloadBtn.click();
