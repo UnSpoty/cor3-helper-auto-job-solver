@@ -29,6 +29,7 @@
     "scripts": [
       "src/shared/platform.js",
       "src/shared/constants.js",
+      "src/shared/build-info.js",
       "src/core/bus.js",
       "src/core/store.js",
       "src/core/logger.js",
@@ -48,6 +49,7 @@
       "js": [
         "src/shared/platform.js",
         "src/shared/constants.js",
+        "src/shared/build-info.js",
         "src/shared/dom.js",
         "src/shared/ws-frames.js",
         "src/shared/errors.js",
@@ -89,6 +91,7 @@
       "js": [
         "src/shared/platform.js",
         "src/shared/constants.js",
+        "src/shared/build-info.js",
         "src/shared/dom.js",
         "src/shared/ws-frames.js",
         "src/core/bus.js",

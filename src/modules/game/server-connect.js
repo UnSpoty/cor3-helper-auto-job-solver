@@ -67,6 +67,57 @@
     //
     // No-op fast path when endpoint was already HOME (zero cost on the
     // common case where ensureHome doesn't actually flip anything).
+    // Diagnostic snapshot captured when a Connect attempt is rejected by the
+    // game. Goal: when a user reports "Connect btn reappeared (rejected)"
+    // 3× in a row → HALT, the debug bundle should already contain enough
+    // state to tell us *why* the game refused (K/D, side-panel error text,
+    // item visual flags, blockers on path). Cheap — single tick, no waits.
+    function captureRejectSnapshot(serverName, item) {
+        const snap = {};
+        try {
+            if (item) {
+                snap.itemClasses = String(item.className || '').slice(0, 160);
+                const timerNodes = item.querySelectorAll('[data-sentry-component*="Timer"], [data-sentry-component*="Maintenance"]');
+                if (timerNodes.length) {
+                    snap.timers = Array.from(timerNodes).map((n) => ({
+                        comp: n.getAttribute('data-sentry-component'),
+                        hasSvg: !!n.querySelector('svg'),
+                        text: (n.textContent || '').trim().slice(0, 40),
+                    }));
+                }
+            }
+            const panelName = document.querySelector(NM.SEL.PANEL_NAME);
+            const panel = panelName && (panelName.closest('aside')
+                || panelName.closest('[class*="Panel"]')
+                || panelName.closest('[class*="panel"]')
+                || (panelName.parentElement && panelName.parentElement.parentElement));
+            if (panel) {
+                snap.panelText = (panel.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 280);
+            }
+            const connectBtn = document.querySelector(SEL.CONNECT_BTN_NEW) || document.querySelector(NM.SEL.CONNECT_BTN);
+            if (connectBtn) {
+                const btn = connectBtn.closest('button') || connectBtn;
+                snap.connectBtn = {
+                    text: (btn.textContent || '').trim().slice(0, 60),
+                    disabled: !!btn.disabled,
+                    classes: String(btn.className || '').slice(0, 120),
+                    ariaLabel: btn.getAttribute('aria-label') || null,
+                };
+            }
+            if (NM.checkServerKD) {
+                const kd = NM.checkServerKD(serverName);
+                if (kd) snap.serverKD = kd;
+            }
+            if (NM.listServersOnKD) {
+                const blockers = NM.listServersOnKD(serverName);
+                if (blockers && blockers.length) snap.kdBlockersOnPath = blockers;
+            }
+        } catch (e) {
+            snap.snapErr = String(e && e.message || e);
+        }
+        return snap;
+    }
+
     async function ensureHomeWithSettle(dbg) {
         if (typeof root.__cor3EnsureHomeEndpoint !== 'function') return;
         const before = (typeof root.__cor3CurrentEndpoint === 'string')
@@ -238,13 +289,15 @@
                 return { saiOpened: true };
             }
             if (queryConnectBtn()) {
-                dbg('step 5 FAIL — Connect btn reappeared (rejected)');
+                const snap = captureRejectSnapshot(serverName, item);
+                dbg('step 5 FAIL — Connect btn reappeared (rejected) snap=' + JSON.stringify(snap));
                 log('warn', `Connect button reappeared — rejected for "${serverName}"`);
                 Bus.window.post(MSG.JOB.SERVER_UNREACHABLE, { serverName });
                 return { saiOpened: false, fatal: true };
             }
             if (root.__serverPathFailed > (root.__connectStartedAt || 0)) {
-                dbg('step 5 FAIL — no-path-to-server WS error');
+                const snap = captureRejectSnapshot(serverName, item);
+                dbg('step 5 FAIL — no-path-to-server WS error snap=' + JSON.stringify(snap));
                 log('warn', `No path to server (WS): "${serverName}"`);
                 root.__serverPathFailed = 0;
                 const blockedByKD = NM.listServersOnKD(serverName);

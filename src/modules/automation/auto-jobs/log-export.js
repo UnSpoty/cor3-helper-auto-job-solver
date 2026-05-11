@@ -112,6 +112,10 @@
 
         const lines = [];
         lines.push(`=== COR3 Helper / Auto-Jobs debug log — exported ${new Date().toISOString()} ===`);
+        const bi = root.COR3 && root.COR3.buildInfo;
+        const mv = (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getManifest)
+            ? (chrome.runtime.getManifest().version || '?') : '?';
+        lines.push(`Build: ${bi?.commit || 'unknown'} (${bi?.date || '?'})     ExtVersion: ${mv}`);
         lines.push(`WebVersion: ${local[sl.WEB_VERSION] || '?'}     SystemVersion: ${local[sl.SYSTEM_VERSION] || '?'}`);
         lines.push('');
         lines.push('Settings (redacted):');
