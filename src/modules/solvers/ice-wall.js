@@ -196,7 +196,15 @@
         // (e.g. game hasn't loaded glyphs yet), bail.
         const revealedTargets = targetCells.filter((c) => c.state === 'revealed');
         if (revealedTargets.length === 0) return { candidates: [], total: targetCells.length, revealedTotal: 0 };
-        const targetAnchor = revealedTargets[0];
+        // Anchor selection: prefer a revealed cell whose signature is UNIQUE
+        // within the target. Non-unique anchors (e.g. when target has a
+        // duplicate glyph) match more board cells, producing false-positive
+        // partial candidates that can sneak past the matcher. A unique
+        // anchor restricts the search to the actual shape position.
+        const sigCounts = new Map();
+        for (const t of revealedTargets) sigCounts.set(t.sig, (sigCounts.get(t.sig) || 0) + 1);
+        const targetAnchor =
+            revealedTargets.find((t) => sigCounts.get(t.sig) === 1) || revealedTargets[0];
         const targetClick = pickClickTarget(targetCells);
 
         const boardCells = readBoardCells();
@@ -261,7 +269,10 @@
         if (targetCells.length === 0) return [];
         const revealedTargets = targetCells.filter((c) => c.state === 'revealed');
         if (revealedTargets.length === 0) return [];
-        const targetAnchor = revealedTargets[0];
+        const sigCounts = new Map();
+        for (const t of revealedTargets) sigCounts.set(t.sig, (sigCounts.get(t.sig) || 0) + 1);
+        const targetAnchor =
+            revealedTargets.find((t) => sigCounts.get(t.sig) === 1) || revealedTargets[0];
         const targetClick = pickClickTarget(targetCells);
 
         const boardCells = readBoardCells();
@@ -331,8 +342,8 @@
         overlay.setAttribute('pointer-events', 'none');
 
         const color = confident ? '#FFB857' : '#FFE066';
-        const cellFill = confident ? '0.10' : '0.05';
-        const clickFill = confident ? '0.45' : '0.20';
+        const cellFill = confident ? '0.20' : '0.08';
+        const clickFill = confident ? '0.55' : '0.25';
         const dash = confident ? null : '6,4';
 
         for (const c of candidate.cells) {
@@ -373,21 +384,39 @@
     }
 
     /**
-     * Single `click` dispatch with proper coords. The legacy
-     * mousedown/mouseup/click triplet was unnecessary — competitors
-     * dispatch just one click. Using one event also eliminates any
-     * chance of double-trigger.
+     * Click dispatch. The May-2026 refactor moved interactivity to
+     * pointer events; sending just `click` doesn't trigger the React
+     * handler reliably. We fire pointerdown → pointerup → click as a
+     * triplet, all at the geometric centre of the cell's bounding
+     * triangle. Bounding triangle has pointer-events:auto in the new
+     * DOM, but if it ever has pointer-events:none we'd need to fall
+     * back to the parent <g>. Verified live 2026-05-11.
      */
     async function attemptClick(glyphGroup) {
         const tri = glyphGroup.querySelector(SEL.TRIANGLE);
-        if (!tri) return false;
-        const r = tri.getBoundingClientRect();
-        tri.dispatchEvent(new MouseEvent('click', {
-            bubbles: true, cancelable: true, view: window,
-            clientX: r.left + r.width / 2,
-            clientY: r.top + r.height / 2,
-            button: 0,
-        }));
+        const target = tri || glyphGroup;
+        if (!target) return false;
+        const r = target.getBoundingClientRect();
+        const x = r.left + r.width / 2;
+        const y = r.top + r.height / 2;
+        const fire = (type, EventCtor, extra) => {
+            target.dispatchEvent(new EventCtor(type, {
+                bubbles: true, cancelable: true, view: window,
+                clientX: x, clientY: y, button: 0, buttons: 1,
+                ...extra,
+            }));
+        };
+        // PointerEvent first (what React 17+ listens to via onPointerDown),
+        // then MouseEvent click as a fallback for any legacy handler.
+        try {
+            fire('pointerdown', PointerEvent, { pointerType: 'mouse', isPrimary: true });
+            fire('pointerup', PointerEvent, { pointerType: 'mouse', isPrimary: true });
+        } catch (_) {
+            // Some browsers may not have PointerEvent — degrade to mouse.
+            fire('mousedown', MouseEvent);
+            fire('mouseup', MouseEvent);
+        }
+        fire('click', MouseEvent);
         return true;
     }
 
@@ -427,15 +456,14 @@
 
                 const { candidates, total } = findShapeCandidates(excludeKeys);
 
+                // Only commit on a FULL match — i.e. every target cell
+                // (including wildcard placeholders) is satisfied with
+                // zero mismatches and zero unknowns. Committing on a
+                // partial-but-unique candidate sometimes fires before
+                // the game has finished revealing the shape on the
+                // board, picking a wrong anchor. Wait for full reveal.
                 const complete = candidates.find((c) => c.match === total);
                 if (complete) return finish({ best: complete, reason: 'complete' });
-
-                if (candidates.length === 1) return finish({ best: candidates[0], reason: 'unique' });
-
-                if (candidates.length === 0) {
-                    const elim = findByElimination(excludeKeys);
-                    if (elim.length === 1) return finish({ best: elim[0], reason: 'elimination' });
-                }
 
                 if (onTentative && candidates.length > 0) onTentative(candidates[0]);
             };
