@@ -150,23 +150,23 @@
 
     /**
      * Pick the cell within the target shape the user should click.
-     * Rule: lowest cell (max row), tie-broken by col closest to the
-     * median col of that bottom row. For a sub-triangle this picks
-     * the bottom-row centre.
-     *
-     * (Earlier this commit picked the apex on the assumption it matched
-     * the game's green hover-highlight, but that was the cursor/hover
-     * indicator, not the click target. The legacy bottom-centre rule is
-     * what actually advances the counter.)
+     * Rule: cell closest to the geometric centroid of the shape. For a
+     * symmetric sub-triangle this lands on the middle cell — what the
+     * user described as "centre + bottom-ish". Ties prefer UP-pointing
+     * cells, then lower row, then leftmost col.
      */
     function pickClickTarget(targetCells) {
         if (targetCells.length === 0) return null;
-        const maxRow = Math.max(...targetCells.map((c) => c.row));
-        const bottom = targetCells.filter((c) => c.row === maxRow);
-        if (bottom.length === 1) return bottom[0];
-        const meanCol = bottom.reduce((s, c) => s + c.col, 0) / bottom.length;
-        return bottom.reduce((a, b) =>
-            (Math.abs(a.col - meanCol) <= Math.abs(b.col - meanCol) ? a : b));
+        const cx = targetCells.reduce((s, c) => s + c.col, 0) / targetCells.length;
+        const cy = targetCells.reduce((s, c) => s + c.row, 0) / targetCells.length;
+        const dist = (c) => (c.col - cx) ** 2 + (c.row - cy) ** 2;
+        return targetCells.reduce((a, b) => {
+            const da = dist(a), db = dist(b);
+            if (da !== db) return da < db ? a : b;
+            if (a.mirror !== b.mirror) return a.mirror ? b : a;   // prefer UP
+            if (a.row !== b.row) return a.row > b.row ? a : b;    // prefer lower
+            return a.col < b.col ? a : b;
+        });
     }
 
     function makeBoardMap(boardCells) {
@@ -419,13 +419,14 @@
      * DOM, but if it ever has pointer-events:none we'd need to fall
      * back to the parent <g>. Verified live 2026-05-11.
      */
-    async function attemptClick(glyphGroup) {
+    async function attemptClick(glyphGroup, mod) {
         const tri = glyphGroup.querySelector(SEL.TRIANGLE);
         const target = tri || glyphGroup;
         if (!target) return false;
         const r = target.getBoundingClientRect();
         const x = r.left + r.width / 2;
         const y = r.top + r.height / 2;
+        if (mod) mod.debug(`click dispatch: target=<${target.tagName}> at (${x.toFixed(0)},${y.toFixed(0)}) box=${r.width.toFixed(0)}x${r.height.toFixed(0)}`);
         const fire = (type, EventCtor, extra) => {
             target.dispatchEvent(new EventCtor(type, {
                 bubbles: true, cancelable: true, view: window,
@@ -580,7 +581,7 @@
             const counterCur = readCounter();
             mod.info(`commit (${reason}): anchor=(${best.col},${best.row}) click=(${best.clickCol},${best.clickRow}) match=${best.match ?? 0}/${best.total} attempt=${attempt + 1}/${MAX_RETRIES}`);
             drawOverlay(best, true);
-            await attemptClick(best.clickGroup);
+            await attemptClick(best.clickGroup, mod);
 
             const ticked = await dom.waitFor(() => {
                 const cc = readCounter();
