@@ -149,15 +149,24 @@
     }
 
     /**
-     * Pick the cell within the target shape that the user should click.
-     * Rule: topmost-leftmost cell (the "anchor" / apex). Observed live:
-     * when hover lands inside a matched shape on the board, the game
-     * highlights this cell green.
+     * Pick the cell within the target shape the user should click.
+     * Rule: lowest cell (max row), tie-broken by col closest to the
+     * median col of that bottom row. For a sub-triangle this picks
+     * the bottom-row centre.
+     *
+     * (Earlier this commit picked the apex on the assumption it matched
+     * the game's green hover-highlight, but that was the cursor/hover
+     * indicator, not the click target. The legacy bottom-centre rule is
+     * what actually advances the counter.)
      */
     function pickClickTarget(targetCells) {
         if (targetCells.length === 0) return null;
-        return targetCells.reduce((a, b) =>
-            (a.row < b.row || (a.row === b.row && a.col < b.col)) ? a : b);
+        const maxRow = Math.max(...targetCells.map((c) => c.row));
+        const bottom = targetCells.filter((c) => c.row === maxRow);
+        if (bottom.length === 1) return bottom[0];
+        const meanCol = bottom.reduce((s, c) => s + c.col, 0) / bottom.length;
+        return bottom.reduce((a, b) =>
+            (Math.abs(a.col - meanCol) <= Math.abs(b.col - meanCol) ? a : b));
     }
 
     function makeBoardMap(boardCells) {
@@ -230,7 +239,13 @@
                 if (!bc) { mismatch++; continue; }
 
                 if (t.state !== 'revealed') {
-                    // Target placeholder/empty → wildcard, always satisfied
+                    // Target placeholder/empty positions mark "blanks" in
+                    // the pattern: that board cell must NOT be revealed
+                    // with a different glyph. Accept board states empty
+                    // or placeholder (both mean "no committed glyph
+                    // there"). If board has revealed a unique glyph in
+                    // that slot, this candidate is at the wrong position.
+                    if (bc.state === 'revealed') { mismatch++; continue; }
                     match++;
                     continue;
                 }
@@ -295,7 +310,10 @@
                 const bc = boardMap.get(`${cc},${cr},${t.mirror}`);
                 cells.push({ col: cc, row: cr, mirror: t.mirror, isClick: t === targetClick });
                 if (!bc) { eliminated = true; break; }
-                if (t.state !== 'revealed') continue;          // wildcard
+                if (t.state !== 'revealed') {
+                    if (bc.state === 'revealed') { eliminated = true; break; }
+                    continue;
+                }
                 if (bc.state === 'revealed' && bc.sig !== t.sig) { eliminated = true; break; }
             }
             if (eliminated) continue;
@@ -372,20 +390,6 @@
             if (dash && !c.isClick) path.setAttribute('stroke-dasharray', dash);
             overlay.appendChild(path);
         }
-
-        // Match score readout in the top-left of the wall — easy to spot
-        // whether the solver is waiting (e.g. "5/9") or about to fire
-        // ("9/9"). Helps tell "solver is stuck" from "shape not open yet".
-        const matchText = `${candidate.match ?? 0}/${candidate.total}`;
-        const text = document.createElementNS(ns, 'text');
-        text.setAttribute('x', '0');
-        text.setAttribute('y', '-10');
-        text.setAttribute('fill', confident ? '#FFB857' : '#FFE066');
-        text.setAttribute('font-size', '20');
-        text.setAttribute('font-family', 'monospace');
-        text.setAttribute('font-weight', 'bold');
-        text.textContent = `match ${matchText} ${confident ? '✓ click' : '⋯ wait'}`;
-        overlay.appendChild(text);
 
         renderG.appendChild(overlay);
     }
@@ -479,14 +483,26 @@
 
                 const { candidates, total } = findShapeCandidates(excludeKeys);
 
-                // Only commit on a FULL match — i.e. every target cell
-                // (including wildcard placeholders) is satisfied with
-                // zero mismatches and zero unknowns. Committing on a
-                // partial-but-unique candidate sometimes fires before
-                // the game has finished revealing the shape on the
-                // board, picking a wrong anchor. Wait for full reveal.
+                // 1. Full match — strongest signal, commit immediately.
                 const complete = candidates.find((c) => c.match === total);
                 if (complete) return finish({ best: complete, reason: 'complete' });
+
+                // 2. Exactly one candidate survives the matcher → it's
+                //    the only position where the pattern fits even
+                //    partially. Commit early — the round is timed and
+                //    waiting for full reveal usually runs us out.
+                //    The placeholder-strict matching (target blanks
+                //    require board != revealed) keeps false positives
+                //    rare enough that a single survivor is trustworthy.
+                if (candidates.length === 1) return finish({ best: candidates[0], reason: 'unique-partial' });
+
+                // 3. Elimination fallback — covers the case where the
+                //    sig-anchor filter rejected all positive candidates
+                //    but elimination narrows to one.
+                if (candidates.length === 0) {
+                    const elim = findByElimination(excludeKeys);
+                    if (elim.length === 1) return finish({ best: elim[0], reason: 'elimination' });
+                }
 
                 if (onTentative && candidates.length > 0) onTentative(candidates[0]);
             };
