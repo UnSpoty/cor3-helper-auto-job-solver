@@ -328,8 +328,13 @@
     }
 
     /**
-     * Outline each cell of the matched shape; brighten the click target.
-     * tentative = dim yellow / dashed; confident = solid orange.
+     * Outline each cell of the matched shape; the click target gets a
+     * solid red fill at high opacity so the user can always see exactly
+     * where the solver intends to click (regardless of confidence). The
+     * surrounding shape cells use a dim contour.
+     *
+     * tentative (waiting for more reveals) = dashed yellow contour
+     * confident (about to click) = solid orange contour
      */
     function drawOverlay(candidate, confident) {
         const wall = document.querySelector(SEL.WALL);
@@ -341,10 +346,14 @@
         overlay.setAttribute('id', OVERLAY_ID);
         overlay.setAttribute('pointer-events', 'none');
 
-        const color = confident ? '#FFB857' : '#FFE066';
-        const cellFill = confident ? '0.20' : '0.08';
-        const clickFill = confident ? '0.55' : '0.25';
+        const contourColor = confident ? '#FFB857' : '#FFE066';
+        const contourFill = confident ? '0.18' : '0.06';
         const dash = confident ? null : '6,4';
+        // Click cell stays solid red regardless of confidence — that is the
+        // ONE cell the solver intends to click and it must be visible at
+        // a glance.
+        const clickColor = '#FF3333';
+        const clickFill = confident ? '0.70' : '0.55';
 
         for (const c of candidate.cells) {
             const px = c.col * COL_PX;
@@ -355,14 +364,28 @@
                 : `translate(${px}, ${py})`;
             path.setAttribute('transform', transform);
             path.setAttribute('d', TRI_PATH);
-            path.setAttribute('fill', color);
-            path.setAttribute('fill-opacity', c.isClick ? clickFill : cellFill);
-            path.setAttribute('stroke', c.isClick ? '#FFFFFF' : color);
-            path.setAttribute('stroke-width', c.isClick ? '2' : '3');
+            path.setAttribute('fill', c.isClick ? clickColor : contourColor);
+            path.setAttribute('fill-opacity', c.isClick ? clickFill : contourFill);
+            path.setAttribute('stroke', c.isClick ? '#FFFFFF' : contourColor);
+            path.setAttribute('stroke-width', c.isClick ? '3' : '3');
             path.setAttribute('stroke-linejoin', 'round');
-            if (dash) path.setAttribute('stroke-dasharray', dash);
+            if (dash && !c.isClick) path.setAttribute('stroke-dasharray', dash);
             overlay.appendChild(path);
         }
+
+        // Match score readout in the top-left of the wall — easy to spot
+        // whether the solver is waiting (e.g. "5/9") or about to fire
+        // ("9/9"). Helps tell "solver is stuck" from "shape not open yet".
+        const matchText = `${candidate.match ?? 0}/${candidate.total}`;
+        const text = document.createElementNS(ns, 'text');
+        text.setAttribute('x', '0');
+        text.setAttribute('y', '-10');
+        text.setAttribute('fill', confident ? '#FFB857' : '#FFE066');
+        text.setAttribute('font-size', '20');
+        text.setAttribute('font-family', 'monospace');
+        text.setAttribute('font-weight', 'bold');
+        text.textContent = `match ${matchText} ${confident ? '✓ click' : '⋯ wait'}`;
+        overlay.appendChild(text);
 
         renderG.appendChild(overlay);
     }
