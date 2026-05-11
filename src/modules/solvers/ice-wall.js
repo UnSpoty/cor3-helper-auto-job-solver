@@ -57,6 +57,11 @@
     const ROW_PX = 54;
     const COLOR_LIT = '#76C1D1';
     const COLOR_EMPTY = '#00121D';
+    // Minimum revealed-cell matches required to commit on a "unique
+    // candidate" partial. With only 1-2 cells matched the position is
+    // still ambiguous (next reveal might split it into multiple anchors
+    // or invalidate this one). User-tuned rule: 3+ glyphs = confident.
+    const MIN_PARTIAL_MATCH = 3;
 
     // ─── Geometry helpers ────────────────────────────────────────────────
 
@@ -488,14 +493,16 @@
                 const complete = candidates.find((c) => c.match === total);
                 if (complete) return finish({ best: complete, reason: 'complete' });
 
-                // 2. Exactly one candidate survives the matcher → it's
-                //    the only position where the pattern fits even
-                //    partially. Commit early — the round is timed and
-                //    waiting for full reveal usually runs us out.
-                //    The placeholder-strict matching (target blanks
-                //    require board != revealed) keeps false positives
-                //    rare enough that a single survivor is trustworthy.
-                if (candidates.length === 1) return finish({ best: candidates[0], reason: 'unique-partial' });
+                // 2. Exactly one candidate survives AND it has at least
+                //    MIN_PARTIAL_MATCH cells revealed — commit. User
+                //    rule: "1 match = nothing useful, 3 confirmed
+                //    glyphs is enough to be confident". The
+                //    placeholder-strict filter keeps singletons
+                //    trustworthy once they pass this threshold.
+                const onlyCand = candidates.length === 1 ? candidates[0] : null;
+                if (onlyCand && onlyCand.match >= MIN_PARTIAL_MATCH) {
+                    return finish({ best: onlyCand, reason: 'unique-partial' });
+                }
 
                 // 3. Elimination fallback — covers the case where the
                 //    sig-anchor filter rejected all positive candidates
