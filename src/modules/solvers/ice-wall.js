@@ -1,36 +1,41 @@
 // src/modules/solvers/ice-wall.js
 // Auto-solver for the SAI "Porter-lite r4" / ICE WALL Break minigame.
 //
-// Mechanic (verified live, May 2026):
+// Mechanic (verified live on RM7-E1SCP, 2026-05-11 after May-2026 refactor):
 //   • Board = 10-row triangle of 100 small triangles (cells point up or
 //     down; 19-cell-wide bottom row, 1-cell apex). Cells use
 //     `transform="translate(X, Y)"` with optional `scale(1, -1)` for
 //     down-pointing — coords align to a (col*31.5, row*54) grid.
-//   • Target preview = arbitrary shape of N cells. Each cell carries
-//     its own glyph signature.
-//   • Solve = find where on the board the same N cells appear at the
-//     same relative grid positions and matching signatures. 3 rounds
-//     per puzzle (counter 0/3 → 3/3).
-//   • Click target = LOWEST cell (max row) of the matched shape, tie-
-//     broken by closest-to-median col. For a 3-row sub-triangle this is
-//     "bottom-row centre". Verified empirically for the legacy 9-cell
-//     case and matches the centroid-closest-UP rule used by competing
-//     solvers in the cases we tested.
+//   • Each board cell is in one of three states:
+//       - empty:       dark `fill=#00121D` contour, never clickable
+//       - placeholder: cyan outline-only stroke + generic placeholder
+//                      glyph paths (the "closed" state)
+//       - revealed:    contour + a UNIQUE glyph icon. Game reveals new
+//                      cells ~once per second.
+//   • Target preview = 9 cells forming the source pattern. Some target
+//     cells may themselves be placeholders ("wildcard" positions in the
+//     pattern, like `0` in the user's spec).
+//   • Solve = find a position on the board where revealed cells form
+//     the same shape as target with matching glyph signatures (target
+//     placeholder positions accept any board state — wildcards).
+//   • Click target = the topmost-leftmost cell of the matched shape on
+//     the board (the "anchor"). Observed live: on hover over any cell
+//     inside a matched shape the game highlights the apex green.
 //
-// Algorithm (this rewrite, adapted from competitor solver):
-//   1. Read target + board cells in grid coords (col, row, mirror).
-//   2. For each board cell with matching mirror and not in `excludeSet`,
-//      treat it as candidate-anchor and check whether each target cell's
-//      signature appears at the corresponding grid offset.
-//   3. Wait (MutationObserver, 80ms debounce) until either:
-//        a) some candidate has full match → commit
-//        b) exactly one candidate from positive matching → commit
-//        c) elimination matcher narrows to a unique survivor → commit
-//   4. Click the lowest cell of the matched shape. If the counter doesn't
-//      advance within 4s, mark the anchor as bad in `excludeSet` and
-//      retry — up to 20 attempts per round. This is the key robustness
-//      win: even if the click rule is occasionally wrong, retry-by-
-//      exclusion eventually lands on the correct anchor.
+// Algorithm:
+//   1. Read target + board cells with their state (empty/placeholder/
+//      revealed) and pure-glyph signatures.
+//   2. Pick anchor = first revealed target cell (placeholders are
+//      wildcards and can't filter candidates).
+//   3. For each revealed board cell whose sig matches anchor's sig:
+//      verify all 9 target offsets line up — target placeholders
+//      accept any board state, target revealed require board revealed
+//      AND signature match.
+//   4. If a candidate has zero mismatches AND every revealed target
+//      cell is satisfied, commit: click the cell on the board that
+//      corresponds to the topmost-leftmost target cell.
+//   5. Retry-by-exclusion if a click doesn't advance the counter
+//      within 4s.
 //
 // Lives in MAIN world. Logger forwards via Bus.
 
@@ -51,16 +56,27 @@
     const COL_PX = 31.5;
     const ROW_PX = 54;
     const COLOR_LIT = '#76C1D1';
-    const MIN_LIT_PATHS = 4;     // a fully-rendered glyph has 4-9 cyan paths
+    const COLOR_EMPTY = '#00121D';
 
     // ─── Geometry helpers ────────────────────────────────────────────────
 
+    /**
+     * Signature of a cell's glyph icon. Only counts "pure glyph" paths:
+     * fill=#76C1D1, no stroke, no fill-opacity — these are byte-identical
+     * across target and board for the same icon. Contour and background
+     * paths (fill+fo=0.2, stroke=#76C1D1) drift between target/board due
+     * to sub-pixel rendering, so they are excluded.
+     */
     function glyphSignature(glyphGroup) {
         const inner = glyphGroup.children[0];
         const root = (inner && inner.tagName === 'g') ? inner : glyphGroup;
         const shapes = [];
         for (const c of root.children) {
             if (c.dataset && c.dataset.sentryComponent === 'GlyphBoundingTriangle') continue;
+            const f = c.getAttribute('fill');
+            const s = c.getAttribute('stroke');
+            const fo = c.getAttribute('fill-opacity');
+            if (f !== COLOR_LIT || s !== null || fo !== null) continue;
             if (c.tagName === 'path') shapes.push('p:' + (c.getAttribute('d') || ''));
             else if (c.tagName === 'rect') shapes.push('r:' + ['x','y','width','height','transform'].map((a) => c.getAttribute(a) || '').join(','));
         }
@@ -68,14 +84,28 @@
         return shapes.join('|');
     }
 
-    function isGlyphLit(glyphGroup) {
-        let cyan = 0;
-        const all = glyphGroup.querySelectorAll('path, rect');
-        for (const el of all) {
+    /**
+     * Three-way classification of a cell:
+     *   - 'empty':       has fill=#00121D (dark contour, not yet active)
+     *   - 'placeholder': has an outline-only stroke path (closed cell)
+     *   - 'revealed':    neither of the above (shows a unique glyph icon)
+     *
+     * Each board cell goes empty → placeholder → revealed as the game
+     * reveals new glyphs every ~1s. Target placeholder cells act as
+     * wildcards in the matcher (any board state in that position matches).
+     */
+    function cellState(glyphGroup) {
+        let hasOutlineOnly = false, hasEmptyFill = false;
+        for (const el of glyphGroup.querySelectorAll('path, rect')) {
             if (el.dataset && el.dataset.sentryComponent === 'GlyphBoundingTriangle') continue;
-            if (el.getAttribute('fill') === COLOR_LIT) cyan++;
+            const f = el.getAttribute('fill');
+            const s = el.getAttribute('stroke');
+            if (f === null && s === COLOR_LIT) hasOutlineOnly = true;
+            if (f === COLOR_EMPTY) hasEmptyFill = true;
         }
-        return cyan >= MIN_LIT_PATHS;
+        if (hasEmptyFill) return 'empty';
+        if (hasOutlineOnly) return 'placeholder';
+        return 'revealed';
     }
 
     function parseGridPos(transformStr) {
@@ -96,7 +126,7 @@
         for (const g of target.querySelectorAll(':scope > g')) {
             const pos = parseGridPos(g.getAttribute('transform'));
             if (!pos) continue;
-            cells.push({ ...pos, sig: glyphSignature(g) });
+            cells.push({ ...pos, sig: glyphSignature(g), state: cellState(g) });
         }
         return cells;
     }
@@ -111,7 +141,7 @@
             cells.push({
                 ...pos,
                 sig: glyphSignature(g),
-                lit: isGlyphLit(g),
+                state: cellState(g),
                 group: g,
             });
         }
@@ -120,17 +150,14 @@
 
     /**
      * Pick the cell within the target shape that the user should click.
-     * Rule: lowest cell (max row), tie-broken by col closest to the
-     * median col of the bottom row. For the legacy 3-row sub-triangle
-     * this picks the bottom-centre cell.
+     * Rule: topmost-leftmost cell (the "anchor" / apex). Observed live:
+     * when hover lands inside a matched shape on the board, the game
+     * highlights this cell green.
      */
     function pickClickTarget(targetCells) {
         if (targetCells.length === 0) return null;
-        const maxRow = Math.max(...targetCells.map((c) => c.row));
-        const bottom = targetCells.filter((c) => c.row === maxRow);
-        if (bottom.length === 1) return bottom[0];
-        const meanCol = bottom.reduce((s, c) => s + c.col, 0) / bottom.length;
-        return bottom.reduce((a, b) => (Math.abs(a.col - meanCol) <= Math.abs(b.col - meanCol) ? a : b));
+        return targetCells.reduce((a, b) =>
+            (a.row < b.row || (a.row === b.row && a.col < b.col)) ? a : b);
     }
 
     function makeBoardMap(boardCells) {
@@ -142,96 +169,133 @@
     // ─── Candidate matching ──────────────────────────────────────────────
 
     /**
-     * Positive matcher — cells where the board's lit signature matches
-     * the target. Returns { candidates, total } sorted by match count.
-     * Anchors in `excludeKeys` are skipped (used by the retry loop).
+     * Find positions on the board where the target shape fits.
+     *
+     * Matching rules per target cell:
+     *   - target.state === 'revealed':
+     *       board cell at same offset MUST be revealed AND have same sig
+     *   - target.state === 'placeholder' or 'empty':
+     *       wildcard — any board state at that offset accepts
+     *   - any "mismatch" (revealed-target with revealed-board of wrong sig)
+     *     rejects the candidate
+     *   - "unknown" (revealed-target with non-revealed board) doesn't kill
+     *     the candidate but means we have to wait for more reveals
+     *
+     * The candidate is fully committable when `mismatch===0` and every
+     * revealed target cell is satisfied (match === revealedTargetCount).
+     *
+     * Returns { candidates, total, revealedTotal } sorted best-first by
+     * match count.
      */
     function findShapeCandidates(excludeKeys) {
         const targetCells = readTargetCells();
-        if (targetCells.length === 0) return { candidates: [], total: 0 };
-        const targetAnchor = targetCells.reduce((a, b) => (a.row <= b.row ? a : b));
+        if (targetCells.length === 0) return { candidates: [], total: 0, revealedTotal: 0 };
+
+        // Anchor selection: prefer a revealed target cell so we can filter
+        // board candidates by sig. If the target has no revealed cells
+        // (e.g. game hasn't loaded glyphs yet), bail.
+        const revealedTargets = targetCells.filter((c) => c.state === 'revealed');
+        if (revealedTargets.length === 0) return { candidates: [], total: targetCells.length, revealedTotal: 0 };
+        const targetAnchor = revealedTargets[0];
         const targetClick = pickClickTarget(targetCells);
 
         const boardCells = readBoardCells();
         const boardMap = makeBoardMap(boardCells);
 
         const out = [];
-        for (const anchor of boardCells) {
-            if (anchor.mirror !== targetAnchor.mirror) continue;
-            const anchorKey = `${anchor.col},${anchor.row}`;
-            if (excludeKeys && excludeKeys.has(anchorKey)) continue;
+        for (const cand of boardCells) {
+            if (cand.state !== 'revealed') continue;
+            if (cand.mirror !== targetAnchor.mirror) continue;
+            if (cand.sig !== targetAnchor.sig) continue;
+
+            const candKey = `${cand.col},${cand.row}`;
+            if (excludeKeys && excludeKeys.has(candKey)) continue;
 
             let match = 0, mismatch = 0, unknown = 0;
             const cells = [];
             for (const t of targetCells) {
-                const cc = anchor.col + (t.col - targetAnchor.col);
-                const cr = anchor.row + (t.row - targetAnchor.row);
-                const found = boardMap.get(`${cc},${cr},${t.mirror}`);
+                const cc = cand.col + (t.col - targetAnchor.col);
+                const cr = cand.row + (t.row - targetAnchor.row);
+                const bc = boardMap.get(`${cc},${cr},${t.mirror}`);
                 cells.push({ col: cc, row: cr, mirror: t.mirror, isClick: t === targetClick });
-                if (!found) { mismatch++; continue; }
-                if (!found.lit) { unknown++; continue; }
-                if (found.sig === t.sig) match++;
-                else mismatch++;
+
+                if (!bc) { mismatch++; continue; }
+
+                if (t.state !== 'revealed') {
+                    // Target placeholder/empty → wildcard, always satisfied
+                    match++;
+                    continue;
+                }
+                if (bc.state !== 'revealed') { unknown++; continue; }
+                if (bc.sig !== t.sig) { mismatch++; continue; }
+                match++;
             }
             if (mismatch > 0) continue;
             if (match === 0) continue;
 
-            const clickCol = anchor.col + (targetClick.col - targetAnchor.col);
-            const clickRow = anchor.row + (targetClick.row - targetAnchor.row);
+            const clickCol = cand.col + (targetClick.col - targetAnchor.col);
+            const clickRow = cand.row + (targetClick.row - targetAnchor.row);
             const clickCell = boardMap.get(`${clickCol},${clickRow},${targetClick.mirror}`);
             out.push({
-                col: anchor.col, row: anchor.row,
+                col: cand.col, row: cand.row,
                 cells,
-                clickGroup: clickCell ? clickCell.group : anchor.group,
+                clickGroup: clickCell ? clickCell.group : cand.group,
                 clickCol, clickRow, clickMirror: targetClick.mirror,
                 match, unknown, mismatch,
                 total: targetCells.length,
             });
         }
         out.sort((a, b) => b.match - a.match);
-        return { candidates: out, total: targetCells.length };
+        return { candidates: out, total: targetCells.length, revealedTotal: revealedTargets.length };
     }
 
     /**
-     * Elimination matcher — returns candidates with NO mismatches and
-     * all neighbours present, regardless of match count. When positive
-     * matching gives 0 candidates, this can still uniquely identify the
-     * answer if partial reveals already eliminated everything else.
+     * Elimination matcher — kept for the "exactly one survives after
+     * partial reveals" edge case. Returns candidates with no mismatches
+     * regardless of how many cells already matched. Useful when several
+     * candidates have the same partial sig hit and only board reveals
+     * further along will disambiguate.
      */
     function findByElimination(excludeKeys) {
         const targetCells = readTargetCells();
         if (targetCells.length === 0) return [];
-        const targetAnchor = targetCells.reduce((a, b) => (a.row <= b.row ? a : b));
+        const revealedTargets = targetCells.filter((c) => c.state === 'revealed');
+        if (revealedTargets.length === 0) return [];
+        const targetAnchor = revealedTargets[0];
         const targetClick = pickClickTarget(targetCells);
 
         const boardCells = readBoardCells();
         const boardMap = makeBoardMap(boardCells);
 
         const out = [];
-        for (const anchor of boardCells) {
-            if (anchor.mirror !== targetAnchor.mirror) continue;
-            const anchorKey = `${anchor.col},${anchor.row}`;
-            if (excludeKeys && excludeKeys.has(anchorKey)) continue;
+        for (const cand of boardCells) {
+            if (cand.state !== 'revealed') continue;
+            if (cand.mirror !== targetAnchor.mirror) continue;
+            if (cand.sig !== targetAnchor.sig) continue;
+
+            const candKey = `${cand.col},${cand.row}`;
+            if (excludeKeys && excludeKeys.has(candKey)) continue;
 
             let eliminated = false;
             const cells = [];
             for (const t of targetCells) {
-                const cc = anchor.col + (t.col - targetAnchor.col);
-                const cr = anchor.row + (t.row - targetAnchor.row);
-                const found = boardMap.get(`${cc},${cr},${t.mirror}`);
+                const cc = cand.col + (t.col - targetAnchor.col);
+                const cr = cand.row + (t.row - targetAnchor.row);
+                const bc = boardMap.get(`${cc},${cr},${t.mirror}`);
                 cells.push({ col: cc, row: cr, mirror: t.mirror, isClick: t === targetClick });
-                if (!found) { eliminated = true; break; }
-                if (found.lit && found.sig !== t.sig) { eliminated = true; break; }
+                if (!bc) { eliminated = true; break; }
+                if (t.state !== 'revealed') continue;          // wildcard
+                if (bc.state === 'revealed' && bc.sig !== t.sig) { eliminated = true; break; }
             }
             if (eliminated) continue;
 
-            const clickCol = anchor.col + (targetClick.col - targetAnchor.col);
-            const clickRow = anchor.row + (targetClick.row - targetAnchor.row);
+            const clickCol = cand.col + (targetClick.col - targetAnchor.col);
+            const clickRow = cand.row + (targetClick.row - targetAnchor.row);
             const clickCell = boardMap.get(`${clickCol},${clickRow},${targetClick.mirror}`);
             out.push({
-                col: anchor.col, row: anchor.row,
+                col: cand.col, row: cand.row,
                 cells,
-                clickGroup: clickCell ? clickCell.group : anchor.group,
+                clickGroup: clickCell ? clickCell.group : cand.group,
                 clickCol, clickRow, clickMirror: targetClick.mirror,
                 match: 0, unknown: 0, mismatch: 0,
                 total: targetCells.length,
