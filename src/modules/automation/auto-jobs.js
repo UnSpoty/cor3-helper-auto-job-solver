@@ -1329,6 +1329,15 @@
             if (state.status !== 'completing') return;
             const completedJobId = state.jobId;
             const descriptor = state.jobName || state.jobType || 'Unknown';
+            // Debug (May 2026): dump the full server response so we can see
+            // whether the server hints at *which* IPs are missing on
+            // IP-Injection bugged jobs. Cheap, only fires per completion.
+            try {
+                pushUserLog(
+                    'Complete WS response: ' + JSON.stringify({ data: env.data, error: env.error }),
+                    'debug'
+                );
+            } catch (_) { /* JSON cycles unlikely on a WS frame, but be safe */ }
             if (env.error) {
                 const errMsg = typeof env.error === 'string' ? env.error : (env.error?.message || JSON.stringify(env.error));
                 pushUserLog('Complete failed: ' + errMsg, 'error');
