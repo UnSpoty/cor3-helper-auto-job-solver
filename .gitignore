@@ -21,3 +21,8 @@ npm-debug.log*
 
 # Node — currently no build step but harmless to pre-empt
 node_modules/
+
+# Python — used by test_polygon/ (no runtime dep on Python anywhere else)
+__pycache__/
+*.pyc
+*.pyo
