@@ -350,13 +350,11 @@
         }, ALL_JOBS_DONE_DISPLAY_MS);
     }
 
-    // RECOVERING — orchestration-level failure. Bumps the counter and, if
-    // we haven't hit the limit, schedules a return to idle so the next
-    // queue item can be picked up. Hitting the limit transitions to HALTED.
+    // RECOVERING — orchestration-level failure. Pauses briefly, then drops
+    // back to idle so the next queue item can be picked up. There's no
+    // HALT escalation — we keep trying everything in the queue forever.
     function enterRecovering(reason, opts) {
-        recoveryCounter++;
-        const cap = RECOVERY_LIMIT;
-        if (modRef) modRef.warn(`recovery ${recoveryCounter}/${cap} — ${reason}`);
+        if (modRef) modRef.warn(`recovery — ${reason}`);
         pushUserLog(`Recovering: ${reason}`, 'warn');
 
         clearJobFromState();
@@ -365,18 +363,8 @@
         saveState();
         emitTransition('recovering', reason);
 
-        if (recoveryCounter >= cap) {
-            // Defer briefly so the recovering pill is visible before it
-            // flips to halted — gives the user a chance to see what
-            // happened in the activity log.
-            setTimeout(() => enterHalted(`recovery limit reached (${cap}× consecutive): ${reason}`), 500);
-            return;
-        }
-
         const delay = (opts && Number.isFinite(opts.delayMs)) ? opts.delayMs : RECOVERY_PAUSE_MS;
         setTimeout(() => {
-            // User may have toggled off / reset / re-entered recovery
-            // during the delay — only act if we're still in this state.
             if (state.status !== 'recovering') return;
             state.status = 'idle';
             saveState();
@@ -459,39 +447,41 @@
         setTimeout(() => requestMarketRefresh('autojobs-toggle-on'), 800);
     }
 
-    // Apply retry-once-then-permanent-reject to whatever the orchestrator
-    // is currently driving. Used for runtime failures (flow crash, watchdog,
-    // server unreachable without K/D, complete-rejected). On the second
-    // failure, the job becomes a permanent reject so the queue moves on
-    // and the user sees the reason instead of the queue silently stalling.
+    // Per-job retry with infinite rotation. After MAX_FLOW_ATTEMPTS
+    // consecutive failures, the job is rotated to the back of the queue
+    // (so other jobs get a turn) and its attempt counter resets — we never
+    // give up on a job, the user wants every task attempted.
     //
     // For connection-class reasons we additionally force a REVERT_ENDPOINT_TO_HOME
     // and lengthen the retry delay — those failures are usually about the
-    // WS endpoint sitting on the wrong market when connect() ran, and a
-    // longer gap + a forced revert clears it.
+    // WS endpoint sitting on the wrong market when connect() ran.
+    const REQUEUE_COOLDOWN_MS = 30 * 1000;
     function retryOrReject(jobId, descriptor, reason, opts) {
-        if (!jobId) return;
+        if (!jobId) return { retried: false };
         const qi = queue.findIndex((j) => j.jobId === jobId);
         const queued = qi !== -1 ? queue[qi] : null;
-        const attempts = ((queued && queued.attempts) || 0) + 1;
+        if (!queued) {
+            return { retried: true, delayMs: FLOW_RETRY_DELAY_MS };
+        }
+        const attempts = (queued.attempts || 0) + 1;
         const isConn = isConnectionFailure(reason);
         const defaultDelay = isConn ? SERVER_UNREACHABLE_RETRY_DELAY_MS : FLOW_RETRY_DELAY_MS;
-        const delayMs = (opts && Number.isFinite(opts.delayMs)) ? opts.delayMs : defaultDelay;
-        if (queued && attempts < MAX_FLOW_ATTEMPTS) {
+        let delayMs = (opts && Number.isFinite(opts.delayMs)) ? opts.delayMs : defaultDelay;
+        if (attempts < MAX_FLOW_ATTEMPTS) {
             queued.attempts = attempts;
             saveQueue();
-            if (isConn) {
-                // Force the WS back onto the HOME endpoint before the
-                // retry. Cheap (no-op when already HOME) and prevents
-                // the same failure from happening a second time when the
-                // root cause was an endpoint mismatch.
-                Bus.window.post(C.MSG.GAME.REVERT_ENDPOINT_TO_HOME, null);
-            }
+            if (isConn) Bus.window.post(C.MSG.GAME.REVERT_ENDPOINT_TO_HOME, null);
             pushUserLog(`Retrying "${descriptor}" (attempt ${attempts + 1}/${MAX_FLOW_ATTEMPTS}, +${Math.round(delayMs/1000)}s) — ${reason}`, 'warn');
             return { retried: true, delayMs };
         }
-        rejectJob(jobId, descriptor, `${reason}${attempts > 1 ? ` (failed ${attempts}×)` : ''}`);
-        return { retried: false };
+        queue.splice(qi, 1);
+        queued.attempts = 0;
+        queue.push(queued);
+        saveQueue();
+        if (isConn) Bus.window.post(C.MSG.GAME.REVERT_ENDPOINT_TO_HOME, null);
+        delayMs = Math.max(delayMs, REQUEUE_COOLDOWN_MS);
+        pushUserLog(`"${descriptor}" failed ${attempts}× — moved to back of queue, retrying in ${Math.round(delayMs/1000)}s — ${reason}`, 'warn');
+        return { retried: true, delayMs };
     }
 
     function requestMarketRefresh(reason, opts) {
@@ -891,22 +881,15 @@
         if (state.status === 'solving' && solvingStartedAt > 0 && Date.now() - solvingStartedAt > 300000) {
             modRef.warn('solving watchdog 5min');
             Bus.window.post(MSG.JOB.ABORT, null);
-            // Phase 5: a watchdog hit is a runtime failure. Route through
-            // per-job retry-once first; if the job was already on its
-            // second attempt and gets permanently rejected here, the
-            // event also bumps the orchestration recovery counter.
+            // A watchdog hit is a runtime failure. Route through the
+            // per-job retry path so the job either retries or rotates
+            // to the back of the queue.
             if (state.jobId) {
                 const decision = retryOrReject(state.jobId, state.jobName || state.jobType || 'Unknown',
                                                'solving watchdog 5min');
                 solvingStartedAt = 0;
-                if (decision.retried) {
-                    // First attempt — keep counter, requeue and continue.
-                    setStatus('idle', 'flow watchdog -> retry');
-                    setTimeout(executeNextFromQueue, decision.delayMs);
-                } else {
-                    // Second attempt failed — orchestration-level event.
-                    enterRecovering('solving-watchdog (permanent reject)');
-                }
+                setStatus('idle', 'flow watchdog -> retry');
+                setTimeout(executeNextFromQueue, decision.delayMs);
                 return;
             }
             solvingStartedAt = 0;
@@ -1342,20 +1325,14 @@
                 const errMsg = typeof env.error === 'string' ? env.error : (env.error?.message || JSON.stringify(env.error));
                 pushUserLog('Complete failed: ' + errMsg, 'error');
                 if (completedJobId) {
-                    // Server rejected our complete. Route through retry-once.
-                    // The first failure is often transient (logSeqs reshuffled,
-                    // server tally lag); the second confirms a real problem.
+                    // Server rejected our complete. Always retry through the
+                    // queue — transient causes (logSeqs reshuffle, tally lag)
+                    // tend to clear on a fresh attempt.
                     const decision = retryOrReject(completedJobId, descriptor, `complete-rejected: ${errMsg}`,
                                                    { delayMs: FLOW_RETRY_DELAY_MS });
                     completingStartedAt = 0;
-                    if (decision.retried) {
-                        setStatus('idle', 'complete-rejected -> retry');
-                        setTimeout(executeNextFromQueue, decision.delayMs);
-                    } else {
-                        // Permanent reject after retry-once — orchestration-level
-                        // failure, contributes to the recovery counter.
-                        enterRecovering(`complete-rejected-permanent: ${errMsg}`);
-                    }
+                    setStatus('idle', 'complete-rejected -> retry');
+                    setTimeout(executeNextFromQueue, decision.delayMs);
                     return;
                 }
             } else {
@@ -1453,19 +1430,14 @@
                 return;
             }
 
-            // Branch 3: runtime failure → retry-once-then-permanent-reject.
+            // Branch 3: runtime failure → retry; after MAX_FLOW_ATTEMPTS the
+            // job rotates to the back of the queue and tries again later.
             // (A missing/false `success` field also lands here.)
             const decision = retryOrReject(jobId, descriptor, reason, { delayMs: FLOW_RETRY_DELAY_MS });
             Bus.window.post(C.MSG.JOB.ABORT, null);
             solvingStartedAt = 0;
-            if (decision.retried) {
-                // First attempt — short pause, requeue, no recovery bump.
-                setStatus('idle', 'flow runtime-fail -> retry');
-                setTimeout(executeNextFromQueue, decision.delayMs);
-            } else {
-                // Second attempt failed — orchestration-level event.
-                enterRecovering(`flow-failed-permanent: ${reason}`);
-            }
+            setStatus('idle', 'flow runtime-fail -> retry');
+            setTimeout(executeNextFromQueue, decision.delayMs);
         }
 
         onKdDetected(env) {
@@ -1523,12 +1495,8 @@
                                            `server "${serverName}" unreachable`);
             Bus.window.post(MSG.JOB.ABORT, null);
             solvingStartedAt = 0;
-            if (decision.retried) {
-                setStatus('idle', 'server-unreachable -> retry');
-                setTimeout(executeNextFromQueue, decision.delayMs);
-            } else {
-                enterRecovering(`server-unreachable-permanent "${serverName}"`);
-            }
+            setStatus('idle', 'server-unreachable -> retry');
+            setTimeout(executeNextFromQueue, decision.delayMs);
         }
 
         async onNmServers(env) {

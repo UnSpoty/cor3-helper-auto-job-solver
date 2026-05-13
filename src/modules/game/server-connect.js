@@ -127,8 +127,8 @@
                 });
                 if (statusPairs.length) snap.panelStatus = statusPairs.slice(0, 6).join(', ');
             }
-            if (NM.checkServerKD) {
-                const kd = NM.checkServerKD(serverName);
+            if (NM.checkServerKD && item) {
+                const kd = NM.checkServerKD(item);
                 if (kd) snap.serverKD = kd;
             }
             if (NM.listServersOnKD) {
