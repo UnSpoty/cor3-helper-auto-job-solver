@@ -138,9 +138,43 @@
     function findPuzzleWindow() {
         // The puzzle launches as GameWaitingScreen first (intro button: e.g.
         // "Get Signal" / "Get Logs"), then transitions to .game-container
-        // after the user pulls the data.
+        // after the user pulls the data. Also accept obvious puzzle-content
+        // selectors as a positive signal in case the site renamed the shell.
         return document.querySelector('.game-container') ||
-               document.querySelector('[data-sentry-component="GameWaitingScreen"]');
+               document.querySelector('[data-sentry-component="GameWaitingScreen"]') ||
+               document.querySelector('[data-sentry-component^="GameWaiting"]') ||
+               document.querySelector('.pulse-timeline') ||
+               document.querySelector('.log-entries') ||
+               document.querySelector('.log-entries-holder') ||
+               document.querySelector('.log-entries-container') ||
+               document.querySelector('.encoding-option') ||
+               document.querySelector('.code-input') ||
+               document.querySelector('.scan-button') ||
+               document.querySelector('.confirm-button');
+    }
+
+    function snapshotAppWindows() {
+        return new Set(document.querySelectorAll('[data-component-name="ApplicationWindow"]'));
+    }
+
+    function findNewAppWindow(before) {
+        const now = document.querySelectorAll('[data-component-name="ApplicationWindow"]');
+        for (const w of now) if (!before.has(w)) return w;
+        return null;
+    }
+
+    function dumpVisibleWindowsForDiag(mod) {
+        const wins = Array.from(document.querySelectorAll('[data-component-name="ApplicationWindow"]'));
+        const parts = wins.map((w, i) => {
+            const sentry = Array.from(w.querySelectorAll('[data-sentry-component]'))
+                .slice(0, 6).map((e) => e.getAttribute('data-sentry-component'));
+            const comp = Array.from(w.querySelectorAll('[data-component-name]'))
+                .slice(0, 6).map((e) => e.getAttribute('data-component-name'));
+            return `[#${i}] sentry=${sentry.join(',') || '∅'} comp=${comp.join(',') || '∅'}`;
+        });
+        const msg = `puzzle-window dump: ${wins.length} app-window(s); ${parts.join(' | ') || '∅'}`;
+        mod.warn(msg);
+        logUi(msg);
     }
 
     function findEnabledButtonByText(textRegex, scope = document) {
@@ -564,14 +598,29 @@
             if (!await ensureGameCenterOpen(mod)) return;
             if (!await ensureDailyOpsOpen(mod)) return;
         }
+        const appsBeforeStart = snapshotAppWindows();
         if (!await clickStartButton(mod)) return;
+
+        // The Start click is a WS round-trip; give the puzzle window a
+        // moment to mount before we start polling for it.
+        await dom.sleep(600);
 
         // Wait for puzzle window — first state is GameWaitingScreen with a
         // single "advance" button (varies: "Get Signal" for the signal
         // puzzle, "Start" for log integrity, possibly others); the inner
-        // .game-container only appears after that click.
-        const puzzle = await dom.waitForEl(findPuzzleWindow, { timeout: 8000 });
-        if (!puzzle) { mod.error('puzzle window did not open'); logUi('puzzle window missing'); return; }
+        // .game-container only appears after that click. Fall back to "any
+        // ApplicationWindow that appeared after we pressed Start" so a
+        // site-side rename of the puzzle shell doesn't break detection.
+        const puzzle = await dom.waitFor(
+            () => findPuzzleWindow() || findNewAppWindow(appsBeforeStart),
+            { timeout: 15000 }
+        );
+        if (!puzzle) {
+            mod.error('puzzle window did not open');
+            logUi('puzzle window missing');
+            dumpVisibleWindowsForDiag(mod);
+            return;
+        }
 
         // Click the intro button. GameWaitingScreen's job is to show one
         // button and wait for the user to press it — so we just click the
@@ -598,6 +647,7 @@
         if (type === 'log') return solveLogIntegrity(mod);
         mod.warn('unknown puzzle type — neither .pulse-timeline nor .log-entries appeared');
         logUi('unknown puzzle type');
+        dumpVisibleWindowsForDiag(mod);
     }
 
     class DailyOpsSolverModule extends Module {
