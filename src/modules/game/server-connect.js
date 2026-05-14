@@ -94,15 +94,38 @@
             if (panel) {
                 snap.panelText = (panel.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 280);
             }
-            const connectBtn = document.querySelector(SEL.CONNECT_BTN_NEW) || document.querySelector(NM.SEL.CONNECT_BTN);
-            if (connectBtn) {
-                const btn = connectBtn.closest('button') || connectBtn;
-                snap.connectBtn = {
+            const describeBtn = (el) => {
+                if (!el) return null;
+                const btn = el.closest('button') || el;
+                return {
                     text: (btn.textContent || '').trim().slice(0, 60),
                     disabled: !!btn.disabled,
                     classes: String(btn.className || '').slice(0, 120),
                     ariaLabel: btn.getAttribute('aria-label') || null,
                 };
+            };
+            const connectBtn = document.querySelector(SEL.CONNECT_BTN_NEW) || document.querySelector(NM.SEL.CONNECT_BTN);
+            const loginBtn   = document.querySelector(SEL.LOGIN_BTN_NEW)   || document.querySelector(NM.SEL.LOGIN_BTN);
+            snap.connectBtn = describeBtn(connectBtn);
+            snap.loginBtn   = describeBtn(loginBtn);
+            // Disconnect button presence is the strongest signal that we are
+            // ALREADY connected to the server (Access:Yes path). Captured by
+            // text-match because cor3.gg doesn't ship a stable data-id for it.
+            try {
+                const allBtns = Array.from(document.querySelectorAll('button'));
+                const dc = allBtns.find((b) => /disconnect/i.test((b.textContent || '').trim()) && !/all/i.test(b.textContent));
+                if (dc) snap.disconnectBtn = describeBtn(dc);
+            } catch (_) { /* best-effort */ }
+            // Top-of-panel status block (Access / Status / IP triplet).
+            if (panel) {
+                const labels = panel.querySelectorAll('[class*="Label"], [class*="label"]');
+                const statusPairs = [];
+                Array.from(labels).slice(0, 12).forEach((l) => {
+                    const k = (l.textContent || '').trim();
+                    const v = (l.nextElementSibling?.textContent || '').trim();
+                    if (k && v && k.length < 24 && v.length < 24) statusPairs.push(`${k}=${v}`);
+                });
+                if (statusPairs.length) snap.panelStatus = statusPairs.slice(0, 6).join(', ');
             }
             if (NM.checkServerKD) {
                 const kd = NM.checkServerKD(serverName);
@@ -244,75 +267,160 @@
         await dom.sleep(400);
         dbg('step 3 — clicked server icon');
 
+        // Stability check: NM re-renders mid-transition can briefly show the
+        // previous server's name, or stay on the new name for a single tick
+        // before bouncing back. We require TWO consecutive polls to read the
+        // target name before declaring the panel ready. This kills the race
+        // captured in 2026-05-14 logs where step 3 reported "panel name
+        // updated" but a snap taken ~500ms later showed a different server
+        // (e.g. RM7-E1L2CT when target was RM7-E1L5).
         let panelReady = false;
-        for (let i = 0; i < 20 && !root.__jobManagerAbort; i++) {
+        let consecutiveMatches = 0;
+        let lastSeenName = '(none)';
+        for (let i = 0; i < 24 && !root.__jobManagerAbort; i++) {
             const nameEl = document.querySelector(NM.SEL.PANEL_NAME);
-            if (nameEl && nameEl.textContent.trim() === serverName) { panelReady = true; break; }
-            await dom.sleep(250);
-        }
-        if (!panelReady) {
-            const nameNow = document.querySelector(NM.SEL.PANEL_NAME)?.textContent?.trim();
-            dbg(`step 3 FAIL — side panel name "${nameNow || '(none)'}" ≠ "${serverName}"`);
-            log('warn', `Side panel did not update for "${serverName}"`);
-            return { saiOpened: false, fatal: true };
-        }
-        dbg('step 3 ok — panel name updated');
-
-        // 4. click Connect — skip if Login already visible (already connected).
-        const queryConnectBtn = () => document.querySelector(SEL.CONNECT_BTN_NEW) || document.querySelector(NM.SEL.CONNECT_BTN);
-        const queryLoginBtn   = () => document.querySelector(SEL.LOGIN_BTN_NEW)   || document.querySelector(NM.SEL.LOGIN_BTN);
-        root.__connectStartedAt = Date.now();
-        const loginAlreadyShown = !!queryLoginBtn();
-        dbg(`step 4 — login already visible? ${loginAlreadyShown}`);
-        if (!loginAlreadyShown) {
-            const connectBtn = await dom.waitForEl(queryConnectBtn, { timeout: 3_000 });
-            if (connectBtn) {
-                dbg('step 4 — clicking Connect');
-                dom.clickEl(connectBtn.closest('button') || connectBtn);
-                await dom.sleep(700);
-            } else if (!queryLoginBtn()) {
-                dbg('step 4 FAIL — Connect btn not found, Login also missing');
-                log('warn', `Connect button not found for "${serverName}"`);
-                return { saiOpened: false, fatal: true };
-            }
-        }
-
-        // 5. wait for Login or detect rejection / no-path
-        let loginBtn = null;
-        const loginDeadline = Date.now() + 12_000;
-        while (Date.now() < loginDeadline && !root.__jobManagerAbort) {
-            loginBtn = queryLoginBtn();
-            if (loginBtn) break;
-            if (getSaiForServer(serverName)) {
-                dbg('step 5 — SAI opened directly');
-                log('info', `SAI opened directly after Connect for "${serverName}"`);
-                return { saiOpened: true };
-            }
-            if (queryConnectBtn()) {
-                const snap = captureRejectSnapshot(serverName, item);
-                dbg('step 5 FAIL — Connect btn reappeared (rejected) snap=' + JSON.stringify(snap));
-                log('warn', `Connect button reappeared — rejected for "${serverName}"`);
-                Bus.window.post(MSG.JOB.SERVER_UNREACHABLE, { serverName });
-                return { saiOpened: false, fatal: true };
-            }
-            if (root.__serverPathFailed > (root.__connectStartedAt || 0)) {
-                const snap = captureRejectSnapshot(serverName, item);
-                dbg('step 5 FAIL — no-path-to-server WS error snap=' + JSON.stringify(snap));
-                log('warn', `No path to server (WS): "${serverName}"`);
-                root.__serverPathFailed = 0;
-                const blockedByKD = NM.listServersOnKD(serverName);
-                Bus.window.post(MSG.JOB.SERVER_UNREACHABLE, { serverName, blockedByKD });
-                return { saiOpened: false, fatal: true };
+            lastSeenName = nameEl?.textContent?.trim() || '(none)';
+            if (lastSeenName === serverName) {
+                consecutiveMatches++;
+                if (consecutiveMatches >= 2) { panelReady = true; break; }
+            } else {
+                if (consecutiveMatches > 0) {
+                    dbg(`step 3 — panel name flipped back to "${lastSeenName}" mid-settle, restarting count`);
+                }
+                consecutiveMatches = 0;
             }
             await dom.sleep(200);
         }
-        if (!loginBtn) {
-            dbg('step 5 FAIL — Login btn did not appear in 12s');
-            log('warn', `Login button did not appear after Connect for "${serverName}"`);
+        if (!panelReady) {
+            dbg(`step 3 FAIL — side panel name "${lastSeenName}" ≠ "${serverName}" (consecMatches=${consecutiveMatches})`);
+            log('warn', `Side panel did not update for "${serverName}"`);
+            return { saiOpened: false, fatal: true };
+        }
+        dbg('step 3 ok — panel name stable on "' + serverName + '"');
+
+        // 4. Wait for the side panel to settle into a stable, actionable state.
+        //    The naïve "snapshot Login/Connect once and decide" path raced
+        //    against cor3.gg's transition animation: between step 3's panel-name
+        //    update and the final Connect/Login render, the panel briefly shows
+        //    a disabled placeholder button (text:"", disabled:true). The old
+        //    probe read that placeholder, decided "Login not visible", clicked
+        //    the disabled Connect (no-op), and then step 5 saw the same
+        //    disabled button still there and called it a rejection. Result:
+        //    every connect to an already-connected server (Access:Yes,
+        //    Disconnect+Login visible) burned 6 attempts and bugged the job.
+        //
+        //    The fix is to poll until one of three CLEAN states holds:
+        //      A) SAI for this server is already open    → done
+        //      B) Login button visible AND enabled       → skip Connect
+        //      C) Connect button visible AND enabled     → click it normally
+        //    Anything in between (disabled placeholders, "Connecting…" state,
+        //    mid-transition DOM) is treated as transient and we keep polling.
+        const queryConnectBtn = () => document.querySelector(SEL.CONNECT_BTN_NEW) || document.querySelector(NM.SEL.CONNECT_BTN);
+        const queryLoginBtn   = () => document.querySelector(SEL.LOGIN_BTN_NEW)   || document.querySelector(NM.SEL.LOGIN_BTN);
+        const asBtn = (el) => el && (el.closest('button') || el);
+        const isClickable = (el) => {
+            const b = asBtn(el);
+            return !!(b && !b.disabled);
+        };
+        root.__connectStartedAt = Date.now();
+
+        let stableAction = null;     // 'sai' | 'login' | 'connect' | null
+        let stableLoginEl = null;
+        const STABLE_TIMEOUT_MS = 5_000;
+        const stableDeadline = Date.now() + STABLE_TIMEOUT_MS;
+        const stableStart = Date.now();
+        // Periodic state dump every ~1.2s so a stuck wait leaves breadcrumbs
+        // in the log instead of just a final "no stable state" verdict.
+        let lastDumpAt = 0;
+        const dumpInterval = 1200;
+        let pollCount = 0;
+        while (Date.now() < stableDeadline && !root.__jobManagerAbort) {
+            pollCount++;
+            if (getSaiForServer(serverName)) { stableAction = 'sai'; break; }
+            const loginEl = queryLoginBtn();
+            if (isClickable(loginEl)) { stableAction = 'login'; stableLoginEl = loginEl; break; }
+            const connectEl = queryConnectBtn();
+            if (isClickable(connectEl)) { stableAction = 'connect'; break; }
+            // Fast-fail: WS-level no-path error already came in for this attempt.
+            if (root.__serverPathFailed > (root.__connectStartedAt || 0)) break;
+            const now = Date.now();
+            if (now - lastDumpAt >= dumpInterval) {
+                lastDumpAt = now;
+                const lb = asBtn(loginEl);
+                const cb = asBtn(connectEl);
+                dbg(`step 4 waiting (${now - stableStart}ms, polls=${pollCount}) — `
+                    + `login=${lb ? `{txt:"${(lb.textContent||'').trim().slice(0,20)}",dis:${!!lb.disabled}}` : 'null'} `
+                    + `connect=${cb ? `{txt:"${(cb.textContent||'').trim().slice(0,20)}",dis:${!!cb.disabled}}` : 'null'}`);
+            }
+            await dom.sleep(150);
+        }
+        dbg(`step 4 resolved — action=${stableAction || 'TIMEOUT'} after ${Date.now() - stableStart}ms, polls=${pollCount}`);
+
+        if (stableAction === 'sai') {
+            dbg('step 4 — SAI already open for this server, skipping Connect/Login');
+            return { saiOpened: true };
+        }
+        if (stableAction === 'login') {
+            dbg('step 4 — Login already actionable (already connected), skipping Connect');
+        } else if (stableAction === 'connect') {
+            dbg('step 4 — clicking Connect (enabled)');
+            const connectEl = queryConnectBtn();
+            dom.clickEl(asBtn(connectEl));
+            await dom.sleep(700);
+        } else {
+            const snap = captureRejectSnapshot(serverName, item);
+            dbg('step 4 FAIL — no stable Login/Connect/SAI in ' + STABLE_TIMEOUT_MS + 'ms snap=' + JSON.stringify(snap));
+            log('warn', `Server panel did not settle into a clickable state for "${serverName}"`);
+            // Not fatal: side-panel may have raced with a NM redraw; let the
+            // outer chain retry from the NM icon click.
             return { saiOpened: false, fatal: false };
         }
+
+        // 5. wait for Login or detect rejection / no-path. If step 4 already
+        // resolved to Login (already-connected server), we use the cached
+        // element and skip straight to the click.
+        let loginBtn = stableLoginEl;
+        if (!loginBtn) {
+            const loginDeadline = Date.now() + 12_000;
+            while (Date.now() < loginDeadline && !root.__jobManagerAbort) {
+                const loginEl = queryLoginBtn();
+                if (isClickable(loginEl)) { loginBtn = loginEl; break; }
+                if (getSaiForServer(serverName)) {
+                    dbg('step 5 — SAI opened directly');
+                    log('info', `SAI opened directly after Connect for "${serverName}"`);
+                    return { saiOpened: true };
+                }
+                // Differentiate real rejection from in-flight loading:
+                //   enabled + text "Connect"  → game restored the button, true reject
+                //   disabled / empty text     → still "Connecting…", keep waiting
+                const connectEl = queryConnectBtn();
+                const cBtn = asBtn(connectEl);
+                if (cBtn && !cBtn.disabled && /connect/i.test((cBtn.textContent || '').trim())) {
+                    const snap = captureRejectSnapshot(serverName, item);
+                    dbg('step 5 FAIL — Connect btn restored enabled (rejected) snap=' + JSON.stringify(snap));
+                    log('warn', `Connect button reappeared — rejected for "${serverName}"`);
+                    Bus.window.post(MSG.JOB.SERVER_UNREACHABLE, { serverName });
+                    return { saiOpened: false, fatal: true };
+                }
+                if (root.__serverPathFailed > (root.__connectStartedAt || 0)) {
+                    const snap = captureRejectSnapshot(serverName, item);
+                    dbg('step 5 FAIL — no-path-to-server WS error snap=' + JSON.stringify(snap));
+                    log('warn', `No path to server (WS): "${serverName}"`);
+                    root.__serverPathFailed = 0;
+                    const blockedByKD = NM.listServersOnKD(serverName);
+                    Bus.window.post(MSG.JOB.SERVER_UNREACHABLE, { serverName, blockedByKD });
+                    return { saiOpened: false, fatal: true };
+                }
+                await dom.sleep(200);
+            }
+            if (!loginBtn) {
+                dbg('step 5 FAIL — Login btn did not appear in 12s');
+                log('warn', `Login button did not appear after Connect for "${serverName}"`);
+                return { saiOpened: false, fatal: false };
+            }
+        }
         dbg('step 5 ok — clicking Login');
-        dom.clickEl(loginBtn.closest('button') || loginBtn);
+        dom.clickEl(asBtn(loginBtn));
         await dom.sleep(700);
 
         // 6. login panel — find an Active Access row OR fall back to hack-tool
