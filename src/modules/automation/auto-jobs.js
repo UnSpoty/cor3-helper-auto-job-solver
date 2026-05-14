@@ -36,6 +36,15 @@
     // on jobs that are genuinely broken; lower would skip on the first
     // transient hiccup the way users complained about.
     const MAX_FLOW_ATTEMPTS = 2;
+    // Bugged-loop escalation. Each time a job exhausts MAX_FLOW_ATTEMPTS
+    // and gets rotated to the back of the queue, we bump a per-job
+    // `rotations` counter. After this many rotations the job is marked
+    // bugged (permanent reject — auto-cleared once the markets confirm
+    // the job is gone). Prevents the tight infinite loop you get when a
+    // single job in the queue keeps failing the same way (e.g. complete
+    // rejected with "2 existing IP(s) were removed — restore them" on
+    // an IP-Injection whose server-side state we can't see).
+    const MAX_ROTATIONS_BEFORE_BUGGED = 3;
     // Delay before re-running a job after a runtime failure. Long enough
     // for cor3.gg to settle (re-render lists, recover WS), short enough
     // that the user sees the retry happen visibly.
@@ -447,10 +456,14 @@
         setTimeout(() => requestMarketRefresh('autojobs-toggle-on'), 800);
     }
 
-    // Per-job retry with infinite rotation. After MAX_FLOW_ATTEMPTS
+    // Per-job retry with bounded rotation. After MAX_FLOW_ATTEMPTS
     // consecutive failures, the job is rotated to the back of the queue
-    // (so other jobs get a turn) and its attempt counter resets — we never
-    // give up on a job, the user wants every task attempted.
+    // (so other jobs get a turn) and its attempt counter resets. A
+    // separate `rotations` counter is bumped on each rotation; once it
+    // hits MAX_ROTATIONS_BEFORE_BUGGED the job is marked bugged and
+    // dropped via rejectJob() — otherwise a single failing job in a
+    // single-job queue spins forever (rotation to the tail of a 1-item
+    // queue is a no-op).
     //
     // For connection-class reasons we additionally force a REVERT_ENDPOINT_TO_HOME
     // and lengthen the retry delay — those failures are usually about the
@@ -476,11 +489,25 @@
         }
         queue.splice(qi, 1);
         queued.attempts = 0;
+        const rotations = (queued.rotations || 0) + 1;
+        queued.rotations = rotations;
+        if (isConn) Bus.window.post(C.MSG.GAME.REVERT_ENDPOINT_TO_HOME, null);
+        // Bugged-loop escalation: after MAX_ROTATIONS_BEFORE_BUGGED full
+        // rotations the job has failed (MAX_ROTATIONS × MAX_FLOW_ATTEMPTS)
+        // times in a row without progress. Stop rotating, mark as
+        // permanently rejected so the queue actually moves on. Auto-cleared
+        // when the markets confirm the job is gone (see clearRejectedFromMarkets).
+        if (rotations >= MAX_ROTATIONS_BEFORE_BUGGED) {
+            saveQueue();
+            const buggedReason = `bugged: looped ${rotations}× (${rotations * MAX_FLOW_ATTEMPTS} attempts) — ${reason}`;
+            pushUserLog(`"${descriptor}" marked bugged after ${rotations} loops — skipping. Last error: ${reason}`, 'error');
+            rejectJob(jobId, descriptor, buggedReason);
+            return { retried: false, delayMs: FLOW_RETRY_DELAY_MS, bugged: true };
+        }
         queue.push(queued);
         saveQueue();
-        if (isConn) Bus.window.post(C.MSG.GAME.REVERT_ENDPOINT_TO_HOME, null);
         delayMs = Math.max(delayMs, REQUEUE_COOLDOWN_MS);
-        pushUserLog(`"${descriptor}" failed ${attempts}× — moved to back of queue, retrying in ${Math.round(delayMs/1000)}s — ${reason}`, 'warn');
+        pushUserLog(`"${descriptor}" failed ${attempts}× — moved to back of queue (loop ${rotations}/${MAX_ROTATIONS_BEFORE_BUGGED}), retrying in ${Math.round(delayMs/1000)}s — ${reason}`, 'warn');
         return { retried: true, delayMs };
     }
 
