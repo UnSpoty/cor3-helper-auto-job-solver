@@ -57,34 +57,45 @@
     const ROW_PX = 54;
     const COLOR_LIT = '#76C1D1';
     const COLOR_EMPTY = '#00121D';
-    // Commit thresholds tuned with user feedback for the current 9-cell
-    // target ("1 = nothing, 3 = confident enough to try, 5+ = fire even
-    // with alternatives"):
-    //   STRONG_PARTIAL_MATCH: any candidate with this many matches
-    //     wins, even when other candidates have the same anchor sig.
-    //   MIN_PARTIAL_MATCH: candidate needs to be either the only one
-    //     left OR dominant (ahead of second-best by >=2) to commit.
+    // Confidence is measured in REVEALED ↔ REVEALED glyph matches
+    // (`realMatch`). Target placeholders are wildcards and don't count
+    // — separating them from realMatch fixed the original "fire on 2
+    // confirmed glyphs" bug. Past that, the thresholds reflect the
+    // user's gameplay intuition: ~⅓ to ~⅔ of the target shape's cells
+    // confirmed at the candidate's offset is usually enough to lock in
+    // the position, because the matcher's mismatch filter has already
+    // eliminated wrong-anchor positions. We rely on:
     //
-    // The matcher itself is shape-agnostic — it iterates over whatever
-    // cells the target contains. If the game ever serves a target of a
-    // different size, `adaptiveThresholds()` scales the partial-match
-    // bar proportionally so percentage-of-match stays meaningful:
-    //   - absolute floor (5 / 3) keeps tiny targets demanding high % match;
-    //   - the 55% / 33% ratio dominates for larger targets to avoid
-    //     premature commits.
-    // For total=9 the adaptive call returns (5, 3) — identical to the
-    // existing constants — so live behaviour on the current minigame is
-    // unchanged. Verified across 200 puzzles per size (4..16) in the
-    // test_polygon/ harness: 100% solve rate.
-    const STRONG_PARTIAL_MATCH = 5;     // absolute floor
-    const MIN_PARTIAL_MATCH = 3;        // absolute floor
-    const STRONG_PARTIAL_RATIO = 0.55;
+    //   • pre-click verification (re-check candidate vs latest board
+    //     just before clicking, skip if a late reveal contradicts);
+    //   • false-positive retry (counter doesn't tick → exclude anchor,
+    //     re-search) for the rare wrong commit.
+    //
+    // Thresholds are computed from `total` (the target's cell count,
+    // stable once known), not `revealedTotal` — small targets need a
+    // higher fraction (2/3 → midTh=2), big targets a lower fraction
+    // (3/9 → midTh=3, 4/9 → strongTh=4).
+    //
+    //   MIN_REVEALED_FOR_COMMIT: at least this many target cells must
+    //     be revealed before any commit. Keeps the matcher from firing
+    //     on revealedTotal=1 where any board cell with the anchor sig
+    //     would match.
+    //   MIN_PARTIAL_MATCH:    absolute floor for mid-partial threshold.
+    //   STRONG_PARTIAL_MATCH: absolute floor for strong-partial — high
+    //     enough to commit even when same-realMatch alternatives exist.
+    //   STABLE_COMMIT_MS:     same leader held at midTh for this long
+    //     → commit even without strict uniqueness/dominance.
+    const MIN_PARTIAL_MATCH = 2;
+    const STRONG_PARTIAL_MATCH = 4;
+    const STRONG_PARTIAL_RATIO = 0.40;
     const MIN_PARTIAL_RATIO = 0.33;
+    const MIN_REVEALED_FOR_COMMIT = 2;
+    const STABLE_COMMIT_MS = 3000;
 
     function adaptiveThresholds(total) {
         return {
-            strong: Math.max(STRONG_PARTIAL_MATCH, Math.round(total * STRONG_PARTIAL_RATIO)),
-            mid:    Math.max(MIN_PARTIAL_MATCH,    Math.round(total * MIN_PARTIAL_RATIO)),
+            strong: Math.max(STRONG_PARTIAL_MATCH, Math.ceil(total * STRONG_PARTIAL_RATIO)),
+            mid:    Math.max(MIN_PARTIAL_MATCH,    Math.ceil(total * MIN_PARTIAL_RATIO)),
         };
     }
 
@@ -118,22 +129,45 @@
      * Three-way classification of a cell:
      *   - 'empty':       has fill=#00121D (dark contour, not yet active)
      *   - 'placeholder': has an outline-only stroke path (closed cell)
-     *   - 'revealed':    neither of the above (shows a unique glyph icon)
+     *                    AND no pure-glyph filled path
+     *   - 'revealed':    has a pure-glyph filled path (the actual icon),
+     *                    regardless of whether outline-only paths also
+     *                    exist around it
      *
      * Each board cell goes empty → placeholder → revealed as the game
      * reveals new glyphs every ~1s. Target placeholder cells act as
-     * wildcards in the matcher (any board state in that position matches).
+     * wildcards in the matcher (any board state in that position
+     * matches).
+     *
+     * Why hasFilledGlyph takes precedence: revealed cells sometimes
+     * carry outline-only decorative strokes (May-2026 game update),
+     * which would otherwise trip the outline-only check and classify
+     * the cell as 'placeholder'. The matcher then treats the
+     * misclassified cell as a wildcard, lets candidates whose shape
+     * covers it survive even though it actually contains a non-target
+     * glyph — i.e. the "candidate area contains a glyph not in the
+     * target sequence" bug the user reported.
+     *
+     * The filled-glyph filter mirrors glyphSignature's criteria (fill
+     * = COLOR_LIT, no stroke, no fill-opacity) so cellState and
+     * glyphSignature stay in agreement: a cell that contributes a sig
+     * is also a cell that's classified 'revealed'.
      */
     function cellState(glyphGroup) {
-        let hasOutlineOnly = false, hasEmptyFill = false;
+        let hasEmptyFill = false;
+        let hasFilledGlyph = false;
+        let hasOutlineOnly = false;
         for (const el of glyphGroup.querySelectorAll('path, rect')) {
             if (el.dataset && el.dataset.sentryComponent === 'GlyphBoundingTriangle') continue;
             const f = el.getAttribute('fill');
             const s = el.getAttribute('stroke');
-            if (f === null && s === COLOR_LIT) hasOutlineOnly = true;
+            const fo = el.getAttribute('fill-opacity');
             if (f === COLOR_EMPTY) hasEmptyFill = true;
+            if (f === COLOR_LIT && s === null && fo === null) hasFilledGlyph = true;
+            if (f === null && s === COLOR_LIT) hasOutlineOnly = true;
         }
         if (hasEmptyFill) return 'empty';
+        if (hasFilledGlyph) return 'revealed';
         if (hasOutlineOnly) return 'placeholder';
         return 'revealed';
     }
@@ -258,7 +292,7 @@
             const candKey = `${cand.col},${cand.row}`;
             if (excludeKeys && excludeKeys.has(candKey)) continue;
 
-            let match = 0, mismatch = 0, unknown = 0;
+            let realMatch = 0, wildMatch = 0, mismatch = 0, unknown = 0;
             const cells = [];
             for (const t of targetCells) {
                 const cc = cand.col + (t.col - targetAnchor.col);
@@ -275,16 +309,20 @@
                     // or placeholder (both mean "no committed glyph
                     // there"). If board has revealed a unique glyph in
                     // that slot, this candidate is at the wrong position.
+                    //
+                    // Counted as `wildMatch`, NOT `realMatch` — wildcards
+                    // are consistency checks, not positive evidence; they
+                    // can't disambiguate between competing anchor positions.
                     if (bc.state === 'revealed') { mismatch++; continue; }
-                    match++;
+                    wildMatch++;
                     continue;
                 }
                 if (bc.state !== 'revealed') { unknown++; continue; }
                 if (bc.sig !== t.sig) { mismatch++; continue; }
-                match++;
+                realMatch++;
             }
             if (mismatch > 0) continue;
-            if (match === 0) continue;
+            if (realMatch === 0) continue;
 
             const clickCol = cand.col + (targetClick.col - targetAnchor.col);
             const clickRow = cand.row + (targetClick.row - targetAnchor.row);
@@ -294,11 +332,17 @@
                 cells,
                 clickGroup: clickCell ? clickCell.group : cand.group,
                 clickCol, clickRow, clickMirror: targetClick.mirror,
-                match, unknown, mismatch,
+                realMatch, wildMatch, unknown, mismatch,
+                match: realMatch, // alias for logging / backward compat
                 total: targetCells.length,
+                revealedTotal: revealedTargets.length,
             });
         }
-        out.sort((a, b) => b.match - a.match);
+        out.sort((a, b) => {
+            if (b.realMatch !== a.realMatch) return b.realMatch - a.realMatch;
+            if (a.col !== b.col) return a.col - b.col;
+            return a.row - b.row;
+        });
         return { candidates: out, total: targetCells.length, revealedTotal: revealedTargets.length };
     }
 
@@ -356,17 +400,69 @@
                 cells,
                 clickGroup: clickCell ? clickCell.group : cand.group,
                 clickCol, clickRow, clickMirror: targetClick.mirror,
-                match: 0, unknown: 0, mismatch: 0,
+                realMatch: 0, wildMatch: 0, unknown: 0, mismatch: 0,
+                match: 0, // alias for logging
                 total: targetCells.length,
+                revealedTotal: revealedTargets.length,
             });
         }
         return out;
     }
 
     // ─── Overlay ─────────────────────────────────────────────────────────
+    //
+    // Three z-stacked layers under a single `cor3-icewall-overlay` group:
+    //   noise     — dim every revealed board cell whose glyph isn't in
+    //               the target sequence. Pure UX: shows the user which
+    //               cells the matcher has ruled out as irrelevant.
+    //   rejected  — red marker on anchors that were committed-and-clicked
+    //               but didn't advance the counter (false positives).
+    //               Persists for the rest of the round so the user can
+    //               see what the solver tried and discarded.
+    //   candidate — the currently-leading match (yellow dashed when
+    //               tentative, orange when confident-and-about-to-click)
+    //               plus the red click target cell.
+    //
+    // Each layer keeps a `dataset.cor3Key` of its current contents and
+    // skips redraws when the key is unchanged. That matters because we
+    // attach this overlay inside the wall subtree the MutationObserver
+    // is watching: an unconditional clear+redraw would retrigger the
+    // observer in an 80ms loop.
 
     const OVERLAY_ID = 'cor3-icewall-overlay';
     const TRI_PATH = 'M60.6914 53.0305 H1.73242 L31.21 1.99927 Z';
+    const LAYER_ORDER = ['noise', 'rejected', 'candidate']; // bottom → top
+
+    function ensureOverlayLayers() {
+        const wall = document.querySelector(SEL.WALL);
+        if (!wall) return null;
+        let overlay = wall.querySelector('#' + OVERLAY_ID);
+        if (!overlay) {
+            const renderG = wall.querySelector(':scope > g') || wall;
+            const ns = 'http://www.w3.org/2000/svg';
+            overlay = document.createElementNS(ns, 'g');
+            overlay.setAttribute('id', OVERLAY_ID);
+            overlay.setAttribute('pointer-events', 'none');
+            for (const subId of LAYER_ORDER) {
+                const g = document.createElementNS(ns, 'g');
+                g.setAttribute('data-cor3-layer', subId);
+                overlay.appendChild(g);
+            }
+            renderG.appendChild(overlay);
+        }
+        return overlay;
+    }
+
+    function getLayer(name) {
+        const overlay = ensureOverlayLayers();
+        if (!overlay) return null;
+        return overlay.querySelector(`g[data-cor3-layer="${name}"]`);
+    }
+
+    function clearLayerContent(layer) {
+        if (!layer) return;
+        while (layer.firstChild) layer.removeChild(layer.firstChild);
+    }
 
     function clearOverlay() {
         const wall = document.querySelector(SEL.WALL);
@@ -375,53 +471,123 @@
         if (old) old.remove();
     }
 
+    function drawCellPath(layer, col, row, mirror, attrs) {
+        const ns = 'http://www.w3.org/2000/svg';
+        const px = col * COL_PX;
+        const py = row * ROW_PX;
+        const path = document.createElementNS(ns, 'path');
+        const transform = mirror
+            ? `translate(${px}, ${py}) scale(1, -1)`
+            : `translate(${px}, ${py})`;
+        path.setAttribute('transform', transform);
+        path.setAttribute('d', TRI_PATH);
+        for (const k in attrs) {
+            const v = attrs[k];
+            if (v !== null && v !== undefined) path.setAttribute(k, v);
+        }
+        layer.appendChild(path);
+    }
+
     /**
      * Outline each cell of the matched shape; the click target gets a
-     * solid red fill at high opacity so the user can always see exactly
-     * where the solver intends to click (regardless of confidence). The
-     * surrounding shape cells use a dim contour.
-     *
-     * tentative (waiting for more reveals) = dashed yellow contour
-     * confident (about to click) = solid orange contour
+     * solid red fill at high opacity. tentative = dashed yellow,
+     * confident = solid orange.
      */
-    function drawOverlay(candidate, confident) {
-        const wall = document.querySelector(SEL.WALL);
-        if (!wall) return;
-        clearOverlay();
-        const renderG = wall.querySelector(':scope > g') || wall;
-        const ns = 'http://www.w3.org/2000/svg';
-        const overlay = document.createElementNS(ns, 'g');
-        overlay.setAttribute('id', OVERLAY_ID);
-        overlay.setAttribute('pointer-events', 'none');
+    function drawCandidateOverlay(candidate, confident) {
+        const layer = getLayer('candidate');
+        if (!layer) return;
+        const cellsKey = candidate.cells
+            .map((c) => `${c.col},${c.row},${c.mirror ? 1 : 0},${c.isClick ? 1 : 0}`)
+            .join('|');
+        const key = `${confident ? 1 : 0}::${cellsKey}`;
+        if (layer.dataset.cor3Key === key) return;
+        clearLayerContent(layer);
+        layer.dataset.cor3Key = key;
 
         const contourColor = confident ? '#FFB857' : '#FFE066';
         const contourFill = confident ? '0.18' : '0.06';
         const dash = confident ? null : '6,4';
-        // Click cell stays solid red regardless of confidence — that is the
-        // ONE cell the solver intends to click and it must be visible at
-        // a glance.
         const clickColor = '#FF3333';
         const clickFill = confident ? '0.70' : '0.55';
 
         for (const c of candidate.cells) {
-            const px = c.col * COL_PX;
-            const py = c.row * ROW_PX;
-            const path = document.createElementNS(ns, 'path');
-            const transform = c.mirror
-                ? `translate(${px}, ${py}) scale(1, -1)`
-                : `translate(${px}, ${py})`;
-            path.setAttribute('transform', transform);
-            path.setAttribute('d', TRI_PATH);
-            path.setAttribute('fill', c.isClick ? clickColor : contourColor);
-            path.setAttribute('fill-opacity', c.isClick ? clickFill : contourFill);
-            path.setAttribute('stroke', c.isClick ? '#FFFFFF' : contourColor);
-            path.setAttribute('stroke-width', c.isClick ? '3' : '3');
-            path.setAttribute('stroke-linejoin', 'round');
-            if (dash && !c.isClick) path.setAttribute('stroke-dasharray', dash);
-            overlay.appendChild(path);
+            drawCellPath(layer, c.col, c.row, c.mirror, {
+                fill: c.isClick ? clickColor : contourColor,
+                'fill-opacity': c.isClick ? clickFill : contourFill,
+                stroke: c.isClick ? '#FFFFFF' : contourColor,
+                'stroke-width': '3',
+                'stroke-linejoin': 'round',
+                'stroke-dasharray': (dash && !c.isClick) ? dash : null,
+            });
         }
+    }
 
-        renderG.appendChild(overlay);
+    /**
+     * Dim every revealed board cell whose glyph doesn't appear anywhere
+     * in the current target sequence. These cells are noise — the matcher
+     * already ignores them, but showing the user which ones are "ruled
+     * out" makes the solver's progress legible.
+     */
+    function drawNoiseOverlay() {
+        const layer = getLayer('noise');
+        if (!layer) return;
+
+        const targetSigs = new Set();
+        for (const t of readTargetCells()) {
+            if (t.state === 'revealed') targetSigs.add(t.sig);
+        }
+        const noiseCells = [];
+        if (targetSigs.size > 0) {
+            for (const b of readBoardCells()) {
+                if (b.state === 'revealed' && !targetSigs.has(b.sig)) {
+                    noiseCells.push(b);
+                }
+            }
+        }
+        const key = noiseCells.map((b) => `${b.col},${b.row}`).sort().join('|');
+        if (layer.dataset.cor3Key === key) return;
+        clearLayerContent(layer);
+        layer.dataset.cor3Key = key;
+
+        for (const b of noiseCells) {
+            drawCellPath(layer, b.col, b.row, b.mirror, {
+                fill: '#000000',
+                'fill-opacity': '0.45',
+                stroke: '#404040',
+                'stroke-width': '1',
+            });
+        }
+    }
+
+    /**
+     * Mark anchors that were committed but failed to advance the counter
+     * — i.e. positions the solver tried and ruled out. Persists for the
+     * remainder of the round; cleared at round end via clearOverlay().
+     */
+    function drawRejectedOverlay(excludeKeys) {
+        const layer = getLayer('rejected');
+        if (!layer) return;
+        const key = [...excludeKeys].sort().join('|');
+        if (layer.dataset.cor3Key === key) return;
+        clearLayerContent(layer);
+        layer.dataset.cor3Key = key;
+        if (excludeKeys.size === 0) return;
+
+        const byKey = new Map();
+        for (const b of readBoardCells()) byKey.set(`${b.col},${b.row}`, b);
+
+        for (const ek of excludeKeys) {
+            const cell = byKey.get(ek);
+            if (!cell) continue;
+            drawCellPath(layer, cell.col, cell.row, cell.mirror, {
+                fill: '#FF1A1A',
+                'fill-opacity': '0.45',
+                stroke: '#FF1A1A',
+                'stroke-width': '3',
+                'stroke-dasharray': '4,3',
+                'stroke-linejoin': 'round',
+            });
+        }
     }
 
     // ─── State probes + click ────────────────────────────────────────────
@@ -497,6 +663,11 @@
             let observer = null;
             let debounceTimer = null;
             let hardTimer = null;
+            let periodicTimer = null;
+            // Stable-partial state: track the identity of the current
+            // leader and how long it has held that spot.
+            let lastBestKey = null;
+            let lastBestSince = Date.now();
 
             const finish = (val) => {
                 if (done) return;
@@ -504,6 +675,7 @@
                 if (observer) observer.disconnect();
                 clearTimeout(debounceTimer);
                 clearTimeout(hardTimer);
+                clearInterval(periodicTimer);
                 resolve(val);
             };
 
@@ -512,42 +684,68 @@
                 const wall = document.querySelector(SEL.WALL);
                 if (!wall) return finish(null);
 
-                const { candidates, total } = findShapeCandidates(excludeKeys);
+                // Always-on UX overlays — both memoize internally so they
+                // don't retrigger the MutationObserver when state is stable.
+                drawNoiseOverlay();
+                drawRejectedOverlay(excludeKeys);
+
+                const { candidates, total, revealedTotal } = findShapeCandidates(excludeKeys);
+
+                const best = candidates[0]; // sorted desc by realMatch, then col, row
+                const second = candidates[1];
+                const bestKey = best ? `${best.col},${best.row}` : null;
+                if (bestKey !== lastBestKey) {
+                    lastBestKey = bestKey;
+                    lastBestSince = Date.now();
+                }
+
+                if (revealedTotal < MIN_REVEALED_FOR_COMMIT) {
+                    if (onTentative && candidates.length > 0) onTentative(candidates[0]);
+                    return;
+                }
+
                 const { strong: strongTh, mid: midTh } = adaptiveThresholds(total);
 
-                // 1. Full match — strongest signal, commit immediately.
-                const complete = candidates.find((c) => c.match === total);
-                if (complete) return finish({ best: complete, reason: 'complete' });
+                // 1. Complete: every revealed target glyph maps to a
+                //    revealed board cell, AND only this candidate is
+                //    fully consistent. Uniqueness protects against
+                //    early rounds where several positions are still
+                //    feasible.
+                const fullConfirms = candidates.filter((c) => c.realMatch === revealedTotal);
+                if (fullConfirms.length === 1) return finish({ best: fullConfirms[0], reason: 'complete' });
 
-                const best = candidates[0]; // sorted desc by match
-                const second = candidates[1];
-
-                // 2. Strong partial — high match wins even against
-                //    alternatives. With ~55% of the target matched the
-                //    chance of a coincidental same-anchor match elsewhere
-                //    is negligible (threshold === 5 for the live 9-cell
-                //    target, scales up for larger targets).
-                if (best && best.match >= strongTh) {
+                // 2. Strong partial — enough confirmed glyphs that the
+                //    candidate wins even against same-anchor alternatives.
+                //    strongTh === 4 for total=9; scales with target size.
+                if (best && best.realMatch >= strongTh) {
                     return finish({ best, reason: 'strong-partial' });
                 }
 
-                // 3. Mid partial — needs to be unique OR dominate the
-                //    runner-up by at least 2 cells. Dominance check
-                //    lets us fire even when several anchors still
-                //    survive but one is clearly the answer.
-                if (best && best.match >= midTh) {
+                // 3. Mid partial — at midTh AND either the only surviving
+                //    candidate or dominating the runner-up by 2+ real
+                //    matches. midTh === 3 for total=9, 2 for total=3.
+                if (best && best.realMatch >= midTh) {
                     const isUnique = candidates.length === 1;
-                    const isDominant = !second || best.match - second.match >= 2;
+                    const isDominant = !second || best.realMatch - second.realMatch >= 2;
                     if (isUnique || isDominant) {
                         return finish({ best, reason: isUnique ? 'unique-partial' : 'dominant-partial' });
                     }
                 }
 
-                // 4. Elimination fallback when sig-anchor filtering
-                //    has zero positives but elimination narrows to one.
+                // 4. Elimination fallback — sig-anchor filtering returns
+                //    zero positive candidates but elimination narrows
+                //    everything else to one.
                 if (candidates.length === 0) {
                     const elim = findByElimination(excludeKeys);
                     if (elim.length === 1) return finish({ best: elim[0], reason: 'elimination' });
+                }
+
+                // 5. Stable partial — same leader held at midTh for
+                //    STABLE_COMMIT_MS. Breaks ties when several
+                //    candidates share the lead and the board's reveal
+                //    cadence has slowed.
+                if (best && best.realMatch >= midTh && (Date.now() - lastBestSince) >= STABLE_COMMIT_MS) {
+                    return finish({ best, reason: 'stable-partial' });
                 }
 
                 if (onTentative && candidates.length > 0) onTentative(candidates[0]);
@@ -564,6 +762,11 @@
 
             observer = new MutationObserver(scheduleCheck);
             observer.observe(wall, { subtree: true, childList: true, attributes: true });
+
+            // Safety-net periodic check so the stable-partial timer can
+            // still fire when the board stops mutating (reveal cadence
+            // slows or pauses near end of round).
+            periodicTimer = setInterval(scheduleCheck, 500);
 
             hardTimer = setTimeout(() => finish({ timedOut: true }), timeoutMs);
             scheduleCheck();
@@ -597,7 +800,7 @@
             const remaining = Math.max(2000, ROUND_MAX_MS - (Date.now() - roundStart));
             const result = await waitForCandidate(
                 excludeKeys, remaining,
-                (tentative) => drawOverlay(tentative, false),
+                (tentative) => drawCandidateOverlay(tentative, false),
             );
 
             if (root.__iceWallAbort) return false;
@@ -623,9 +826,24 @@
                 }
             }
 
+            // Pre-click verification — re-check the candidate against
+            // the current board state. New reveals between waitForCandidate
+            // resolving and this point may have introduced a mismatch
+            // that makes the chosen anchor wrong. Cheaper to re-search
+            // than to mis-click and burn 4s waiting for the counter.
+            const refreshed = findShapeCandidates(excludeKeys).candidates
+                .find((c) => c.col === best.col && c.row === best.row)
+                || findByElimination(excludeKeys)
+                    .find((c) => c.col === best.col && c.row === best.row);
+            if (!refreshed) {
+                mod.warn(`pre-click verify failed at (${best.col},${best.row}) — candidate eliminated by late reveal; re-searching`);
+                continue;
+            }
+            best = refreshed; // refresh realMatch / unknown with latest state
+
             const counterCur = readCounter();
-            mod.info(`commit (${reason}): anchor=(${best.col},${best.row}) click=(${best.clickCol},${best.clickRow}) match=${best.match ?? 0}/${best.total} attempt=${attempt + 1}/${MAX_RETRIES}`);
-            drawOverlay(best, true);
+            mod.info(`commit (${reason}): anchor=(${best.col},${best.row}) click=(${best.clickCol},${best.clickRow}) realMatch=${best.realMatch}/${best.revealedTotal} unknown=${best.unknown} (target ${best.total}) attempt=${attempt + 1}/${MAX_RETRIES}`);
+            drawCandidateOverlay(best, true);
             await attemptClick(best.clickGroup, mod);
 
             const ticked = await dom.waitFor(() => {
@@ -641,6 +859,7 @@
 
             mod.warn(`false positive at anchor (${best.col},${best.row}) — excluding & retrying (${attempt + 1}/${MAX_RETRIES})`);
             excludeKeys.add(`${best.col},${best.row}`);
+            drawRejectedOverlay(excludeKeys);
         }
         mod.warn(`exhausted ${MAX_RETRIES} retries on this round`);
         clearOverlay();
@@ -648,43 +867,56 @@
     }
 
     async function watchLoop(mod) {
-        while (!root.__iceWallAbort) {
-            await dom.sleep(300);
-            const app = document.querySelector(SEL.APP);
-            if (!app) continue;
+        // Outer try/finally guarantees flag reset even if anything
+        // inside throws — otherwise __iceWallActive stays true and the
+        // START handler refuses to restart the loop, manifesting as
+        // "solver stopped detecting puzzles" after a one-off DOM hiccup.
+        try {
+            while (!root.__iceWallAbort) {
+                try {
+                    await dom.sleep(300);
+                    const app = document.querySelector(SEL.APP);
+                    if (!app) continue;
 
-            const ready = await dom.waitFor(
-                () => document.querySelector(SEL.WALL) && document.querySelector(SEL.TARGET),
-                { timeout: 8000 }
-            );
-            if (!ready) { mod.debug('stage never became ready'); continue; }
+                    const ready = await dom.waitFor(
+                        () => document.querySelector(SEL.WALL) && document.querySelector(SEL.TARGET),
+                        { timeout: 8000 }
+                    );
+                    if (!ready) { mod.debug('stage never became ready'); continue; }
 
-            const start = readCounter();
-            const timer = readTimerSeconds();
-            mod.info(`ice-wall puzzle detected (counter ${start?.current ?? '?'}/${start?.total ?? '?'}, ${timer ?? '?'}s left)`);
+                    const start = readCounter();
+                    const timer = readTimerSeconds();
+                    mod.info(`ice-wall puzzle detected (counter ${start?.current ?? '?'}/${start?.total ?? '?'}, ${timer ?? '?'}s left)`);
 
-            // Solve all rounds within this puzzle
-            while (!root.__iceWallAbort && document.querySelector(SEL.APP)) {
-                const c = readCounter();
-                if (c && c.current >= c.total) {
-                    mod.info(`puzzle solved: ${c.current}/${c.total}`);
-                    break;
+                    // Solve all rounds within this puzzle
+                    while (!root.__iceWallAbort && document.querySelector(SEL.APP)) {
+                        const c = readCounter();
+                        if (c && c.current >= c.total) {
+                            mod.info(`puzzle solved: ${c.current}/${c.total}`);
+                            break;
+                        }
+                        const ok = await solveRound(mod);
+                        if (!ok) await dom.sleep(1500);     // brief pause before retry
+                    }
+
+                    // Wait for the puzzle window to close before resuming watch
+                    while (!root.__iceWallAbort && document.querySelector(SEL.APP)) {
+                        await dom.sleep(400);
+                    }
+                    clearOverlay();
+                    if (!root.__iceWallAbort) mod.debug('puzzle closed, watching for next one');
+                } catch (err) {
+                    mod.error(`iteration crashed: ${err?.message || err} — recovering`);
+                    clearOverlay();
+                    await dom.sleep(2000);
                 }
-                const ok = await solveRound(mod);
-                if (!ok) await dom.sleep(1500);     // brief pause before retry
             }
-
-            // Wait for the puzzle window to close before resuming watch
-            while (!root.__iceWallAbort && document.querySelector(SEL.APP)) {
-                await dom.sleep(400);
-            }
+        } finally {
             clearOverlay();
-            if (!root.__iceWallAbort) mod.debug('puzzle closed, watching for next one');
+            root.__iceWallActive = false;
+            root.__iceWallAbort = false;
+            mod.info('ice-wall solver stopped');
         }
-
-        root.__iceWallActive = false;
-        root.__iceWallAbort = false;
-        mod.info('ice-wall solver stopped');
     }
 
     class IceWallSolverModule extends Module {
