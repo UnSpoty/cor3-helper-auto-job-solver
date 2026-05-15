@@ -217,7 +217,33 @@
         const { positions, worldW, worldH } = layoutTree(graph);
 
         // Edges first so node cards render on top.
+        //
+        // Two layers:
+        //   1. Tree edges (parentName-based) — drawn as a soft cubic bezier
+        //      from bottom-of-parent to top-of-child. This is the spanning
+        //      tree the BFS built; gives the layered "branch" look.
+        //   2. Extra edges — every connection in graph.connections that
+        //      isn't already covered by the tree. Cor3.gg's post-May-2026
+        //      map has multi-parent servers (multiple upstream links into a
+        //      single node); without rendering these the user sees a tree
+        //      but the real network is a DAG. Drawn as a thin straight line
+        //      with a distinct class so they read as "secondary connection"
+        //      and don't fight visually with the tree.
         const edgesG = svgEl('g', { class: 'nm-edges' });
+
+        // Side-edge anchors for non-tree edges. We anchor on the right edge
+        // of both endpoints and bow the curve out to the right of the whole
+        // layout. This keeps the dashed line OUT of the column where cards
+        // live (centre-to-centre routing would cross straight through any
+        // card sitting between the two endpoints — visible-through-cards
+        // bug reported on real cor3.gg layouts).
+        function rightAnchor(pos) {
+            return { x: colToX(pos.col) + NODE_W, y: rowToY(pos.row) + NODE_H / 2 };
+        }
+
+        // Tree edges first. We also track which undirected name-pairs are
+        // already rendered as tree edges so the extras pass can skip them.
+        const treePairs = new Set();
         for (const s of graph.servers) {
             if (!s.parentName || !positions.has(s.parentName) || !positions.has(s.name)) continue;
             const a = positions.get(s.parentName);
@@ -226,14 +252,46 @@
             const ay = rowToY(a.row) + NODE_H;     // bottom of parent card
             const bx = colToX(b.col) + NODE_W / 2;
             const by = rowToY(b.row);              // top of child card
-            // Cubic bezier — gives a soft "tree branch" curve so siblings
-            // don't visually fight at the parent's anchor point.
             const midY = (ay + by) / 2;
             const d = `M${ax},${ay} C${ax},${midY} ${bx},${midY} ${bx},${by}`;
             edgesG.appendChild(svgEl('path', {
                 d, class: 'nm-edge' + (s.viaHidden ? ' nm-edge-hidden' : ''),
             }));
+            const key = s.parentName < s.name ? `${s.parentName}|${s.name}` : `${s.name}|${s.parentName}`;
+            treePairs.add(key);
         }
+
+        // Extra (non-tree) edges. graph.connections is the full undirected
+        // edge list shipped by ws-interceptor (May-2026). Older snapshots
+        // without this field gracefully degrade to tree-only rendering.
+        //
+        // Routing: anchor on each card's right edge, bow the curve out to
+        // the right of the world bounds. With multiple extras at varying
+        // row spans we offset each subsequent bow further right so two
+        // overlapping curves stay readable as separate links.
+        const allConns = Array.isArray(graph.connections) ? graph.connections : [];
+        const BOW_BASE = 28;       // px clearance from the rightmost card
+        const BOW_STEP = 14;       // additional offset per stacked curve
+        let bowIndex = 0;
+        for (const c of allConns) {
+            if (!c.a || !c.b) continue;
+            const key = c.a < c.b ? `${c.a}|${c.b}` : `${c.b}|${c.a}`;
+            if (treePairs.has(key)) continue;
+            if (!positions.has(c.a) || !positions.has(c.b)) continue;
+            const pa = rightAnchor(positions.get(c.a));
+            const pb = rightAnchor(positions.get(c.b));
+            // Control point sits to the right of the rightmost card column
+            // at a y midway between the endpoints. As more extras accumulate
+            // we step the control point further out so curves don't merge.
+            const cx = Math.max(pa.x, pb.x) + BOW_BASE + bowIndex * BOW_STEP;
+            const cy = (pa.y + pb.y) / 2;
+            const d = `M${pa.x},${pa.y} Q${cx},${cy} ${pb.x},${pb.y}`;
+            edgesG.appendChild(svgEl('path', {
+                d, class: 'nm-edge nm-edge-extra' + (c.isHidden ? ' nm-edge-hidden' : ''),
+            }));
+            bowIndex += 1;
+        }
+
         camera.appendChild(edgesG);
 
         // Cards
@@ -324,7 +382,13 @@
         }
         camera.appendChild(cardsG);
 
-        return { worldW, worldH };
+        // Widen world bounds to include the rightmost bowed-out extra-edge
+        // control point so fit() doesn't clip the curves. bowIndex carries
+        // the final count of extras rendered above.
+        const widenedW = bowIndex > 0
+            ? Math.max(worldW, worldW + BOW_BASE + bowIndex * BOW_STEP + PADDING)
+            : worldW;
+        return { worldW: widenedW, worldH };
     }
 
     // ─── Pan + Zoom (camera transform) ────────────────────────────────────

@@ -468,6 +468,48 @@
         const nameById = {};
         for (const s of servers) if (s && s.id) nameById[s.id] = s.serverName;
 
+        // Per-market BFS roots: priority logic needs to know "how far is
+        // server X from THIS market's gateway" not just from HOME. When
+        // we're running D4RK jobs the depth-priority should drain leaves
+        // of the D4RK side network first, not the HOME side. Each market
+        // root maps to its gateway server id (the canonical static IDs
+        // declared further down in this IIFE).
+        const marketRootIds = {
+            [HOME_MARKET_ID]: home?.id || HOME_SERVER_ID,
+            [DARK_MARKET_ID]: DARK_SERVER_ID,
+            [SRM_MARKET_ID]:  SRM_SERVER_ID,
+        };
+        const depthsByMarket = {};
+        for (const mid of Object.keys(marketRootIds)) {
+            const rootId = marketRootIds[mid];
+            if (!rootId) continue;
+            const { depths } = bfsFrom(rootId, adjAll);
+            const named = {};
+            for (const sid of Object.keys(depths)) {
+                const nm = nameById[sid];
+                if (nm) named[nm] = depths[sid];
+            }
+            depthsByMarket[mid] = named;
+        }
+
+        // Resolve connection ids to server names so consumers (UI Network
+        // Map, future planner) don't have to keep their own id→name map.
+        // Each entry: { a, b, isHidden }. We deduplicate (a,b)/(b,a) pairs
+        // since the in-game graph is undirected.
+        const seenEdge = new Set();
+        const namedConnections = [];
+        for (const c of conns) {
+            const a = c.serverA, b = c.serverB;
+            if (!a || !b) continue;
+            const aName = nameById[a];
+            const bName = nameById[b];
+            if (!aName || !bName) continue;
+            const key = aName < bName ? `${aName}|${bName}` : `${bName}|${aName}`;
+            if (seenEdge.has(key)) continue;
+            seenEdge.add(key);
+            namedConnections.push({ a: aName, b: bName, isHidden: !!c.isHidden });
+        }
+
         return {
             home: home ? home.serverName : null,
             homeId: home ? home.id : null,
@@ -475,6 +517,19 @@
             // Timestamp so UI can show last-refresh time (helps confirm the
             // Refresh button actually fired even when topology didn't change).
             updatedAt: Date.now(),
+            // Full undirected edge list. Why we ship the raw edges instead of
+            // letting consumers rebuild them: parentName only captures the
+            // BFS *tree* — every server gets one incoming edge. Cor3.gg's
+            // post-May-2026 map has multi-parent servers (a node reachable
+            // via two different upstream hops). Without the raw list, the
+            // popup can only render the spanning tree.
+            connections: namedConnections,
+            // Per-market BFS depths: { [marketId]: { [serverName]: depth } }.
+            // Auto-jobs priority sort consumes this so jobs running on the
+            // D4RK side network rank by their distance from D4RK gateway
+            // instead of from HOME — drains leaves first regardless of
+            // which market we're currently working through.
+            depthsByMarket,
             servers: servers.map((s) => {
                 // Pick the parent from whichever BFS first found this node.
                 // Visible-tree parent wins when available; the all-edges

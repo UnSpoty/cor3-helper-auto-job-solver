@@ -27,42 +27,44 @@
     //     not an arbitrary fallback.
     const STATE_TTL_MS      = C.LIMITS.AUTOJOBS_STATE_TTL_MS;
     const SENT_ACCEPT_TTL_MS = 3 * 60 * 1000;
-    const COMPLETED_JOB_TTL_MS = 2 * 60 * 1000;
+    // After the TTL window, a still-visible job means cor3.gg never
+    // processed the accept (silent WS failure). Retry up to this many
+    // times total before marking the job rejected. Without this cap, a
+    // job that refuses to accept stays in the candidate pool and we'd
+    // re-emit the same accept every 3 min forever.
+    const SILENT_ACCEPT_MAX_RETRIES = 3;
+    // completedJobIds is a visibility-tracked Set, not a TTL cache.
+    // We add a jobId when we successfully send COMPLETE (or determine
+    // server-side already done via "Job not found"). We REMOVE the entry
+    // when the job vanishes from every recentJobs[] — at that point cor3.gg
+    // has finally cleaned its cache and there's nothing left to dedup
+    // against. No timer involved: the lifetime is exactly "as long as
+    // cor3.gg keeps showing this job as TAKEN after we sent COMPLETE".
     const MARKET_REFRESH_INTERVAL_MS = 30 * 1000;
     const TICK_INTERVAL_MS = 5000;
     const KD_BUFFER_MS = (C.LIMITS && C.LIMITS.KD_BUFFER_MS) || 5 * 60 * 1000;
-    // Cap for runtime-failure retries before a job becomes permanently
-    // rejected. 2 = "try once, retry once". Higher would just waste time
-    // on jobs that are genuinely broken; lower would skip on the first
-    // transient hiccup the way users complained about.
-    const MAX_FLOW_ATTEMPTS = 2;
-    // Bugged-loop escalation. Each time a job exhausts MAX_FLOW_ATTEMPTS
-    // and gets rotated to the back of the queue, we bump a per-job
-    // `rotations` counter. After this many rotations the job is marked
-    // bugged (permanent reject — auto-cleared once the markets confirm
-    // the job is gone). Prevents the tight infinite loop you get when a
-    // single job in the queue keeps failing the same way (e.g. complete
-    // rejected with "2 existing IP(s) were removed — restore them" on
-    // an IP-Injection whose server-side state we can't see).
-    const MAX_ROTATIONS_BEFORE_BUGGED = 3;
-    // Delay before re-running a job after a runtime failure. Long enough
-    // for cor3.gg to settle (re-render lists, recover WS), short enough
-    // that the user sees the retry happen visibly.
-    const FLOW_RETRY_DELAY_MS = 5 * 1000;
-    // Connection-class failures (server-unreachable, transient SAI open
-    // failures from findOrOpenSai returning null) usually mean the WS
-    // endpoint hasn't fully settled after a remote-market preflight or
-    // we hit a brief race with cor3.gg's session handler. A 5s gap isn't
-    // long enough for those — bump connection retries to 12s so the
-    // endpoint flip definitely lands before the second attempt.
-    const SERVER_UNREACHABLE_RETRY_DELAY_MS = 12 * 1000;
-    // Settle delay between accept-batch close and the first job's flow
-    // dispatch. Used to be 1s — too short when the batch ended on a
-    // remote-market accept (DARK/SRM): the endpoint REVERT_TO_HOME post
-    // hadn't completed when we tried connect() to a HOME-network server,
-    // leaving the first job to fail its connect step and burn a retry.
-    // 3s gives the WS endpoint flip room to land.
-    const POST_ACCEPT_BATCH_DELAY_MS = 3 * 1000;
+    // Retry policy (May 2026 simplification):
+    //   • Try a job up to MAX_FLOW_ATTEMPTS times. Every failure increments
+    //     `attempts` on the queue entry.
+    //   • Once attempts >= MAX_FLOW_ATTEMPTS, the job is marked bugged
+    //     (permanent reject; auto-cleared when the market confirms it's gone).
+    //   • No rotation to back of queue, no cooldowns between attempts —
+    //     the job stays at the head of the queue and retries immediately.
+    //     If something is genuinely broken, we'll see it 3 times and skip.
+    //     If it's transient, the retry usually catches it on the next try.
+    const MAX_FLOW_ATTEMPTS = 3;
+    // No delay between attempts. Setting these to 0 also disables the old
+    // "rotate-to-back + 30s cooldown" path entirely. Kept named so the
+    // retryOrReject call sites that read them still type-check.
+    const FLOW_RETRY_DELAY_MS = 0;
+    const SERVER_UNREACHABLE_RETRY_DELAY_MS = 0;
+    // Minimum settle delay between accept-batch close and the first
+    // job's flow dispatch. Cannot be 0: when a batch ends on a remote-
+    // market accept (DARK/SRM), the orchestrator posts REVERT_ENDPOINT_TO_HOME
+    // and the WS endpoint flip needs to land BEFORE the first job's
+    // connect() runs — else the connect bounces back as rejected. 1 s
+    // is the empirical floor where this stops happening.
+    const POST_ACCEPT_BATCH_DELAY_MS = 1000;
     // Reasons that should be treated as "connection failure" for retry
     // pacing purposes. Any of these substrings matches case-insensitively.
     const CONNECTION_FAIL_PATTERN = /transient|unreachable|connect|no.path/i;
@@ -120,6 +122,13 @@
     // jobPriority — leaves first, hubs last, so K/D timers don't stack on
     // path-critical servers.
     const nmDepths = new Map();
+    // Per-market depth maps: marketId → Map<serverName, depth>. Populated
+    // alongside `nmDepths` from NM_GRAPH.depthsByMarket. jobPriority picks
+    // the depth from the job's own market so the priority sort is local
+    // to the market we're currently working — drains D4RK leaves first
+    // when running D4RK jobs, even though those servers are deep relative
+    // to HOME. Falls back to nmDepths if the per-market entry is missing.
+    const nmDepthsByMarket = new Map();
     let state = { ...IDLE_STATE };
     let queue = [];
     let rejectedJobs = {};                // Phase 3: { [jobId]: { reason, since, descriptor } }
@@ -148,6 +157,12 @@
     let cooldownUntil = 0;
     let solvingStartedAt = 0;
     let completingStartedAt = 0;
+    // Set to a timestamp while the ICE WALL solver is actively working a
+    // puzzle. The solving-watchdog in idleTick skips firing when this is
+    // non-zero — ice-wall puzzles legitimately take up to 4 min/round,
+    // and a multi-round puzzle would otherwise blow past the 5min state
+    // TTL and abort the parent job. Reset by the busy=false envelope.
+    let iceWallBusySince = 0;
     let lastMarketRefreshAt = 0;
     let jobManagerReady = false;
     let modRef = null;             // back-ref so helpers can log
@@ -172,7 +187,24 @@
     function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
     // ─── Storage glue ────────────────────────────────────────────────────
-    function saveQueue() { Store.local.setOne(C.STORAGE_LOCAL.AUTOJOBS_QUEUE, queue); }
+    // Diagnostic: track queue id-set so saveQueue can log added/removed ids
+    // through the module Logger. Helps debug "accepted job disappears from
+    // Jobs list" reports — every queue mutation is visible in Activity Log
+    // and the State History snapshot picks it up via the structured event.
+    let lastQueueIds = [];
+    function saveQueue() {
+        const currentIds = queue.map((j) => j.jobId);
+        const before = new Set(lastQueueIds);
+        const after = new Set(currentIds);
+        const added = currentIds.filter((id) => !before.has(id));
+        const removed = lastQueueIds.filter((id) => !after.has(id));
+        if (modRef && (added.length || removed.length)) {
+            modRef.info(`queue Δ: +${added.length} -${removed.length} (size ${currentIds.length})`,
+                { added, removed, size: currentIds.length });
+        }
+        lastQueueIds = currentIds;
+        Store.local.setOne(C.STORAGE_LOCAL.AUTOJOBS_QUEUE, queue);
+    }
     function saveRejected() { Store.local.setOne(C.STORAGE_LOCAL.AJ_REJECTED_JOBS, rejectedJobs); }
     function saveState() { Store.local.setOne(C.STORAGE_LOCAL.AUTOJOBS_STATE, { ...state, updatedAt: Date.now() }); }
     function saveCompletedLog() {
@@ -307,6 +339,111 @@
                 pushUserLog(`Dismissed FAILED job "${p.name}"`, 'warn');
                 if (modRef) modRef.info(`dismiss FAILED ${p.jobId} on ${p.marketId}`);
             }, i * 600);
+        }
+    }
+
+    // Detect recentJobs[] entries that look ready to claim — the user
+    // (or a previous bot run) already met the job's conditions and the
+    // entry is sitting around waiting for a market.job.complete frame.
+    // We don't know the exact cor3.gg status enum from data alone, so:
+    //   • Match any of the conservative status whitelist.
+    //   • Match boolean flags that any sane API would use.
+    //   • Log unknown statuses we encounter so the user can tell us the
+    //     right value to add.
+    // Cor3.gg's recentJobs[] also lists FAILED entries (handled elsewhere)
+    // and TAKEN entries (handled by tryResumeInProgress). We're after the
+    // tertiary "done but not claimed" case.
+    const READY_STATUS_PATTERNS = ['READY', 'COMPLETED', 'CAN_COMPLETE', 'CONDITIONS_MET', 'DONE'];
+    const READY_BOOLEAN_FLAGS = ['areConditionsCompleted', 'isReady', 'conditionsMet', 'canComplete', 'isComplete'];
+    const seenReadyIds = new Map();
+    // Visibility-based prune is the primary cleanup path — when cor3.gg
+    // confirms the COMPLETE (job vanishes from recentJobs[]), we drop the
+    // dedup entry immediately so a future cycle of the same job (rare,
+    // but happens if the user picks up another instance of the same
+    // recipe) gets a fresh detection. TTL is the failsafe in case the
+    // job never disappears (e.g. cor3.gg keeps it visible after claim).
+    const READY_SEEN_TTL_MS = 5 * 60 * 1000;
+    function isReadyToClaim(job) {
+        if (!job) return false;
+        // Boolean flags win over status. cor3.gg keeps status='TAKEN'
+        // throughout a job's lifecycle and signals "done, claim me"
+        // via a separate flag — so a TAKEN job with one of these
+        // truthy IS ready. Checking flags FIRST was missing in the
+        // original cut and caused the "queued + auto-claimed in
+        // parallel" double-solve the user hit.
+        for (const f of READY_BOOLEAN_FLAGS) {
+            if (job[f] === true) return true;
+        }
+        const status = String(job.status || '').toUpperCase();
+        // Definitive "not ready" statuses (status-only signal).
+        if (status === 'TAKEN' || status === 'FAILED' || status === 'EXPIRED' || status === 'AVAILABLE') return false;
+        if (READY_STATUS_PATTERNS.some((p) => status.includes(p))) return true;
+        return false;
+    }
+    function autoCompleteReadyFromMarkets(marketsBundle) {
+        const now = Date.now();
+        // Visibility-based prune for BOTH dedup sets: when a job vanishes
+        // from every recentJobs[], cor3.gg has finally cleaned its cache
+        // and there's nothing left to dedup against.
+        //   • seenReadyIds — auto-claim dedup (post-COMPLETE phantom).
+        //   • completedJobIds — resume dedup (we've claimed this in the
+        //     current session, don't re-pick it from recentJobs).
+        const allRecentIds = new Set();
+        for (const data of marketsBundle) {
+            if (!data || !Array.isArray(data.recentJobs)) continue;
+            for (const j of data.recentJobs) if (j && j.id) allRecentIds.add(j.id);
+        }
+        for (const id of [...seenReadyIds.keys()]) {
+            if (!allRecentIds.has(id)) seenReadyIds.delete(id);
+        }
+        for (const id of [...completedJobIds.keys()]) {
+            if (!allRecentIds.has(id)) completedJobIds.delete(id);
+        }
+        // Failsafe TTL prune for seenReadyIds only — guards against the
+        // pathological case where cor3.gg never drops a ready entry.
+        for (const [id, ts] of seenReadyIds) if (now - ts > READY_SEEN_TTL_MS) seenReadyIds.delete(id);
+        for (const data of marketsBundle) {
+            if (!data || !data.marketId) continue;
+            const recent = data.recentJobs;
+            if (!Array.isArray(recent)) continue;
+            for (const j of recent) {
+                if (!j || !j.id) continue;
+                if (!isReadyToClaim(j)) continue;
+                if (completedJobIds.has(j.id)) continue;
+                if (seenReadyIds.has(j.id)) continue;
+                seenReadyIds.set(j.id, now);
+                pushUserLog(`Ready-to-claim: "${j.name || j.id}" status=${j.status || '?'} — sending complete`, 'info');
+                if (modRef) modRef.info('autocomplete ready', { jobId: j.id, status: j.status, name: j.name, marketId: data.marketId });
+                Bus.window.post('COR3_COMPLETE_JOB', { jobId: j.id, marketId: data.marketId });
+                // If this job is currently in our queue (we already
+                // started solving it but the user / a prior flow run
+                // finished the conditions), pull it out — the COMPLETE
+                // dispatch above will finish the lifecycle. Without this
+                // the orchestrator would keep working it after the
+                // server already accepts the COMPLETE.
+                const qi = queue.findIndex((q) => q.jobId === j.id);
+                if (qi !== -1) {
+                    queue.splice(qi, 1);
+                    saveQueue();
+                    pushUserLog(`Dropped "${j.name || j.id}" from queue — auto-claimed as ready`, 'info');
+                }
+                // If we're actively solving this job right now, abort
+                // the flow so it doesn't burn time on already-done work.
+                if (state.jobId === j.id && state.status !== 'idle') {
+                    Bus.window.post(MSG.JOB.ABORT, null);
+                    pushUserLog(`Aborted current flow — "${j.name || j.id}" is ready to claim`, 'warn');
+                }
+            }
+            // Diagnostic: log any status string we don't yet recognise.
+            // Helps the user tell us the exact enum cor3.gg uses for
+            // ready-to-claim so we can whitelist it deterministically.
+            for (const j of recent) {
+                if (!j || !j.status) continue;
+                const status = String(j.status).toUpperCase();
+                if (status === 'TAKEN' || status === 'FAILED' || status === 'EXPIRED' || status === 'AVAILABLE' || status === 'COMPLETED') continue;
+                if (READY_STATUS_PATTERNS.some((p) => status.includes(p))) continue;
+                if (modRef) modRef.debug(`unknown recentJobs status seen: ${j.status}`, { jobId: j.id, name: j.name });
+            }
         }
     }
 
@@ -457,18 +594,14 @@
     }
 
     // Per-job retry with bounded rotation. After MAX_FLOW_ATTEMPTS
-    // consecutive failures, the job is rotated to the back of the queue
-    // (so other jobs get a turn) and its attempt counter resets. A
-    // separate `rotations` counter is bumped on each rotation; once it
-    // hits MAX_ROTATIONS_BEFORE_BUGGED the job is marked bugged and
-    // dropped via rejectJob() — otherwise a single failing job in a
-    // single-job queue spins forever (rotation to the tail of a 1-item
-    // queue is a no-op).
+    // attempts < MAX_FLOW_ATTEMPTS: bump counter, retry with the configured
+    // delay (default 0 — immediate).
+    // attempts >= MAX_FLOW_ATTEMPTS: mark bugged via rejectJob (permanent
+    // reject; auto-cleared once the market confirms the job is gone).
     //
-    // For connection-class reasons we additionally force a REVERT_ENDPOINT_TO_HOME
-    // and lengthen the retry delay — those failures are usually about the
-    // WS endpoint sitting on the wrong market when connect() ran.
-    const REQUEUE_COOLDOWN_MS = 30 * 1000;
+    // For connection-class failures we additionally force a
+    // REVERT_ENDPOINT_TO_HOME so the next attempt starts from a known WS
+    // endpoint instead of whatever flipped during the failed connect.
     function retryOrReject(jobId, descriptor, reason, opts) {
         if (!jobId) return { retried: false };
         const qi = queue.findIndex((j) => j.jobId === jobId);
@@ -479,36 +612,21 @@
         const attempts = (queued.attempts || 0) + 1;
         const isConn = isConnectionFailure(reason);
         const defaultDelay = isConn ? SERVER_UNREACHABLE_RETRY_DELAY_MS : FLOW_RETRY_DELAY_MS;
-        let delayMs = (opts && Number.isFinite(opts.delayMs)) ? opts.delayMs : defaultDelay;
+        const delayMs = (opts && Number.isFinite(opts.delayMs)) ? opts.delayMs : defaultDelay;
+        if (isConn) Bus.window.post(C.MSG.GAME.REVERT_ENDPOINT_TO_HOME, null);
         if (attempts < MAX_FLOW_ATTEMPTS) {
             queued.attempts = attempts;
             saveQueue();
-            if (isConn) Bus.window.post(C.MSG.GAME.REVERT_ENDPOINT_TO_HOME, null);
-            pushUserLog(`Retrying "${descriptor}" (attempt ${attempts + 1}/${MAX_FLOW_ATTEMPTS}, +${Math.round(delayMs/1000)}s) — ${reason}`, 'warn');
+            pushUserLog(`Retrying "${descriptor}" (attempt ${attempts + 1}/${MAX_FLOW_ATTEMPTS}) — ${reason}`, 'warn');
             return { retried: true, delayMs };
         }
+        // attempts === MAX_FLOW_ATTEMPTS → permanent bugged.
         queue.splice(qi, 1);
-        queued.attempts = 0;
-        const rotations = (queued.rotations || 0) + 1;
-        queued.rotations = rotations;
-        if (isConn) Bus.window.post(C.MSG.GAME.REVERT_ENDPOINT_TO_HOME, null);
-        // Bugged-loop escalation: after MAX_ROTATIONS_BEFORE_BUGGED full
-        // rotations the job has failed (MAX_ROTATIONS × MAX_FLOW_ATTEMPTS)
-        // times in a row without progress. Stop rotating, mark as
-        // permanently rejected so the queue actually moves on. Auto-cleared
-        // when the markets confirm the job is gone (see clearRejectedFromMarkets).
-        if (rotations >= MAX_ROTATIONS_BEFORE_BUGGED) {
-            saveQueue();
-            const buggedReason = `bugged: looped ${rotations}× (${rotations * MAX_FLOW_ATTEMPTS} attempts) — ${reason}`;
-            pushUserLog(`"${descriptor}" marked bugged after ${rotations} loops — skipping. Last error: ${reason}`, 'error');
-            rejectJob(jobId, descriptor, buggedReason);
-            return { retried: false, delayMs: FLOW_RETRY_DELAY_MS, bugged: true };
-        }
-        queue.push(queued);
         saveQueue();
-        delayMs = Math.max(delayMs, REQUEUE_COOLDOWN_MS);
-        pushUserLog(`"${descriptor}" failed ${attempts}× — moved to back of queue (loop ${rotations}/${MAX_ROTATIONS_BEFORE_BUGGED}), retrying in ${Math.round(delayMs/1000)}s — ${reason}`, 'warn');
-        return { retried: true, delayMs };
+        const buggedReason = `bugged: failed ${MAX_FLOW_ATTEMPTS} attempts — ${reason}`;
+        pushUserLog(`"${descriptor}" marked bugged after ${MAX_FLOW_ATTEMPTS} attempts — skipping. Last error: ${reason}`, 'error');
+        rejectJob(jobId, descriptor, buggedReason);
+        return { retried: false, delayMs, bugged: true };
     }
 
     function requestMarketRefresh(reason, opts) {
@@ -682,8 +800,25 @@
                 const type = detectJobType(job);
                 if (!type) continue;
                 if (settings.enabledJobTypes && settings.enabledJobTypes[type] === false) continue;
-                const sentTs = sentAcceptIds.get(job.id);
-                if (sentTs && Date.now() - sentTs < SENT_ACCEPT_TTL_MS) continue;
+                // sentAcceptIds entries can be either a timestamp (legacy
+                // shape) or { ts, attempts } (post-audit shape). Treat any
+                // visible-but-still-recorded job as in-flight; after
+                // SILENT_ACCEPT_MAX_RETRIES re-emits, give up and reject.
+                const sent = sentAcceptIds.get(job.id);
+                if (sent) {
+                    const sentTs = typeof sent === 'number' ? sent : sent.ts;
+                    const attempts = typeof sent === 'number' ? 1 : (sent.attempts || 1);
+                    if (Date.now() - sentTs < SENT_ACCEPT_TTL_MS) continue;
+                    // TTL elapsed AND job still visible — accept didn't
+                    // land. Retry up to SILENT_ACCEPT_MAX_RETRIES total.
+                    if (attempts >= SILENT_ACCEPT_MAX_RETRIES) {
+                        rejectJob(job.id, job.name || job.id, `accept silently failed ${attempts}×`);
+                        sentAcceptIds.delete(job.id);
+                        continue;
+                    }
+                    // Bump attempts so the next miss tracks correctly.
+                    sentAcceptIds.set(job.id, { ts: Date.now(), attempts: attempts + 1 });
+                }
                 if (isJobRejected(job.id)) continue;
                 if (['ip_injection','ip_cleanup','data_upload','log_deletion','log_download','file_elimination','data_download','decrypt_extract'].includes(type)) {
                     const srvName = extractServerFromJob(job);
@@ -741,7 +876,11 @@
         for (let i = 0; i < bulkPendingJobs.length; i++) {
             const pending = bulkPendingJobs[i];
             const delay = i * 1200 + 800 + Math.floor(Math.random() * 300);
-            sentAcceptIds.set(pending.id, Date.now());
+            // Preserve attempts counter if this is a re-emit of a
+            // previously-silently-failed accept (set by findCandidates).
+            const prev = sentAcceptIds.get(pending.id);
+            const prevAttempts = (prev && typeof prev === 'object') ? (prev.attempts || 1) : 1;
+            sentAcceptIds.set(pending.id, { ts: Date.now(), attempts: prevAttempts });
             setTimeout(() => {
                 bulkSentOrder.push(pending);
                 Bus.window.post(MSG.GAME.ACCEPT_JOB, { jobId: pending.id, marketId: pending.marketId });
@@ -759,9 +898,15 @@
         // shouldn't reach here, but if it does, treat as far below default.)
         const p = serverPriorities[job.serverName];
         if (Number.isFinite(p)) return p;
-        // Default: BFS depth from HOME. Deeper = higher priority so we drain
-        // leaf servers before stacking K/D timers on the hubs they depend on.
-        // Falls back to 0 for any server we don't have a depth for yet.
+        // Default: BFS depth from this job's market gateway. Deeper = higher
+        // priority so we drain leaf servers before stacking K/D timers on
+        // the hubs they depend on. The per-market table comes from
+        // NM_GRAPH.depthsByMarket; falls back to the HOME-rooted nmDepths
+        // if the market isn't in the table (legacy NM_GRAPH without
+        // depthsByMarket, or a marketId we don't have a gateway for).
+        const perMarket = job.marketId ? nmDepthsByMarket.get(job.marketId) : null;
+        const dm = perMarket && perMarket.get(job.serverName);
+        if (Number.isFinite(dm)) return dm;
         const d = nmDepths.get(job.serverName);
         return Number.isFinite(d) ? d : 0;
     }
@@ -819,8 +964,6 @@
     // ─── Resume in-progress (TAKEN jobs after market refresh) ─────────────
     async function tryResumeInProgress() {
         if (state.status !== 'idle') return;
-        const now = Date.now();
-        for (const [id, ts] of completedJobIds) if (now - ts > COMPLETED_JOB_TTL_MS) completedJobIds.delete(id);
 
         // Read the same set of markets findCandidates reads — keeps SRM
         // resumes wired alongside Home/Dark for free.
@@ -830,6 +973,17 @@
             if (!data || !mid) return;
             for (const job of (data.recentJobs || [])) {
                 if (job.status !== 'TAKEN') continue;
+                // Ready-to-claim is handled by autoCompleteReadyFromMarkets —
+                // do NOT also queue these. Without this guard the bot would
+                // dispatch COR3_COMPLETE_JOB AND simultaneously re-run the
+                // flow (open SAI, decrypt, etc.) for an already-done job.
+                // Also skip jobs we just sent COMPLETE for — cor3.gg
+                // doesn't refresh recentJobs status immediately, so the
+                // entry still reads status='TAKEN' for ~1-2s after we
+                // claim it; without this check tryResumeInProgress races
+                // the WS reply and queues the same job.
+                if (isReadyToClaim(job)) continue;
+                if (seenReadyIds.has(job.id)) continue;
                 const type = detectJobType(job);
                 if (!type) continue;
                 if (settings.enabledJobTypes && settings.enabledJobTypes[type] === false) continue;
@@ -906,6 +1060,16 @@
         // own in-game deadline). Connect + actual job work sit on top of
         // that; 5 min leaves a small buffer before we declare a real hang.
         if (state.status === 'solving' && solvingStartedAt > 0 && Date.now() - solvingStartedAt > 300000) {
+            // Suppress watchdog while ICE WALL is grinding. Each round can
+            // burn up to 240s; a multi-round puzzle plus the surrounding
+            // connect/SAI overhead easily exceeds 5min and that's NORMAL.
+            // Bump the watchdog start to "now" so the next 5min countdown
+            // begins from when ice-wall finishes.
+            if (iceWallBusySince > 0) {
+                solvingStartedAt = Date.now();
+                modRef.debug('solving watchdog deferred — ice-wall busy');
+                return;
+            }
             modRef.warn('solving watchdog 5min');
             Bus.window.post(MSG.JOB.ABORT, null);
             // A watchdog hit is a runtime failure. Route through the
@@ -1003,7 +1167,59 @@
             toAccept = candidates;
         }
 
-        if (toAccept.length > 0) acceptCandidatesBatch(toAccept);
+        if (toAccept.length > 0) {
+            // Commit 3 — pt 9: new accept policy.
+            //   • file_decryption: batch ALL of them (no-server flow, no map
+            //     state to worry about, parallel-safe).
+            //   • everything else: accept only the TOP-priority one per
+            //     cycle. The next idleTick re-runs after the job completes
+            //     and the map refresh, so we always re-evaluate K/D / new
+            //     maintenance / readiness changes between accepts.
+            // Old behaviour (accept N per cycle) was the source of the
+            // "queue accepts something that just became unreachable mid-
+            // batch" failure mode.
+            const decrypts = toAccept.filter((j) => j.type === 'file_decryption');
+            const others   = toAccept.filter((j) => j.type !== 'file_decryption');
+            let batch;
+            if (decrypts.length > 0) {
+                // Decrypts present → accept ONLY decrypts this cycle. Non-
+                // decrypt jobs wait until every available decrypt is drained;
+                // they're picked up one-at-a-time on subsequent idleTick
+                // passes when `decrypts` is empty.
+                batch = decrypts;
+            } else {
+                // No decrypts → accept the single highest-priority non-decrypt.
+                // Score using the same logic as queue jobPriority so the UI's
+                // priority badges match what gets accepted. candidate-shape
+                // carries `type`/`marketId` but its server name lives in
+                // relatedServers — extract once per sort key.
+                const scored = others.map((c) => ({
+                    c, server: extractServerFromJob(c),
+                }));
+                scored.sort((A, B) => {
+                    const pa = candidatePriority(A.c, A.server);
+                    const pb = candidatePriority(B.c, B.server);
+                    return pb - pa;
+                });
+                batch = scored.length > 0 ? [scored[0].c] : [];
+            }
+            if (batch.length > 0) acceptCandidatesBatch(batch);
+        }
+    }
+
+    // Score a market candidate (pre-accept) on the same basis as queue
+    // jobPriority. Kept separate because the two shapes differ — queue
+    // entries carry resolved `jobType`/`serverName`, candidates carry
+    // `type` + raw apiJob (server resolved via extractServerFromJob).
+    function candidatePriority(cand, serverName) {
+        if (!serverName || cand.type === 'file_decryption') return Number.POSITIVE_INFINITY;
+        const p = serverPriorities[serverName];
+        if (Number.isFinite(p)) return p;
+        const perMarket = cand.marketId ? nmDepthsByMarket.get(cand.marketId) : null;
+        const dm = perMarket && perMarket.get(serverName);
+        if (Number.isFinite(dm)) return dm;
+        const d = nmDepths.get(serverName);
+        return Number.isFinite(d) ? d : 0;
     }
 
     // ─── Module ───────────────────────────────────────────────────────────
@@ -1040,6 +1256,13 @@
             ]);
             if (Array.isArray(local[C.STORAGE_LOCAL.AJ_COMPLETED_JOBS_LOG])) {
                 completedJobsLog = local[C.STORAGE_LOCAL.AJ_COMPLETED_JOBS_LOG];
+                // completedJobsLog is the user-facing "what got done" log
+                // (50-entry ring). It is NOT used to seed completedJobIds —
+                // that's a per-session in-memory dedup set, pruned by
+                // recentJobs[] visibility. If cor3.gg still shows a
+                // pre-restart phantom as TAKEN, the "Job not found" path in
+                // onJobCompleted handles it cleanly (single dispatch, no
+                // retry burn).
             }
             if (local[C.STORAGE_LOCAL.AUTOJOBS_STATE] && local[C.STORAGE_LOCAL.AUTOJOBS_STATE].status !== 'idle') {
                 const ls = local[C.STORAGE_LOCAL.AUTOJOBS_STATE];
@@ -1075,6 +1298,9 @@
             }
             if (Array.isArray(local[C.STORAGE_LOCAL.AUTOJOBS_QUEUE])) {
                 queue = local[C.STORAGE_LOCAL.AUTOJOBS_QUEUE].filter((j) => !isJobRejected(j.jobId));
+                // Seed diagnostic baseline so the first saveQueue Δ-log
+                // doesn't claim every persisted entry was just added.
+                lastQueueIds = queue.map((j) => j.jobId);
             }
             // Seed nmDepths from persisted graph so depth-priority sort works
             // before the first WS get.map response after reload.
@@ -1082,6 +1308,19 @@
             if (persistedGraph && Array.isArray(persistedGraph.servers)) {
                 for (const s of persistedGraph.servers) {
                     if (s.name && Number.isFinite(s.depth)) nmDepths.set(s.name, s.depth);
+                }
+                // Seed per-market tables too — same reason: priority sort
+                // needs to be sane before the first fresh NM_GRAPH arrives.
+                const dbm = persistedGraph.depthsByMarket || null;
+                if (dbm && typeof dbm === 'object') {
+                    for (const mid of Object.keys(dbm)) {
+                        const m = new Map();
+                        const named = dbm[mid] || {};
+                        for (const nm of Object.keys(named)) {
+                            if (Number.isFinite(named[nm])) m.set(nm, named[nm]);
+                        }
+                        nmDepthsByMarket.set(mid, m);
+                    }
                 }
             }
         }
@@ -1120,6 +1359,7 @@
                     ];
                     if (Object.keys(rejectedJobs).length > 0) clearRejectedFromMarkets(arr);
                     dismissFailedFromMarkets(arr);
+                    autoCompleteReadyFromMarkets(arr);
                 } catch (_) { /* best-effort cleanup */ }
                 setTimeout(() => tryResumeInProgress(), 500);
                 if (state.status === 'idle') setTimeout(tick, 2000);
@@ -1137,6 +1377,19 @@
             this.track(Bus.window.on(C.MSG.JOB.MINIGAME_RESULT, (env) => this.onMinigameResult(env)));
             this.track(Bus.window.on(C.MSG.JOB.KD_DETECTED, (env) => this.onKdDetected(env)));
             this.track(Bus.window.on(C.MSG.JOB.SERVER_UNREACHABLE, (env) => this.onServerUnreachable(env)));
+            this.track(Bus.window.on(C.MSG.JOB.SERVER_ACCESS_PROBED, (env) => this.onServerAccessProbed(env)));
+            this.track(Bus.window.on(C.MSG.SOLVER.ICE_WALL_BUSY, (env) => {
+                iceWallBusySince = (env && env.busy) ? (env.ts || Date.now()) : 0;
+                if (iceWallBusySince) {
+                    pushUserLog('ICE WALL solver busy — pausing solving watchdog', 'info');
+                } else {
+                    // Reset solvingStartedAt so the watchdog starts a clean
+                    // 5min window from "ice-wall just finished", not from
+                    // "flow originally began".
+                    if (state.status === 'solving') solvingStartedAt = Date.now();
+                    pushUserLog('ICE WALL solver idle — solving watchdog resumed', 'debug');
+                }
+            }));
             this.track(Bus.window.on(C.MSG.GAME.NM_SERVERS, (env) => this.onNmServers(env)));
             this.track(Bus.window.on(C.MSG.GAME.NM_GRAPH,   (env) => this.onNmGraph(env)));
             this.track(Bus.window.on('COR3_JOB_MANAGER_READY', () => this.onJobManagerReady()));
@@ -1352,9 +1605,42 @@
                 const errMsg = typeof env.error === 'string' ? env.error : (env.error?.message || JSON.stringify(env.error));
                 pushUserLog('Complete failed: ' + errMsg, 'error');
                 if (completedJobId) {
-                    // Server rejected our complete. Always retry through the
-                    // queue — transient causes (logSeqs reshuffle, tally lag)
-                    // tend to clear on a fresh attempt.
+                    // "Job with id: X not found" is deterministic: cor3.gg
+                    // already finished this job server-side (we did it in
+                    // an earlier session, or recentJobs[] is stale and we
+                    // just re-ran a phantom). Retrying won't help — the
+                    // job genuinely no longer exists. Treat as success
+                    // (record as completed) so future market refreshes
+                    // don't keep resurrecting it, and skip the 3-retry
+                    // dance that wastes 3 minutes per phantom.
+                    if (/not found/i.test(errMsg)) {
+                        pushUserLog(`"${descriptor}" already completed server-side (Job not found) — treating as done`, 'warn');
+                        completedJobIds.set(completedJobId, Date.now());
+                        recordCompletedJob({
+                            jobId: completedJobId,
+                            completedAt: Date.now(),
+                            descriptor: state.jobName || null,
+                            jobType: state.jobType || null,
+                            serverName: state.serverName || null,
+                            marketId: state.marketId || null,
+                            phantom: true,
+                        });
+                        const qi = queue.findIndex((j) => j.jobId === completedJobId);
+                        if (qi !== -1) { queue.splice(qi, 1); saveQueue(); }
+                        completingStartedAt = 0;
+                        resetRecoveryCounter();
+                        if (queue.length === 0) {
+                            enterAllJobsDone('cycle complete (phantom claim)');
+                        } else {
+                            setStatus('idle', 'phantom-complete -> idle');
+                        }
+                        setTimeout(() => requestMarketRefresh('phantom-complete', { skipRemote: true }), 1000);
+                        if (queue.length > 0) setTimeout(executeNextFromQueue, 1500);
+                        return;
+                    }
+                    // Any other complete error → still goes through the
+                    // retry path. Transient causes (logSeqs reshuffle,
+                    // tally lag) tend to clear on a fresh attempt.
                     const decision = retryOrReject(completedJobId, descriptor, `complete-rejected: ${errMsg}`,
                                                    { delayMs: FLOW_RETRY_DELAY_MS });
                     completingStartedAt = 0;
@@ -1396,6 +1682,16 @@
             // (every 30s) and accept-batch-done — neither overlaps with
             // an active flow.
             setTimeout(() => requestMarketRefresh('job-completed', { skipRemote: true }), 2000);
+            // Commit 3 — pt 9: also pull a fresh Network Map after any
+            // non-decrypt completion. The plan is "do one job → look at the
+            // map → take the next one", and the map needs to be current so
+            // that the planner's next pass sees any maintenance/readiness
+            // changes that happened during the flow. file_decryption is
+            // server-less, so it can't change the map state — skip there.
+            if (state.jobType && state.jobType !== 'file_decryption') {
+                lastNmGraphRequestAt = Date.now();
+                Bus.window.post(C.MSG.GAME.REQUEST_NM_MAP, null);
+            }
             if (queue.length > 0) setTimeout(executeNextFromQueue, 3000);
         }
 
@@ -1475,6 +1771,28 @@
             pushUserLog(`Server "${serverName}" K/D (${timerText || '~6h'}) — skipped`, 'warn');
         }
 
+        // Commit 3 (pt 7): persist readiness probe results into
+        // STORAGE_LOCAL.AJ_SERVER_READINESS. Planner reads this on every
+        // candidate evaluation. We only WRITE here — TTL-based invalidation
+        // lives in the planner so we don't have to schedule cleanup ticks.
+        async onServerAccessProbed(env) {
+            const { serverName } = env || {};
+            if (!serverName) return;
+            try {
+                const cur = (await Store.local.getOne(C.STORAGE_LOCAL.AJ_SERVER_READINESS, {})) || {};
+                cur[serverName] = {
+                    canAccess: env.canAccess !== false,
+                    hasHackTools: typeof env.hasHackTools === 'boolean' ? env.hasHackTools : (cur[serverName]?.hasHackTools ?? null),
+                    reason: env.reason || null,
+                    checkedAt: Date.now(),
+                };
+                await Store.local.setOne(C.STORAGE_LOCAL.AJ_SERVER_READINESS, cur);
+                if (modRef) modRef.info(`readiness "${serverName}" canAccess=${cur[serverName].canAccess} reason=${env.reason || '?'}`);
+            } catch (err) {
+                if (modRef) modRef.warn('readiness persist failed', { error: String(err && err.message || err) });
+            }
+        }
+
         onServerUnreachable(env) {
             const { serverName, blockedByKD } = env;
             if (!serverName) return;
@@ -1547,6 +1865,21 @@
             nmDepths.clear();
             for (const s of env.servers) {
                 if (s.name && Number.isFinite(s.depth)) nmDepths.set(s.name, s.depth);
+            }
+            // Per-market depth tables — replaces nmDepths usage for jobs
+            // that carry a marketId. Old snapshots without depthsByMarket
+            // leave the table empty and the HOME-rooted depths take over.
+            nmDepthsByMarket.clear();
+            const dbm = env.depthsByMarket || null;
+            if (dbm && typeof dbm === 'object') {
+                for (const mid of Object.keys(dbm)) {
+                    const m = new Map();
+                    const named = dbm[mid] || {};
+                    for (const nm of Object.keys(named)) {
+                        if (Number.isFinite(named[nm])) m.set(nm, named[nm]);
+                    }
+                    nmDepthsByMarket.set(mid, m);
+                }
             }
             await Store.local.set({
                 [C.STORAGE_LOCAL.NM_GRAPH]: env,

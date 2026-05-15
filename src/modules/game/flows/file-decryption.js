@@ -11,7 +11,24 @@
     const flows = root.COR3.game.flows;
     const MSG = C.MSG;
 
-    const MINIGAME_SEL = '[data-sentry-element="LogContentStyled"][data-sentry-source-file="config-hack-application.tsx"]';
+    // May 2026: cor3.gg ships TWO different minigames for file decryption
+    // depending on the file. We treat either as "minigame appeared":
+    //   • Legacy config-hack — Porter-style minimax, solved by solver-decrypt.
+    //   • ICE WALL Break — pattern matching, solved by solver-ice-wall.
+    // Whichever opens, the corresponding solver picks it up. Flow only
+    // cares about (a) seeing one of them, and (b) waiting for both to be
+    // gone before reporting done.
+    const MINIGAME_SELS = [
+        '[data-sentry-element="LogContentStyled"][data-sentry-source-file="config-hack-application.tsx"]',
+        '[data-sentry-component="IceWallBreakApplication"]',
+    ];
+    function findMinigame() {
+        for (const s of MINIGAME_SELS) {
+            const el = document.querySelector(s);
+            if (el) return el;
+        }
+        return null;
+    }
     const FOLDER_APP_SEL = '[data-component-name="FolderApplication"]';
 
     async function run(jobId, marketId, fileCondition, mod) {
@@ -67,16 +84,19 @@
         const start = Date.now();
         let appeared = false;
         while (!root.__jobManagerAbort && Date.now() - start < 90_000) {
-            if (document.querySelector(MINIGAME_SEL)) { appeared = true; break; }
+            if (findMinigame()) { appeared = true; break; }
             await dom.sleep(250);
         }
         if (!appeared) {
-            mod.warn('Minigame did not appear within 90s');
+            mod.warn('Minigame did not appear within 90s (checked both config-hack and ICE WALL Break)');
             flows.sendTimeout(jobId, marketId);
             flows.setWatching(false);
             return;
         }
-        while (!root.__jobManagerAbort && document.querySelector(MINIGAME_SEL)) {
+        // Wait for the minigame to close. The actual solver (decrypt or
+        // ice-wall) runs independently and clicks until done. We just
+        // poll until neither selector matches anything.
+        while (!root.__jobManagerAbort && findMinigame()) {
             await dom.sleep(100);
         }
         if (root.__jobManagerAbort) { flows.setWatching(false); return; }

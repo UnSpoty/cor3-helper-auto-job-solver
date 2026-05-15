@@ -220,11 +220,20 @@
     // the UI can render them. Once Phase 2 lands, the legacy values stop
     // being written and this function only matters for state read from
     // older storage during the upgrade.
-    function mapLegacyToCanonical(legacy) {
+    function mapLegacyToCanonical(legacy, ctx) {
         switch (legacy) {
             case 'idle':       return STATES.IDLE;
             case 'accepting':  return STATES.TAKE_ALL_VALID_JOBS;
-            case 'solving':    return STATES.OPEN_SAI;       // best-effort; specific FLOW_* not knowable from legacy state
+            case 'solving': {
+                // If the caller passes the current jobType (ctx.jobType),
+                // resolve to the specific FLOW_* state — that's the only
+                // place we know which flow is actually running. Falls back
+                // to OPEN_SAI for jobs whose type doesn't map (e.g. legacy
+                // entries) or when no ctx is supplied.
+                const jt = ctx && ctx.jobType;
+                if (jt && FLOW_STATE_BY_TYPE[jt]) return FLOW_STATE_BY_TYPE[jt];
+                return STATES.OPEN_SAI;
+            }
             case 'completing': return STATES.COMPLETING_JOB;
             default:
                 // Phase 5: orchestrator now writes canonical state names directly

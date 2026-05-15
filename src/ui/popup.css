@@ -633,6 +633,13 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
 .nm-empty       { fill: var(--os-color-text-tertiary); font-size: 11px; }
 .nm-edge        { stroke: rgba(107,120,136,0.55); stroke-width: 1.4; fill: none; }
 .nm-edge-hidden { stroke-dasharray: 3 4; opacity: 0.6; }
+/* Non-tree edges — multi-parent links the BFS spanning tree dropped.
+   Thinner, more muted, dashed so they read as "secondary connection". */
+.nm-edge-extra  { stroke: rgba(107,120,136,0.32); stroke-width: 1; stroke-dasharray: 2 3; }
+
+/* Now-solving prominent card — visual lift so the currently-running job
+   stands out from the regular jobs list below it. */
+.aj-now-solving { border-left: 3px solid var(--os-color-success, #5dd57a); }
 
 /* Card body */
 .nm-card-bg     { fill: var(--os-color-bg-card); stroke: rgba(255,255,255,0.08); stroke-width: 1; }

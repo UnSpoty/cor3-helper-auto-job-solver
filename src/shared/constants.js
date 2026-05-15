@@ -84,6 +84,14 @@
             // [data-sentry-component="IceWallBreakApplication"], then matches
             // lit wall glyphs against the target-preview signatures.
             START_ICE_WALL: 'COR3_START_ICE_WALL',
+            // ICE WALL lifecycle heartbeat. Posted when the solver detects
+            // an IceWallBreakApplication and again when that window closes.
+            // Shape: { busy: bool, ts }. Auto-jobs uses it to suppress its
+            // solving-watchdog while the puzzle is being worked — otherwise
+            // a long ice-wall (cor3.gg allows up to 240s per round, and
+            // multi-round puzzles compound) can trip the 5min state TTL
+            // before the flow even gets to run.
+            ICE_WALL_BUSY: 'COR3_ICE_WALL_BUSY',
             STOP_ICE_WALL: 'COR3_STOP_ICE_WALL',
         },
 
@@ -115,6 +123,13 @@
             MINIGAME_RESULT: 'COR3_JOB_MINIGAME_RESULT',
             KD_DETECTED: 'COR3_JOB_KD_DETECTED',
             SERVER_UNREACHABLE: 'COR3_SERVER_UNREACHABLE',
+            // Commit 3 (pt 7): readiness probe result. Posted by
+            // server-connect when it observes access state on a server.
+            // Shape: { serverName, canAccess: bool, hasHackTools: bool, reason }
+            // Consumed by auto-jobs to persist AJ_SERVER_READINESS so the
+            // planner can pre-reject the server (and everything behind it)
+            // without re-running the failing pipeline.
+            SERVER_ACCESS_PROBED: 'COR3_SERVER_ACCESS_PROBED',
             LOG: 'COR3_JOB_LOG',
             AUTOJOBS_ACTIVE_CHANGED: 'COR3_AUTOJOBS_ACTIVE_CHANGED',
             // Orchestrator → UI: a state transition just occurred. Carries
@@ -182,6 +197,16 @@
         // Phase 2/3: lazy-learned per-server capabilities (e.g. whether D4RK
         // server has a Logs tab). Shape: { [serverName]: { hasLogs?: bool, ... } }
         AJ_SERVER_CAPS: 'ajServerCaps',
+        // Commit 3 (pt 7): per-server readiness probe. Shape:
+        //   { [serverName]: { canAccess, hasHackTools, checkedAt, reason? } }
+        // canAccess===false means the server is unusable until a fresh probe
+        // contradicts it (e.g. no Active Access AND no Hack Tools, or a
+        // hack-tool path that failed every retry). Planner consults this and
+        // treats canAccess===false on the path as a hard reject — transitive
+        // blocking per pt 8. TTL handled in-code (default 15 min — long
+        // enough to avoid re-probing every cycle, short enough to recover
+        // if the user manually fixed access in-game).
+        AJ_SERVER_READINESS: 'ajServerReadiness',
         // Phase 3: permanent rejects for *this cycle*. No TTL — auto-cleared
         // when the job vanishes from markets, or via UI "Clear" button.
         // Shape: { [jobId]: { reason, since, descriptor } }
@@ -200,6 +225,13 @@
         // Solver runtime
         DAILY_HACK_LOG: 'dailyHackLog',
         DAILY_HACK_LOG_AT: 'dailyHackLogUpdatedAt',
+
+        // Popup UI: persistent collapsed/expanded state for collapsible
+        // sections. Shape: { [sectionKey]: boolean } where true=open. Keys
+        // are short stable strings (e.g. 'aj.sources', 'aj.jobTypes',
+        // 'aj.timeline'). Anything not present falls back to the section's
+        // hard-coded default in the renderer.
+        UI_COLLAPSE: 'uiCollapse',
 
         // Centralized logger ring buffer (new, replaces cor3_ws_messages)
         // Shape: { [moduleId]: [{ ts, level, msg, ctx }, ...] }
@@ -303,8 +335,10 @@
         // transitions, flow start, heavy SAI clicks). Per-call override
         // available via cooldown.gate(label, { override: ms }).
         ACTION_COOLDOWN_MS: 3000,
-        // Auto-jobs state-history ring buffer (UI timeline)
-        STATE_HISTORY_RING: 20,
+        // Auto-jobs state-history ring buffer (UI timeline). Bumped from
+        // 20 → 50 so the timeline is useful when diagnosing multi-step
+        // sequences (accept → SAI → flow → complete is already 4 rows per job).
+        STATE_HISTORY_RING: 50,
         // Auto-jobs completed-jobs ring buffer (incremental persistence)
         COMPLETED_LOG_RING: 50,
     };

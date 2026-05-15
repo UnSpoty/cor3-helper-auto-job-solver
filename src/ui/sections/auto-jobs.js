@@ -32,6 +32,31 @@
     // own subscriber inside uiComponents.logViewer (no full re-mount).
     let liveLogViewer = null;
 
+    // ─── Persistent collapse state ────────────────────────────────────────
+    // Each collapsible section's open/closed is persisted under a stable
+    // string key in STORAGE_LOCAL.UI_COLLAPSE so the user's preference
+    // survives reloads. Falls back to `defaultOpen` for unknown keys.
+    //
+    // We don't await the storage read — applying the default first and
+    // patching once the read returns keeps the initial paint instant; the
+    // <details> element flicker is invisible because storage is fast and
+    // the section is below-the-fold for first render anyway.
+    function attachCollapse(detailsEl, key, defaultOpen) {
+        detailsEl.open = !!defaultOpen;
+        Store.local.getOne(C.STORAGE_LOCAL.UI_COLLAPSE, {}).then((map) => {
+            if (map && Object.prototype.hasOwnProperty.call(map, key)) {
+                detailsEl.open = !!map[key];
+            }
+        }).catch(() => { /* ignore */ });
+        detailsEl.addEventListener('toggle', async () => {
+            try {
+                const cur = (await Store.local.getOne(C.STORAGE_LOCAL.UI_COLLAPSE, {})) || {};
+                cur[key] = !!detailsEl.open;
+                await Store.local.setOne(C.STORAGE_LOCAL.UI_COLLAPSE, cur);
+            } catch (_) { /* ignore */ }
+        });
+    }
+
     // Solvers Auto-Jobs depends on. Each one corresponds to a chrome.storage.
     // sync key on the Overview tab (Auto solvers section). If any of these
     // is off, Auto-Jobs would accept jobs and then sit waiting on a minigame
@@ -46,7 +71,7 @@
     // Phase 4 header: state pill + description + next-hint, plus action
     // buttons (Start/Stop, Reset, Download Log). Reads STATE_LABELS from
     // the orchestrator helper (loaded into popup.html in Phase 4).
-    function renderHeader(host, settings, state, solverFlags) {
+    function renderHeader(host, settings, state, solverFlags, queue) {
         host.innerHTML = '';
 
         // Phase 5: HALTED banner. Renders ABOVE the regular header card so
@@ -73,7 +98,7 @@
         const blocked = missingSolvers.length > 0;
 
         const states = root.COR3.autoJobs && root.COR3.autoJobs.states;
-        const canonical = (states && states.mapLegacyToCanonical(state.status)) || state.status || 'idle';
+        const canonical = (states && states.mapLegacyToCanonical(state.status, { jobType: state.jobType })) || state.status || 'idle';
         const labels = states && states.STATE_LABELS;
         const meta = (labels && labels[canonical]) || { title: state.status || '?', description: '', nextHint: null };
         const nextMeta = (labels && meta.nextHint && labels[meta.nextHint]) || null;
@@ -102,10 +127,48 @@
             head.appendChild(el('div', 'state-desc xs muted mt-sm', escape(meta.description)));
         }
 
+        // Current job detail block. Shows whichever facets are populated:
+        // name, jobType, target server, attempt counter (if retrying),
+        // elapsed time in current state, queue size, IPs/file/log args
+        // (whatever the flow type carries). Updated every time
+        // AUTOJOBS_STATE or AUTOJOBS_QUEUE changes (granular re-render).
         if (state.jobName) {
-            head.appendChild(el('div', 'sm mt-sm',
-                `${escape(state.jobName)} <span class="muted">[${escape(state.jobType || '')}]</span>`
-                + (state.serverName ? ` <span class="muted">@ ${escape(state.serverName)}</span>` : '')));
+            const detail = el('div', 'aj-current-job mt-sm card');
+            // Line 1: descriptor + type pill + server.
+            const head1 = el('div', 'row gap-sm');
+            head1.innerHTML = `
+                <span class="card-label">${escape(state.jobName)}</span>
+                ${state.jobType ? `<span class="pill idle xs">${escape(state.jobType)}</span>` : ''}
+                ${state.serverName ? `<span class="muted xs">@ ${escape(state.serverName)}</span>` : ''}
+            `;
+            detail.appendChild(head1);
+
+            // Line 2: queue progress + elapsed + attempts.
+            const queueLen = Array.isArray(queue) ? queue.length : 0;
+            const queuedEntry = Array.isArray(queue) ? queue.find((q) => q.jobId === state.jobId) : null;
+            const attempts = queuedEntry && queuedEntry.attempts ? queuedEntry.attempts : 0;
+            const elapsed = state.updatedAt ? Math.max(0, Math.floor((Date.now() - state.updatedAt) / 1000)) : null;
+            const facts = [];
+            if (queueLen > 0) facts.push(`<span class="muted xs">queue: ${queueLen}</span>`);
+            if (attempts > 0) facts.push(`<span class="pill warn xs">retry ${attempts + 1}/3</span>`);
+            if (elapsed !== null) facts.push(`<span class="muted xs">${elapsed}s in state</span>`);
+            if (facts.length > 0) {
+                const row2 = el('div', 'row gap-sm mt-sm');
+                row2.innerHTML = facts.join(' ');
+                detail.appendChild(row2);
+            }
+
+            // Line 3: flow-specific args (ips, fileCondition, fileNames, logSeqs).
+            const argChunks = [];
+            if (state.fileCondition) argChunks.push(`file: <code class="xs">${escape(state.fileCondition)}</code>`);
+            if (Array.isArray(state.fileNames) && state.fileNames.length > 1) argChunks.push(`+${state.fileNames.length - 1} more`);
+            if (Array.isArray(state.ips) && state.ips.length > 0) argChunks.push(`IPs: <code class="xs">${escape(state.ips.length + ' total')}</code>`);
+            if (Array.isArray(state.logSeqs) && state.logSeqs.length > 0) argChunks.push(`logs: <code class="xs">${escape(state.logSeqs.length + ' seqs')}</code>`);
+            if (argChunks.length > 0) {
+                const row3 = el('div', 'muted xs mt-sm', argChunks.join(' · '));
+                detail.appendChild(row3);
+            }
+            head.appendChild(detail);
         }
 
         if (blocked && !settings.enabled) {
@@ -184,7 +247,15 @@
 
     function renderSources(host, settings) {
         host.innerHTML = '';
-        host.appendChild(el('div', 'section-title', t('autojobs.sources')));
+        // Wrapped in <details> so the user can collapse it. Defaults closed
+        // — most users set their markets once and never touch this again.
+        const wrap = document.createElement('details');
+        wrap.className = 'collapsible';
+        const summary = document.createElement('summary');
+        summary.className = 'section-title';
+        summary.textContent = t('autojobs.sources');
+        wrap.appendChild(summary);
+        attachCollapse(wrap, 'aj.sources', false);
         const card = el('div', 'card');
         // Adding a 4th market = one row. The toggles all read settings.markets.<key>
         // which the auto-jobs orchestrator scans against MARKETS_FOR_SCAN.
@@ -228,7 +299,8 @@
                 await Store.sync.setOne(C.STORAGE_SYNC.AUTOJOBS_SETTINGS, cur);
             });
         });
-        host.appendChild(card);
+        wrap.appendChild(card);
+        host.appendChild(wrap);
     }
 
     // Per-job-type whitelist. Each toggle writes into
@@ -241,13 +313,14 @@
         host.innerHTML = '';
         const wrap = document.createElement('details');
         wrap.className = 'collapsible';
-        wrap.open = true;
         const enabledMap = settings.enabledJobTypes || {};
         const disabledCount = Object.values(enabledMap).filter((v) => v === false).length;
         const summary = document.createElement('summary');
         summary.className = 'section-title';
         summary.textContent = `${t('autojobs.jobTypes')}${disabledCount > 0 ? ` · ${disabledCount} ${t('autojobs.disabled')}` : ''}`;
         wrap.appendChild(summary);
+        // Default closed — same reasoning as Sources (set once, rarely touched).
+        attachCollapse(wrap, 'aj.jobTypes', false);
 
         const card = el('div', 'card');
         card.appendChild(el('div', 'muted xs', t('autojobs.jobTypesHint')));
@@ -418,12 +491,76 @@
         };
 
         // Section title with global breakdown so user sees totals at a glance.
+        // IN PROGRESS = our queue + cor3.gg recentJobs[] with status=TAKEN
+        // that we haven't yet pulled into our queue (covers jobs the user
+        // accepted manually outside the bot session). READY = recentJobs
+        // entries we'd auto-claim — see autoCompleteReadyFromMarkets.
         const totalAvailable = marketsData.reduce((n, m) => n + (m.data?.jobs?.length || 0), 0);
-        const totalQueued = (queue || []).length;
+        const queuedIdsFromQueue = new Set((queue || []).map((q) => q.jobId));
+        let takenFromMarket = 0;
+        let readyFromMarket = 0;
+        const readyEntries = [];
+        for (const m of marketsData) {
+            const recent = m.data?.recentJobs;
+            if (!Array.isArray(recent)) continue;
+            for (const j of recent) {
+                if (!j || !j.id) continue;
+                const status = String(j.status || '').toUpperCase();
+                if (status === 'TAKEN' && !queuedIdsFromQueue.has(j.id)) takenFromMarket++;
+                // Best-effort detector for "ready to claim". Mirrors the
+                // orchestrator-side patterns; if cor3.gg's status enum
+                // changes, both sides should be updated together.
+                const isReady = (status && status !== 'TAKEN' && status !== 'FAILED' && status !== 'EXPIRED' && status !== 'AVAILABLE' &&
+                                 (status.includes('READY') || status.includes('COMPLETED') || status.includes('CAN_COMPLETE') ||
+                                  status.includes('CONDITIONS_MET') || status.includes('DONE')))
+                                 || j.areConditionsCompleted === true || j.isReady === true
+                                 || j.conditionsMet === true || j.canComplete === true || j.isComplete === true;
+                if (isReady) { readyFromMarket++; readyEntries.push({ job: j, marketLabel: m.label }); }
+            }
+        }
+        const totalQueued = (queue || []).length + takenFromMarket;
         const totalFailed = Object.keys(rejectedJobs || {}).length;
-        const totalAll = totalAvailable + totalQueued + totalFailed;
+        const totalAll = totalAvailable + totalQueued + totalFailed + readyFromMarket;
         host.appendChild(el('div', 'section-title',
-            `${escape(t('autojobs.jobs'))} (${totalAll}) <span class="muted xs">· ${totalAvailable} ${escape(t('autojobs.available'))} · ${totalQueued} ${escape(t('overview.inProgress'))} · ${totalFailed} ${escape(t('autojobs.failed'))}</span>`));
+            `${escape(t('autojobs.jobs'))} (${totalAll}) <span class="muted xs">· ${totalAvailable} ${escape(t('autojobs.available'))} · ${totalQueued} ${escape(t('overview.inProgress'))}${readyFromMarket > 0 ? ` · ${readyFromMarket} ready` : ''} · ${totalFailed} ${escape(t('autojobs.failed'))}</span>`));
+
+        // "Now solving" prominent card — shows what the orchestrator is
+        // working on right now. Different visual weight from the regular
+        // job rows so the user can find it instantly.
+        if (state && state.jobId && state.status && state.status !== 'idle') {
+            const nowCard = el('div', 'card aj-now-solving');
+            const elapsed = state.updatedAt ? Math.max(0, Math.floor((Date.now() - state.updatedAt) / 1000)) : null;
+            nowCard.innerHTML = `
+                <div class="card-row">
+                    <span class="pill active">${escape(t('autojobs.nowSolving') || 'Now solving')}</span>
+                    <span class="muted xs">${state.status}${elapsed !== null ? ` · ${elapsed}s` : ''}</span>
+                </div>
+                <div class="mt-sm sm">
+                    <span class="card-label">${escape(state.jobName || '?')}</span>
+                    ${state.jobType ? `<span class="muted xs">[${escape(state.jobType)}]</span>` : ''}
+                    ${state.serverName ? `<span class="muted xs">@ ${escape(state.serverName)}</span>` : ''}
+                </div>
+            `;
+            host.appendChild(nowCard);
+        }
+
+        // Ready-to-claim subsection — these are recentJobs[] entries that
+        // our autoCompleteReadyFromMarkets is dispatching COMPLETE for.
+        // Showing them gives the user feedback that auto-claim is alive.
+        if (readyEntries.length > 0) {
+            const readyCard = el('div', 'card');
+            readyCard.appendChild(el('div', 'card-row',
+                `<span class="card-label">Ready to claim (${readyEntries.length})</span>`
+                + `<span class="muted xs">auto-submitting</span>`));
+            const list = el('div', 'mt-sm');
+            for (const { job, marketLabel } of readyEntries.slice(0, 8)) {
+                list.appendChild(el('div', 'sm',
+                    `<span class="pill active">${escape(job.status || 'ready')}</span> ${escape(job.name || job.id)} <span class="muted xs">· ${escape(marketLabel)}</span>`));
+            }
+            if (readyEntries.length > 8) list.appendChild(el('div', 'muted sm mt-sm', `+${readyEntries.length - 8} more`));
+            readyCard.appendChild(list);
+            host.appendChild(readyCard);
+        }
 
         if (totalAll === 0) {
             host.appendChild(el('div', 'empty', t('autojobs.noJobs')));
@@ -478,12 +615,12 @@
         host.innerHTML = '';
         const wrap = document.createElement('details');
         wrap.className = 'collapsible';
-        wrap.open = false;
         const skipCount = Object.values(priorities || {}).filter((v) => v === 'skip').length;
         const summary = document.createElement('summary');
         summary.className = 'section-title';
         summary.textContent = `${t('autojobs.serverPriorities')}${skipCount > 0 ? ` · ${t('autojobs.skippedCount', { n: skipCount })}` : ''}`;
         wrap.appendChild(summary);
+        attachCollapse(wrap, 'aj.serverPriorities', false);
 
         const card = el('div', 'card');
         card.appendChild(el('div', 'muted xs',
@@ -577,6 +714,9 @@
         const summary = document.createElement('summary');
         summary.innerHTML = `<span class="card-label">${escape(t('autojobs.stateHistory'))}</span><span class="muted xs">${escape(t('autojobs.transitions', { n: history.length }))}</span>`;
         wrap.appendChild(summary);
+        // Default open — state history is the most useful diagnostic surface
+        // when something gets stuck; user pointed out it was hidden by default.
+        attachCollapse(wrap, 'aj.timeline', true);
         const card = el('div', 'card aj-timeline-list');
         // Newest first so the most recent transition is at the top.
         for (const entry of history.slice().reverse()) {
@@ -598,39 +738,124 @@
 
     let liveNetworkMap = null;
 
-    async function render(container) {
-        const [settings, state, queue, rejected, history, nmGraph, priorities, home, dark, srm, autoDecrypt, autoIceWall] = await Promise.all([
+    // ─── Per-section refresh dispatch ─────────────────────────────────────
+    // Previous design tore down the entire panel (innerHTML='') on every
+    // AUTOJOBS_QUEUE / NM_GRAPH / market update — that caused visible
+    // flashing on the user's refresh button, on market timer ticks, and on
+    // every state transition. The new design:
+    //   • mount() builds the DOM scaffolding ONCE; section hosts are kept
+    //     alive across the lifetime of the popup.
+    //   • Live components (Network Map, log viewer) are attached once;
+    //     they own their own storage subscriptions and don't get rebuilt.
+    //   • Each storage change calls only the refresh fns whose section
+    //     actually depends on the changed key. Within a section we still
+    //     do innerHTML=''+rebuild, but it's a tiny localized repaint
+    //     instead of the whole panel.
+    //
+    // The `panel` object carries refs to the section hosts so the
+    // dispatcher can reach them. Lives in module scope so deactivate() can
+    // tear it down on tab switch.
+    let panel = null;
+
+    async function refreshHeader() {
+        if (!panel) return;
+        const [settings, state, autoDecrypt, autoIceWall, queue] = await Promise.all([
             Store.sync.getOne(C.STORAGE_SYNC.AUTOJOBS_SETTINGS, DEFAULT_SETTINGS),
             Store.local.getOne(C.STORAGE_LOCAL.AUTOJOBS_STATE, { status: 'idle' }),
-            Store.local.getOne(C.STORAGE_LOCAL.AUTOJOBS_QUEUE, []),
-            Store.local.getOne(C.STORAGE_LOCAL.AJ_REJECTED_JOBS, {}),
-            Store.local.getOne(C.STORAGE_LOCAL.AJ_STATE_HISTORY, []),
-            Store.local.getOne(C.STORAGE_LOCAL.NM_GRAPH, null),
-            Store.sync.getOne(C.STORAGE_SYNC.SERVER_PRIORITIES, {}),
-            Store.local.getOne(C.STORAGE_LOCAL.MARKET, null),
-            Store.local.getOne(C.STORAGE_LOCAL.DARK_MARKET, null),
-            Store.local.getOne(C.STORAGE_LOCAL.SRM_MARKET, null),
             Store.sync.getOne(C.STORAGE_SYNC.AUTO_DECRYPT_ENABLED, false),
             Store.sync.getOne(C.STORAGE_SYNC.AUTO_ICE_WALL_ENABLED, false),
+            Store.local.getOne(C.STORAGE_LOCAL.AUTOJOBS_QUEUE, []),
         ]);
         const solverFlags = {
             [C.STORAGE_SYNC.AUTO_DECRYPT_ENABLED]: !!autoDecrypt,
             [C.STORAGE_SYNC.AUTO_ICE_WALL_ENABLED]: !!autoIceWall,
         };
+        renderHeader(panel.headerHost, settings, state, solverFlags, queue || []);
+    }
 
-        // Tear down previous live components so their storage listeners don't leak.
-        if (liveLogViewer)  { try { liveLogViewer.destroy();  } catch (_) {} liveLogViewer  = null; }
-        if (liveNetworkMap) { try { liveNetworkMap.destroy(); } catch (_) {} liveNetworkMap = null; }
+    async function refreshSources() {
+        if (!panel) return;
+        const settings = await Store.sync.getOne(C.STORAGE_SYNC.AUTOJOBS_SETTINGS, DEFAULT_SETTINGS);
+        renderSources(panel.sourcesHost, settings);
+    }
+
+    async function refreshJobTypes() {
+        if (!panel) return;
+        const settings = await Store.sync.getOne(C.STORAGE_SYNC.AUTOJOBS_SETTINGS, DEFAULT_SETTINGS);
+        renderJobTypes(panel.jobTypesHost, settings);
+    }
+
+    async function refreshTimeline() {
+        if (!panel) return;
+        const history = await Store.local.getOne(C.STORAGE_LOCAL.AJ_STATE_HISTORY, []);
+        renderTimeline(panel.timelineHost, history);
+    }
+
+    async function refreshJobs() {
+        if (!panel) return;
+        const [settings, state, queue, rejected, nmGraph, priorities, home, dark, srm] = await Promise.all([
+            Store.sync.getOne(C.STORAGE_SYNC.AUTOJOBS_SETTINGS, DEFAULT_SETTINGS),
+            Store.local.getOne(C.STORAGE_LOCAL.AUTOJOBS_STATE, { status: 'idle' }),
+            Store.local.getOne(C.STORAGE_LOCAL.AUTOJOBS_QUEUE, []),
+            Store.local.getOne(C.STORAGE_LOCAL.AJ_REJECTED_JOBS, {}),
+            Store.local.getOne(C.STORAGE_LOCAL.NM_GRAPH, null),
+            Store.sync.getOne(C.STORAGE_SYNC.SERVER_PRIORITIES, {}),
+            Store.local.getOne(C.STORAGE_LOCAL.MARKET, null),
+            Store.local.getOne(C.STORAGE_LOCAL.DARK_MARKET, null),
+            Store.local.getOne(C.STORAGE_LOCAL.SRM_MARKET, null),
+        ]);
+        // Diagnostic: log queue vs market visibility so we can see which
+        // accepted jobs vanish from the visible board. Pt 5 investigation.
+        try {
+            const visibleIds = new Set([
+                ...((home && home.jobs) || []).map((j) => j.id),
+                ...((dark && dark.jobs) || []).map((j) => j.id),
+                ...((srm  && srm.jobs)  || []).map((j) => j.id),
+            ]);
+            const orphans = (queue || []).filter((q) => !visibleIds.has(q.jobId));
+            if ((queue || []).length > 0 || orphans.length > 0) {
+                // eslint-disable-next-line no-console
+                console.debug('[auto-jobs UI] jobs refresh',
+                    { queue: (queue || []).length, orphans: orphans.length,
+                      orphanIds: orphans.map((q) => q.jobId),
+                      runningJobId: state?.jobId || null });
+            }
+        } catch (_) { /* never let diagnostics throw */ }
+        renderJobs(panel.jobsHost, [
+            { key: 'home', label: t('overview.homeMarket'), data: home, enabled: settings.markets?.home !== false },
+            { key: 'dark', label: t('overview.darkMarket'), data: dark, enabled: settings.markets?.dark !== false },
+            { key: 'srm',  label: t('overview.srm'),        data: srm,  enabled: settings.markets?.srm  !== false },
+        ], settings, priorities, rejected, queue, state, nmGraph);
+    }
+
+    async function refreshServerPriorities() {
+        if (!panel) return;
+        const [nmGraph, priorities] = await Promise.all([
+            Store.local.getOne(C.STORAGE_LOCAL.NM_GRAPH, null),
+            Store.sync.getOne(C.STORAGE_SYNC.SERVER_PRIORITIES, {}),
+        ]);
+        renderServerPriorities(panel.prioHost, nmGraph, priorities || {});
+    }
+
+    function refreshAll() {
+        return Promise.all([
+            refreshHeader(), refreshSources(), refreshJobTypes(),
+            refreshTimeline(), refreshJobs(), refreshServerPriorities(),
+        ]);
+    }
+
+    function buildPanel(container) {
+        // Tear down any previous mount (popup remounts on tab activate).
+        if (panel) tearDownPanel();
 
         container.innerHTML = '';
-
-        const headerHost = el('div');
-        const networkHost = el('div', 'aj-network-host');
-        const sourcesHost = el('div');
+        const headerHost   = el('div');
+        const networkHost  = el('div', 'aj-network-host');
+        const sourcesHost  = el('div');
         const jobTypesHost = el('div');
         const timelineHost = el('div');
-        const jobsHost = el('div');
-        const prioHost = el('div');
+        const jobsHost     = el('div');
+        const prioHost     = el('div');
         container.appendChild(headerHost);
         container.appendChild(networkHost);
         container.appendChild(sourcesHost);
@@ -639,63 +864,77 @@
         container.appendChild(jobsHost);
         container.appendChild(prioHost);
 
-        renderHeader(headerHost, settings, state, solverFlags);
-
-        // Local Network Map — sits between header and sources. Component
-        // owns its own storage subscriptions for granular re-renders.
+        // Live components own their own storage subscriptions.
         if (uiComponents.networkMap && typeof uiComponents.networkMap.attach === 'function') {
             liveNetworkMap = uiComponents.networkMap.attach(networkHost);
         }
 
-        renderSources(sourcesHost, settings);
-        renderJobTypes(jobTypesHost, settings);
-        renderTimeline(timelineHost, history);
-        renderJobs(jobsHost, [
-            { key: 'home', label: t('overview.homeMarket'), data: home, enabled: settings.markets?.home !== false },
-            { key: 'dark', label: t('overview.darkMarket'), data: dark, enabled: settings.markets?.dark !== false },
-            { key: 'srm',  label: t('overview.srm'),        data: srm,  enabled: settings.markets?.srm  !== false },
-        ], settings, priorities, rejected, queue, state, nmGraph);
-        renderServerPriorities(prioHost, nmGraph, priorities || {});
-
-        // Activity log — Logger ring filtered to module='auto-jobs'. The
-        // logViewer subscribes to cor3_logs storage changes itself.
         container.appendChild(el('div', 'section-title', t('autojobs.activityLog')));
         const stream = el('div', 'log-stream');
         container.appendChild(stream);
         liveLogViewer = uiComponents.logViewer.attach(stream, { moduleFilter: 'auto-jobs' });
+
+        panel = {
+            container, headerHost, networkHost, sourcesHost, jobTypesHost,
+            timelineHost, jobsHost, prioHost,
+        };
+    }
+
+    function tearDownPanel() {
+        if (liveLogViewer)  { try { liveLogViewer.destroy();  } catch (_) {} liveLogViewer  = null; }
+        if (liveNetworkMap) { try { liveNetworkMap.destroy(); } catch (_) {} liveNetworkMap = null; }
+        panel = null;
     }
 
     let unsub1 = null, unsub2 = null;
     root.COR3.ui.autojobs = {
         mount(container) {
-            // Re-render on state/queue/bugged changes. Activity log lives in
-            // its own subscriber — see liveLogViewer above. We deliberately
-            // don't trip a full re-render on cor3_logs (would tear down and
-            // re-attach the viewer every log line).
+            // Dispatch storage changes to only the section(s) that depend on
+            // the changed key. Anything not mapped here is silently ignored
+            // — adding a new section means adding its keys below.
             unsub1 = Store.local.onChanged((changes) => {
                 if (!container.classList.contains('active')) return;
-                if (changes[C.STORAGE_LOCAL.AUTOJOBS_STATE] ||
-                    changes[C.STORAGE_LOCAL.AUTOJOBS_QUEUE] ||
-                    changes[C.STORAGE_LOCAL.AJ_REJECTED_JOBS] ||
-                    changes[C.STORAGE_LOCAL.AJ_STATE_HISTORY] ||
-                    changes[C.STORAGE_LOCAL.NM_GRAPH] ||
-                    changes[C.STORAGE_LOCAL.MARKET] ||
-                    changes[C.STORAGE_LOCAL.DARK_MARKET] ||
-                    changes[C.STORAGE_LOCAL.SRM_MARKET]) render(container);
+                const hits = new Set();
+                if (changes[C.STORAGE_LOCAL.AUTOJOBS_STATE])     { hits.add('header'); hits.add('jobs'); }
+                if (changes[C.STORAGE_LOCAL.AUTOJOBS_QUEUE])     { hits.add('jobs'); hits.add('header'); }
+                if (changes[C.STORAGE_LOCAL.AJ_REJECTED_JOBS])   { hits.add('jobs'); }
+                if (changes[C.STORAGE_LOCAL.AJ_STATE_HISTORY])   { hits.add('timeline'); }
+                if (changes[C.STORAGE_LOCAL.NM_GRAPH])           { hits.add('jobs'); hits.add('prio'); }
+                if (changes[C.STORAGE_LOCAL.MARKET])             { hits.add('jobs'); }
+                if (changes[C.STORAGE_LOCAL.DARK_MARKET])        { hits.add('jobs'); }
+                if (changes[C.STORAGE_LOCAL.SRM_MARKET])         { hits.add('jobs'); }
+                if (hits.has('header'))   refreshHeader();
+                if (hits.has('timeline')) refreshTimeline();
+                if (hits.has('jobs'))     refreshJobs();
+                if (hits.has('prio'))     refreshServerPriorities();
             });
             unsub2 = Store.sync.onChanged((changes) => {
                 if (!container.classList.contains('active')) return;
-                if (changes[C.STORAGE_SYNC.AUTOJOBS_SETTINGS] ||
-                    changes[C.STORAGE_SYNC.SERVER_PRIORITIES] ||
-                    changes[C.STORAGE_SYNC.AUTO_DECRYPT_ENABLED] ||
-                    changes[C.STORAGE_SYNC.AUTO_ICE_WALL_ENABLED]) render(container);
+                const hits = new Set();
+                if (changes[C.STORAGE_SYNC.AUTOJOBS_SETTINGS]) {
+                    hits.add('header'); hits.add('sources'); hits.add('jobTypes'); hits.add('jobs');
+                }
+                if (changes[C.STORAGE_SYNC.SERVER_PRIORITIES])      { hits.add('prio'); hits.add('jobs'); }
+                if (changes[C.STORAGE_SYNC.AUTO_DECRYPT_ENABLED])   { hits.add('header'); }
+                if (changes[C.STORAGE_SYNC.AUTO_ICE_WALL_ENABLED])  { hits.add('header'); }
+                if (hits.has('header'))   refreshHeader();
+                if (hits.has('sources'))  refreshSources();
+                if (hits.has('jobTypes')) refreshJobTypes();
+                if (hits.has('jobs'))     refreshJobs();
+                if (hits.has('prio'))     refreshServerPriorities();
             });
-            render(container);
+            buildPanel(container);
+            refreshAll();
         },
-        activate(container) { render(container); },
+        activate(container) {
+            // Re-mount scaffolding (popup tab switch tore the DOM down by
+            // hiding the container; we rebuild to be safe) and pull fresh
+            // data into every section.
+            buildPanel(container);
+            refreshAll();
+        },
         deactivate() {
-            if (liveLogViewer)  { try { liveLogViewer.destroy();  } catch (_) {} liveLogViewer  = null; }
-            if (liveNetworkMap) { try { liveNetworkMap.destroy(); } catch (_) {} liveNetworkMap = null; }
+            tearDownPanel();
         },
     };
 })();

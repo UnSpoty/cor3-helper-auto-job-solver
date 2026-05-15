@@ -439,12 +439,45 @@
 
         let firstRow = await waitForActiveAccessRow(loginPanel, 5_000);
         if (!firstRow) {
+            // Commit 3 — pt 7: probe Hack Tools BEFORE we try to use them.
+            // Two outcomes feed the readiness storage:
+            //   • hackTools panel absent OR empty list → server is permanently
+            //     unusable for the user. Mark canAccess=false so the planner
+            //     stops queueing jobs against it (and anything behind it).
+            //   • hackTools present → attempt the ice-wall flow as before.
+            const hackTools = loginPanel.querySelector(SEL.HACK_TOOLS);
+            const hackList = hackTools && hackTools.querySelector(SEL.ACCESS_LIST);
+            const hasHackTools = !!(hackList && hackList.firstElementChild);
+            if (!hasHackTools) {
+                Bus.window.post(MSG.JOB.SERVER_ACCESS_PROBED, {
+                    serverName, canAccess: false, hasHackTools: false,
+                    reason: 'no-active-access-and-no-hack-tools',
+                });
+                Bus.window.post(MSG.JOB.LOG, { msg: `Server "${serverName}" has no Active Access AND no Hack Tools — marking unreachable`, level: 'warn' });
+                return { saiOpened: false, fatal: true };
+            }
             Bus.window.post(MSG.JOB.LOG, { msg: `Server "${serverName}" has no Active Access — attempting hack-tool path`, level: 'info' });
             const hacked = await runHackToolForAccess(loginPanel, serverName, log);
             if (hacked) {
                 loginPanel = document.querySelector(SEL.LOGIN_PANEL) || loginPanel;
                 firstRow = await waitForActiveAccessRow(loginPanel, 8_000);
+                // Hack succeeded AND access row reappeared → server is usable.
+                // Refresh readiness so any previous false-mark is cleared.
+                if (firstRow) {
+                    Bus.window.post(MSG.JOB.SERVER_ACCESS_PROBED, {
+                        serverName, canAccess: true, hasHackTools: true,
+                        reason: 'hack-tool-solved',
+                    });
+                }
             }
+        } else {
+            // Active Access was present immediately — fastest "yes you can
+            // use this server" probe possible. Refresh the timestamp so
+            // stale negatives don't linger.
+            Bus.window.post(MSG.JOB.SERVER_ACCESS_PROBED, {
+                serverName, canAccess: true, hasHackTools: undefined,
+                reason: 'active-access-present',
+            });
         }
         if (!firstRow) {
             dbg('step 6 FAIL — no row to click after hack attempt');

@@ -90,12 +90,22 @@
     const STRONG_PARTIAL_RATIO = 0.40;
     const MIN_PARTIAL_RATIO = 0.33;
     const MIN_REVEALED_FOR_COMMIT = 2;
+    // May 2026: cor3.gg ships variable-size target shapes (3 / 6 / 9 cells
+    // observed). A fixed MIN_REVEALED_FOR_COMMIT=2 was too aggressive on
+    // 6-cell targets — 2/6 = 33% revealed and the mid-partial branch
+    // (realMatch >= midTh=2) would fire on the first plausible anchor.
+    // Result: solver committed with only 2 glyphs against a 6-glyph
+    // target and got it wrong. The 40%-of-total floor below means a
+    // 6-cell target needs 3 reveals before any commit, a 9-cell target
+    // needs 4, etc. The classic 3-cell case still passes at 2/3.
+    const MIN_REVEALED_RATIO = 0.40;
     const STABLE_COMMIT_MS = 3000;
 
     function adaptiveThresholds(total) {
         return {
             strong: Math.max(STRONG_PARTIAL_MATCH, Math.ceil(total * STRONG_PARTIAL_RATIO)),
             mid:    Math.max(MIN_PARTIAL_MATCH,    Math.ceil(total * MIN_PARTIAL_RATIO)),
+            minRevealed: Math.max(MIN_REVEALED_FOR_COMMIT, Math.ceil(total * MIN_REVEALED_RATIO)),
         };
     }
 
@@ -699,12 +709,12 @@
                     lastBestSince = Date.now();
                 }
 
-                if (revealedTotal < MIN_REVEALED_FOR_COMMIT) {
+                const { strong: strongTh, mid: midTh, minRevealed } = adaptiveThresholds(total);
+
+                if (revealedTotal < minRevealed) {
                     if (onTentative && candidates.length > 0) onTentative(candidates[0]);
                     return;
                 }
-
-                const { strong: strongTh, mid: midTh } = adaptiveThresholds(total);
 
                 // 1. Complete: every revealed target glyph maps to a
                 //    revealed board cell, AND only this candidate is
@@ -887,21 +897,30 @@
                     const start = readCounter();
                     const timer = readTimerSeconds();
                     mod.info(`ice-wall puzzle detected (counter ${start?.current ?? '?'}/${start?.total ?? '?'}, ${timer ?? '?'}s left)`);
+                    // Tell auto-jobs (and any other listener) that an
+                    // ice-wall puzzle is being solved. Suppresses the
+                    // solving-watchdog so a long puzzle doesn't trip the
+                    // 5min state TTL before the actual job flow runs.
+                    Bus.window.post(MSG.SOLVER.ICE_WALL_BUSY, { busy: true, ts: Date.now() });
 
-                    // Solve all rounds within this puzzle
-                    while (!root.__iceWallAbort && document.querySelector(SEL.APP)) {
-                        const c = readCounter();
-                        if (c && c.current >= c.total) {
-                            mod.info(`puzzle solved: ${c.current}/${c.total}`);
-                            break;
+                    try {
+                        // Solve all rounds within this puzzle
+                        while (!root.__iceWallAbort && document.querySelector(SEL.APP)) {
+                            const c = readCounter();
+                            if (c && c.current >= c.total) {
+                                mod.info(`puzzle solved: ${c.current}/${c.total}`);
+                                break;
+                            }
+                            const ok = await solveRound(mod);
+                            if (!ok) await dom.sleep(1500);     // brief pause before retry
                         }
-                        const ok = await solveRound(mod);
-                        if (!ok) await dom.sleep(1500);     // brief pause before retry
-                    }
 
-                    // Wait for the puzzle window to close before resuming watch
-                    while (!root.__iceWallAbort && document.querySelector(SEL.APP)) {
-                        await dom.sleep(400);
+                        // Wait for the puzzle window to close before resuming watch
+                        while (!root.__iceWallAbort && document.querySelector(SEL.APP)) {
+                            await dom.sleep(400);
+                        }
+                    } finally {
+                        Bus.window.post(MSG.SOLVER.ICE_WALL_BUSY, { busy: false, ts: Date.now() });
                     }
                     clearOverlay();
                     if (!root.__iceWallAbort) mod.debug('puzzle closed, watching for next one');

@@ -10,7 +10,21 @@
     const flows = root.COR3.game.flows;
     const MSG = C.MSG;
 
-    const MINIGAME_SEL = '[data-sentry-element="LogContentStyled"][data-sentry-source-file="config-hack-application.tsx"]';
+    // Same dual-minigame story as file-decryption.js — cor3.gg ships
+    // either the legacy config-hack puzzle or the new ICE WALL Break
+    // depending on the file. Either solver runs autonomously in MAIN
+    // world; we only need to detect appearance + wait for close.
+    const MINIGAME_SELS = [
+        '[data-sentry-element="LogContentStyled"][data-sentry-source-file="config-hack-application.tsx"]',
+        '[data-sentry-component="IceWallBreakApplication"]',
+    ];
+    function findMinigame() {
+        for (const s of MINIGAME_SELS) {
+            const el = document.querySelector(s);
+            if (el) return el;
+        }
+        return null;
+    }
 
     async function run(jobId, marketId, serverName, fileName, mod) {
         if (flows.isWatching()) return;
@@ -73,16 +87,16 @@
         const start = Date.now();
         let appeared = false;
         while (!root.__jobManagerAbort && Date.now() - start < 90_000) {
-            if (document.querySelector(MINIGAME_SEL)) { appeared = true; break; }
+            if (findMinigame()) { appeared = true; break; }
             await dom.sleep(250);
         }
         if (!appeared) {
-            mod.warn('minigame did not appear within 90s');
+            mod.warn('minigame did not appear within 90s (checked both config-hack and ICE WALL Break)');
             flows.sendTimeout(jobId, marketId);
             flows.setWatching(false);
             return;
         }
-        while (!root.__jobManagerAbort && document.querySelector(MINIGAME_SEL)) {
+        while (!root.__jobManagerAbort && findMinigame()) {
             await dom.sleep(100);
         }
         if (root.__jobManagerAbort) { flows.setWatching(false); return; }
