@@ -665,11 +665,17 @@
         if (!job) return null;
         const items = job.conditions && job.conditions.items;
         if (!Array.isArray(items)) return null;
+        // Aggregate across ALL items — log jobs frequently carry one item per
+        // required log (each with its own seq). Taking only the first item
+        // undercounts downloadCount and the server rejects the complete with
+        // "N log(s) not extracted from server".
+        const seqs = [];
         for (const item of items) {
-            const d = item.details;
-            if (d && Array.isArray(d.logSeqs) && d.logSeqs.length > 0) return d.logSeqs.slice();
+            const d = item && item.details;
+            if (!d) continue;
+            if (Array.isArray(d.logSeqs)) for (const s of d.logSeqs) if (Number.isInteger(s)) seqs.push(s);
         }
-        return null;
+        return seqs.length ? seqs : null;
     }
 
     function extractIPsFromJob(job) {
@@ -740,6 +746,9 @@
             case 'log_deletion':
             case 'log_download': {
                 if (!server) return { ok: false, reason: 'no server' };
+                // Pick first non-empty logName for the flow's by-name lookup,
+                // but aggregate seqs across all items so downloadCount covers
+                // every required log.
                 const logName = pickDetail((d) => d.logNames?.[0] || d.logName);
                 const logSeqs = extractLogSeqsFromJob(apiJob);
                 if (!logName && !(logSeqs && logSeqs.length)) return { ok: false, reason: 'no logName/logSeqs' };
