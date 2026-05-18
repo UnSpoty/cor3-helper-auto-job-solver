@@ -219,6 +219,12 @@
             logUi('Daily Ops did not open');
             return false;
         }
+        // DailyOpsMainScreen renders immediately but its inner state (and
+        // DailyOpsStartButton's click handler) takes another tick to settle
+        // — likely React hydration + WS state hydration. Clicking Start
+        // earlier produces a silent no-op (the F5-restoration symptom).
+        // 2.5s is the empirically observed settle window.
+        await dom.sleep(2500);
         return true;
     }
 
@@ -379,6 +385,27 @@
         }
         const close = win?.querySelector('[data-component-name="close-app-btn"]');
         if (close) dom.clickEl(close);
+    }
+
+    // Close the Daily Ops MainScreen ApplicationWindow (not the puzzle).
+    // Used to reset stale React state after F5: the cor3.gg client restores
+    // the previously-open Daily Ops window from session state but its
+    // DailyOpsStartButton handler references pre-refresh data until WS
+    // resyncs. Closing and reopening via card click forces a fresh mount.
+    async function closeDailyOpsWindow() {
+        let win = document.querySelector('[data-component-name="DailyOpsMainScreen"]');
+        while (win && !win.matches?.('[data-component-name="ApplicationWindow"]') && win.parentElement) {
+            win = win.parentElement;
+        }
+        if (!win || !win.matches?.('[data-component-name="ApplicationWindow"]')) return false;
+        const close = win.querySelector('[data-component-name="close-app-btn"]');
+        if (!close) return false;
+        dom.clickEl(close);
+        await dom.waitFor(
+            () => !document.querySelector('[data-component-name="DailyOpsMainScreen"]'),
+            { timeout: 3000 }
+        );
+        return true;
     }
 
     // ─── System Log Integrity solver ──────────────────────────────────────
@@ -591,30 +618,68 @@
     async function runOnce(mod) {
         logUi('starting…');
 
-        // Common entry pipeline. Skip if we're already on the Daily Ops
-        // screen — re-clicking the dock tab while a puzzle window is open
-        // would toggle the wrong thing.
-        if (!document.querySelector('[data-component-name="DailyOpsMainScreen"]')) {
+        // Entry pipeline:
+        //   • If a puzzle window is already mid-flight, jump into solving it
+        //     (re-navigating the dock would close it).
+        //   • Else if Daily Ops MainScreen is already open, treat it as a
+        //     post-F5 restored state and force a close+reopen for a fresh
+        //     React mount. The restored DOM exposes DailyOpsStartButton as
+        //     enabled, but its click handler is bound to pre-refresh state
+        //     until WS resyncs (initial-fetch fires ~3s after socket open),
+        //     so clicking it silently no-ops. The reset mirrors what users
+        //     do manually to unstick this case.
+        let puzzle = findPuzzleWindow();
+        if (!puzzle) {
+            if (document.querySelector('[data-component-name="DailyOpsMainScreen"]')) {
+                mod.info('Daily Ops already open at start — resetting to force fresh mount');
+                logUi('refreshing Daily Ops state…');
+                await closeDailyOpsWindow();
+                await dom.sleep(300);
+            }
             if (!await ensureGameCenterOpen(mod)) return;
             if (!await ensureDailyOpsOpen(mod)) return;
+
+            let appsBeforeStart = snapshotAppWindows();
+            if (!await clickStartButton(mod)) return;
+
+            // The Start click is a WS round-trip; give the puzzle window a
+            // moment to mount before we start polling for it.
+            await dom.sleep(600);
+
+            // Wait for puzzle window — first state is GameWaitingScreen with
+            // a single "advance" button (varies: "Get Signal" for the signal
+            // puzzle, "Start" for log integrity, possibly others); the inner
+            // .game-container only appears after that click. Fall back to
+            // "any ApplicationWindow that appeared after we pressed Start"
+            // so a site-side rename of the puzzle shell doesn't break it.
+            puzzle = await dom.waitFor(
+                () => findPuzzleWindow() || findNewAppWindow(appsBeforeStart),
+                { timeout: 8000 }
+            );
+
+            // F5-restored state can still leave the Start click as a no-op
+            // even after the proactive reset above (e.g. WS still mid-
+            // handshake when the first click landed). Retry once with a full
+            // close+reopen — by the second attempt the WS state has usually
+            // caught up.
+            if (!puzzle) {
+                mod.warn('Start did not open puzzle within 8s — retrying after full reset');
+                logUi('Start ignored, retrying…');
+                dumpVisibleWindowsForDiag(mod);
+                await closeDailyOpsWindow();
+                await dom.sleep(400);
+                if (!await ensureGameCenterOpen(mod)) return;
+                if (!await ensureDailyOpsOpen(mod)) return;
+                appsBeforeStart = snapshotAppWindows();
+                if (!await clickStartButton(mod)) return;
+                await dom.sleep(600);
+                puzzle = await dom.waitFor(
+                    () => findPuzzleWindow() || findNewAppWindow(appsBeforeStart),
+                    { timeout: 10000 }
+                );
+            }
         }
-        const appsBeforeStart = snapshotAppWindows();
-        if (!await clickStartButton(mod)) return;
 
-        // The Start click is a WS round-trip; give the puzzle window a
-        // moment to mount before we start polling for it.
-        await dom.sleep(600);
-
-        // Wait for puzzle window — first state is GameWaitingScreen with a
-        // single "advance" button (varies: "Get Signal" for the signal
-        // puzzle, "Start" for log integrity, possibly others); the inner
-        // .game-container only appears after that click. Fall back to "any
-        // ApplicationWindow that appeared after we pressed Start" so a
-        // site-side rename of the puzzle shell doesn't break detection.
-        const puzzle = await dom.waitFor(
-            () => findPuzzleWindow() || findNewAppWindow(appsBeforeStart),
-            { timeout: 15000 }
-        );
         if (!puzzle) {
             mod.error('puzzle window did not open');
             logUi('puzzle window missing');
