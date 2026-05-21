@@ -13,7 +13,6 @@
 //   - STORAGE_LOCAL.NM_GRAPH (carries depth + parentName + isInMaintenance
 //     per server, enriched by ws-interceptor.js computeNmGraph).
 //   - STORAGE_LOCAL.MARKET / DARK_MARKET / SRM_MARKET (each with marketId).
-//   - STORAGE_LOCAL.AJ_SERVER_CAPS (lazy-learned; e.g. {hasLogs: false}).
 
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;

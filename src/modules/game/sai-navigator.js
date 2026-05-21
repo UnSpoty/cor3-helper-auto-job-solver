@@ -138,12 +138,30 @@
 
     async function navigateToSection(sai, sectionSel) {
         if (sai.querySelector(sectionSel)) return true;
-        const tabs = [...sai.querySelectorAll(SEL.TAB)];
+        // The SAI app element appears in the DOM before React mounts its
+        // tab strip — a same-tick querySelectorAll(SEL.TAB) on a freshly-
+        // opened SAI returns []. Bailing on that returns a false-negative
+        // "no Logs section" verdict, which used to poison AJ_SERVER_CAPS
+        // permanently (now removed in favour of C.NO_LOGS_SERVERS). Even
+        // with the hardcoded list, the bogus verdict still aborts the
+        // current attempt — poll for tabs first.
+        let tabs = [];
+        for (let i = 0; i < 15 && !root.__jobManagerAbort; i++) {
+            tabs = [...sai.querySelectorAll(SEL.TAB)];
+            if (tabs.length) break;
+            await dom.sleep(200);
+        }
         if (!tabs.length) return false;
         for (const tab of tabs) {
             dom.clickEl(tab);
-            await dom.sleep(400);
-            if (sai.querySelector(sectionSel)) return true;
+            // Poll up to ~1.6 s for the section to mount instead of a
+            // single 400 ms snapshot — a slow first activation used to
+            // make the loop step on to the next tab and displace the one
+            // we actually wanted.
+            for (let j = 0; j < 8 && !root.__jobManagerAbort; j++) {
+                await dom.sleep(200);
+                if (sai.querySelector(sectionSel)) return true;
+            }
         }
         return false;
     }

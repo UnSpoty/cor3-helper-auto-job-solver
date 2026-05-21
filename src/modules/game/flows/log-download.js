@@ -26,9 +26,8 @@
         // Logs section at all (D4RK), the click silently no-ops and we end
         // up acting on whatever tab was open. Detect this immediately so
         // we don't fire "row not found" against unrelated rows. The
-        // orchestrator listens for reason='no-logs-section' and caches the
-        // capability in AJ_SERVER_CAPS so the planner can refuse the same
-        // job-server pair next cycle without round-tripping.
+        // planner already pre-filters against C.NO_LOGS_SERVERS — this is
+        // a defensive guard for new D4RK servers not yet in that list.
         const navigated = await SAI.navigateToSection(sai, SAI.SEL.LOGS);
         if (!navigated || !sai.querySelector(SAI.SEL.LOGS)) {
             flows.userLog(`Log Download: server "${serverName}" has no Logs section — permanently skipping`, 'warn');

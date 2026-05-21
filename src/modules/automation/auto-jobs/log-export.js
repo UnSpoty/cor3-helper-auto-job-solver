@@ -103,7 +103,7 @@
         const ss = C.STORAGE_SYNC;
         const localKeys = [
             sl.AUTOJOBS_STATE, sl.AUTOJOBS_QUEUE, sl.BUGGED_JOBS,
-            sl.AJ_REJECTED_JOBS, sl.AJ_REACHABILITY, sl.AJ_SERVER_CAPS,
+            sl.AJ_REJECTED_JOBS, sl.AJ_REACHABILITY,
             sl.NM_GRAPH, sl.WEB_VERSION, sl.SYSTEM_VERSION,
         ];
         const syncKeys = [ss.AUTOJOBS_SETTINGS, ss.SERVER_PRIORITIES];
@@ -129,8 +129,8 @@
         lines.push('Reachability snapshot:');
         lines.push(fmtReachability(local[sl.AJ_REACHABILITY]));
         lines.push('');
-        lines.push('Server caps (lazy-learned):');
-        lines.push('  ' + JSON.stringify(local[sl.AJ_SERVER_CAPS] || {}));
+        lines.push('No-Logs servers (hardcoded):');
+        lines.push('  ' + JSON.stringify(C.NO_LOGS_SERVERS || []));
         lines.push('');
         const st = local[sl.AUTOJOBS_STATE];
         lines.push(`Current state: ${st?.status || '—'}` + (st?.jobId ? ` (job ${st.jobId})` : '') + ` updatedAt=${fmtTs(st?.updatedAt)}`);

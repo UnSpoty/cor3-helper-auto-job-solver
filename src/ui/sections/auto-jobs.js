@@ -419,6 +419,14 @@
     //   • "running" — current state.jobId
     //   • "skip" — server in priorities[name]==='skip', OR job permanently rejected
     //   • "off" — market disabled OR job-type disabled
+    //   • "K/D" / "path K/D" — server (or transit) in maintenance
+    //   • "no access" / "path locked" — readiness gate (canAccess=false)
+    //   • "no logs" — log_* type targeting a server in C.NO_LOGS_SERVERS
+    // Last five mirror planner.evaluateJob reasons in the same precedence —
+    // if a reason here doesn't match a planner verdict we'd be showing the
+    // user a lie. Touch both together.
+    const LOG_FLOW_TYPES_UI = new Set(['log_deletion', 'log_download']);
+    const NO_LOGS_SERVERS_UI = new Set(C.NO_LOGS_SERVERS || []);
     function jobRow(job, source, ctx) {
         const type = detectJobType(job);
         const server = jobServer(job);
@@ -430,6 +438,27 @@
         if (type && ctx.enabledJobTypes && ctx.enabledJobTypes[type] === false) { tags.push('off'); dim = true; }
         if (server && ctx.priorities[server] === 'skip') { tags.push('skip'); dim = true; }
         if (ctx.rejectedJobs[job.id]) { tags.push('skip'); dim = true; }
+        const alreadyAccepted = ctx.queuedIds.has(job.id) || ctx.runningJobId === job.id;
+        // Pre-accept planner reasons are only meaningful for jobs that
+        // haven't entered the queue yet. Once accepted, "queued"/"running"
+        // is the truth — don't also stamp K/D on top.
+        if (!alreadyAccepted && server) {
+            const node = ctx.graphByName && ctx.graphByName.get(server);
+            if (node && node.isInMaintenance) {
+                tags.push('K/D'); dim = true;
+            } else if (ctx.pathHasKD && ctx.pathHasKD(server)) {
+                tags.push('path K/D'); dim = true;
+            } else if (ctx.readinessFor) {
+                const r = ctx.readinessFor(server);
+                if (r && r.canAccess === false) {
+                    tags.push('no access'); dim = true;
+                } else if (ctx.pathHasNoAccess && ctx.pathHasNoAccess(server)) {
+                    tags.push('path locked'); dim = true;
+                } else if (type && LOG_FLOW_TYPES_UI.has(type) && NO_LOGS_SERVERS_UI.has(server)) {
+                    tags.push('no logs'); dim = true;
+                }
+            }
+        }
         if (ctx.queuedIds.has(job.id)) tags.push('queued');
         if (ctx.runningJobId === job.id) tags.push('running');
 
@@ -468,20 +497,69 @@
         };
     }
 
-    function renderJobs(host, marketsData, settings, priorities, rejectedJobs, queue, state, nmGraph) {
+    function renderJobs(host, marketsData, settings, priorities, rejectedJobs, queue, state, nmGraph, readiness) {
         host.innerHTML = '';
 
         // Lookup tables shared across rows
         const nmDepths = {};
+        const graphByName = new Map();
         if (nmGraph && Array.isArray(nmGraph.servers)) {
             for (const s of nmGraph.servers) {
-                if (s.name && Number.isFinite(s.depth)) nmDepths[s.name] = s.depth;
+                if (s.name) {
+                    if (Number.isFinite(s.depth)) nmDepths[s.name] = s.depth;
+                    graphByName.set(s.name, s);
+                }
             }
+        }
+        // Same parent-chain walk planner.buildContext uses. Kept local rather
+        // than imported because planner.js isn't loaded into the popup context
+        // (manifest content_scripts only). Stay in sync with planner.js — see
+        // the "K/D" / "path K/D" comment above jobRow.
+        function pathHasKD(name) {
+            const visited = new Set();
+            let cur = graphByName.get(name);
+            let safety = 64;
+            while (cur && safety-- > 0) {
+                if (visited.has(cur.name)) break;
+                visited.add(cur.name);
+                if (cur.name !== name && cur.isInMaintenance) return true;
+                if (!cur.parentName) break;
+                cur = graphByName.get(cur.parentName);
+            }
+            return false;
+        }
+        const READINESS_TTL_MS = 15 * 60 * 1000;
+        const now = Date.now();
+        function readinessFor(name) {
+            const r = (readiness && readiness[name]) || null;
+            if (!r) return null;
+            if (r.checkedAt && (now - r.checkedAt) > READINESS_TTL_MS) return null;
+            return r;
+        }
+        function pathHasNoAccess(name) {
+            const visited = new Set();
+            let cur = graphByName.get(name);
+            let safety = 64;
+            while (cur && safety-- > 0) {
+                if (visited.has(cur.name)) break;
+                visited.add(cur.name);
+                if (cur.name !== name) {
+                    const r = readinessFor(cur.name);
+                    if (r && r.canAccess === false) return true;
+                }
+                if (!cur.parentName) break;
+                cur = graphByName.get(cur.parentName);
+            }
+            return false;
         }
         const queuedIds = new Set((queue || []).map((j) => j.jobId));
         const runningJobId = state?.jobId || null;
         const ctx = {
             nmDepths,
+            graphByName,
+            pathHasKD,
+            readinessFor,
+            pathHasNoAccess,
             priorities: priorities || {},
             rejectedJobs: rejectedJobs || {},
             queuedIds,
@@ -793,7 +871,7 @@
 
     async function refreshJobs() {
         if (!panel) return;
-        const [settings, state, queue, rejected, nmGraph, priorities, home, dark, srm] = await Promise.all([
+        const [settings, state, queue, rejected, nmGraph, priorities, home, dark, srm, readiness] = await Promise.all([
             Store.sync.getOne(C.STORAGE_SYNC.AUTOJOBS_SETTINGS, DEFAULT_SETTINGS),
             Store.local.getOne(C.STORAGE_LOCAL.AUTOJOBS_STATE, { status: 'idle' }),
             Store.local.getOne(C.STORAGE_LOCAL.AUTOJOBS_QUEUE, []),
@@ -803,6 +881,7 @@
             Store.local.getOne(C.STORAGE_LOCAL.MARKET, null),
             Store.local.getOne(C.STORAGE_LOCAL.DARK_MARKET, null),
             Store.local.getOne(C.STORAGE_LOCAL.SRM_MARKET, null),
+            Store.local.getOne(C.STORAGE_LOCAL.AJ_SERVER_READINESS, {}),
         ]);
         // Diagnostic: log queue vs market visibility so we can see which
         // accepted jobs vanish from the visible board. Pt 5 investigation.
@@ -825,7 +904,7 @@
             { key: 'home', label: t('overview.homeMarket'), data: home, enabled: settings.markets?.home !== false },
             { key: 'dark', label: t('overview.darkMarket'), data: dark, enabled: settings.markets?.dark !== false },
             { key: 'srm',  label: t('overview.srm'),        data: srm,  enabled: settings.markets?.srm  !== false },
-        ], settings, priorities, rejected, queue, state, nmGraph);
+        ], settings, priorities, rejected, queue, state, nmGraph, readiness);
     }
 
     async function refreshServerPriorities() {
@@ -903,6 +982,7 @@
                 if (changes[C.STORAGE_LOCAL.MARKET])             { hits.add('jobs'); }
                 if (changes[C.STORAGE_LOCAL.DARK_MARKET])        { hits.add('jobs'); }
                 if (changes[C.STORAGE_LOCAL.SRM_MARKET])         { hits.add('jobs'); }
+                if (changes[C.STORAGE_LOCAL.AJ_SERVER_READINESS]) { hits.add('jobs'); }
                 if (hits.has('header'))   refreshHeader();
                 if (hits.has('timeline')) refreshTimeline();
                 if (hits.has('jobs'))     refreshJobs();

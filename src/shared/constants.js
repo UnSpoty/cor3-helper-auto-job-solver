@@ -194,9 +194,6 @@
         // Phase 2/3: per-cycle reachability snapshot
         // Shape: { computedAt, markets: { home: {reachable, blockers, path}, dark, srm }, servers: {...} }
         AJ_REACHABILITY: 'ajReachability',
-        // Phase 2/3: lazy-learned per-server capabilities (e.g. whether D4RK
-        // server has a Logs tab). Shape: { [serverName]: { hasLogs?: bool, ... } }
-        AJ_SERVER_CAPS: 'ajServerCaps',
         // Commit 3 (pt 7): per-server readiness probe. Shape:
         //   { [serverName]: { canAccess, hasHackTools, checkedAt, reason? } }
         // canAccess===false means the server is unusable until a fresh probe
@@ -343,5 +340,12 @@
         COMPLETED_LOG_RING: 50,
     };
 
-    root.COR3.constants = { MSG, STORAGE_LOCAL, STORAGE_SYNC, FLOW, LOG_LEVEL, CATEGORY, LIMITS };
+    // D4RK servers that don't have a Logs section at all. Planner rejects
+    // log_download / log_deletion against these up-front; UI shows the same
+    // chip. Keep this list in sync with what the game actually exposes —
+    // there's no lazy-learning fallback any more (the old probe was racy and
+    // permanently poisoned legitimate servers on a single timing miss).
+    const NO_LOGS_SERVERS = ['D4RK RM7CE', 'D4RK 2IV2', 'D4RK RM7MI'];
+
+    root.COR3.constants = { MSG, STORAGE_LOCAL, STORAGE_SYNC, FLOW, LOG_LEVEL, CATEGORY, LIMITS, NO_LOGS_SERVERS };
 })();

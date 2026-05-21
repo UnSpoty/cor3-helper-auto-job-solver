@@ -1720,24 +1720,6 @@
             const descriptor = state.jobName || state.jobType || 'Unknown';
             const reason = env.reason || (env.success ? 'no-work' : 'flow-fail');
 
-            // Cap learning: a flow told us a server has no Logs section.
-            // Persist for the planner so the same job-server pair gets
-            // refused before dispatch next cycle. Done outside the branches
-            // because the cap is useful regardless of how the flow signals.
-            if (env.reason === 'no-logs-section' && state.serverName) {
-                try {
-                    const caps = (await Store.local.getOne(C.STORAGE_LOCAL.AJ_SERVER_CAPS, {})) || {};
-                    const prev = caps[state.serverName] || {};
-                    if (prev.hasLogs !== false) {
-                        caps[state.serverName] = { ...prev, hasLogs: false, learnedAt: Date.now() };
-                        await Store.local.setOne(C.STORAGE_LOCAL.AJ_SERVER_CAPS, caps);
-                        this.info(`server-cap learned: "${state.serverName}" has no Logs section`);
-                    }
-                } catch (err) {
-                    this.warn('failed to persist server cap', { error: String(err && err.message || err) });
-                }
-            }
-
             // Branch 1: full success → completion.
             if (env.success === true && env.didWork === true) {
                 if (state.status !== 'solving') return;

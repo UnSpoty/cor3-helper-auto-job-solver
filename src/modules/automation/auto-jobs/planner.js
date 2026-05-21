@@ -17,7 +17,12 @@
 //   reject:server-skip              — user manually skipped this server (priorities='skip')
 //   reject:server-kd                — server itself is in K/D (NM_GRAPH.isInMaintenance)
 //   reject:path-kd                  — at least one transit node is in K/D
-//   reject:no-logs-section          — D4RK + log_* job, AJ_SERVER_CAPS.hasLogs=false
+//   reject:no-logs-section          — log_* job targeting a server hardcoded
+//                                     in C.NO_LOGS_SERVERS (D4RK ones without
+//                                     a Logs tab in-game). Used to be lazy-
+//                                     learned into AJ_SERVER_CAPS but that
+//                                     was racy and false-positives stuck
+//                                     forever — see commit history.
 //   reject:already-rejected         — job already in AJ_REJECTED_JOBS map (Phase 3)
 //   reject:bugged                   — job in legacy buggedJobs map and TTL still active
 //   reject:unknown-type             — job type doesn't map to any flow
@@ -37,6 +42,7 @@
     ]);
 
     const LOG_FLOW_TYPES = new Set(['log_deletion', 'log_download']);
+    const NO_LOGS_SERVERS = new Set(C.NO_LOGS_SERVERS || []);
 
     function isFiniteBuggedActive(entry, now) {
         if (!entry) return false;
@@ -121,14 +127,12 @@
                 }
             }
 
-            // Server-cap reject: D4RK server + log_* flow but we've previously
-            // observed no Logs section there. Surfaces the issue at planning
-            // time instead of dispatching the flow just to discover it again.
-            if (ctx && ctx.serverCaps && LOG_FLOW_TYPES.has(type)) {
-                const cap = ctx.serverCaps[serverName];
-                if (cap && cap.hasLogs === false) {
-                    return { accept: false, reason: 'reject:no-logs-section', severity: 'info' };
-                }
+            // Hardcoded D4RK no-logs list: these servers don't expose a
+            // Logs tab in-game, so log_* jobs are never satisfiable there.
+            // Source-of-truth is C.NO_LOGS_SERVERS — bump it if the game
+            // ships another D4RK server without Logs.
+            if (LOG_FLOW_TYPES.has(type) && NO_LOGS_SERVERS.has(serverName)) {
+                return { accept: false, reason: 'reject:no-logs-section', severity: 'info' };
             }
         }
 
@@ -161,9 +165,8 @@
      *   { kdSkipServers, serverPriorities, bugged }
      */
     async function buildContext(runtime) {
-        const [graph, serverCaps, rejected, readiness] = await Promise.all([
+        const [graph, rejected, readiness] = await Promise.all([
             Store.local.getOne(SL.NM_GRAPH, null),
-            Store.local.getOne(SL.AJ_SERVER_CAPS, {}),
             Store.local.getOne(SL.AJ_REJECTED_JOBS, {}),
             Store.local.getOne(SL.AJ_SERVER_READINESS, {}),
         ]);
@@ -219,7 +222,6 @@
         return {
             now,
             graph, graphByName, pathHasKD, pathHasNoAccess, readinessFor,
-            serverCaps: serverCaps || {},
             readiness: readiness || {},
             rejected: rejected || {},
             kdSkipServers: (runtime && runtime.kdSkipServers) || null,
