@@ -100,9 +100,17 @@
     document.getElementById('sidePanelBtn').addEventListener('click', async () => {
         try {
             const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-            const target = (tab && /cor3\.gg/.test(tab.url || '')) ? tab : (await chrome.tabs.query({ url: ['https://cor3.gg/*', 'https://os.cor3.gg/*'] }))[0];
-            if (!target) return;
-            await chrome.sidePanel.open({ tabId: target.id });
+            const cor3Tab = (tab && /cor3\.gg/.test(tab.url || ''))
+                ? tab
+                : (await chrome.tabs.query({ url: ['https://cor3.gg/*', 'https://os.cor3.gg/*'] }))[0];
+            if (cor3Tab) {
+                await chrome.sidePanel.open({ tabId: cor3Tab.id });
+            } else if (tab && tab.windowId != null) {
+                await chrome.sidePanel.open({ windowId: tab.windowId });
+            } else {
+                const win = await chrome.windows.getCurrent();
+                if (win && win.id != null) await chrome.sidePanel.open({ windowId: win.id });
+            }
             window.close();
         } catch (_) {}
     });
