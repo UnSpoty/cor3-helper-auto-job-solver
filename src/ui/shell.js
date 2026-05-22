@@ -280,6 +280,12 @@
         list.appendChild(row(i18n.t('overview.darkMarket'), dark && dark.nextJobsResetAt, darkAvail === false));
         list.appendChild(row(i18n.t('overview.srm'), srm && srm.nextJobsResetAt, srmAvail === false));
         noTabEl.appendChild(list);
+
+        const logo = document.createElement('img');
+        logo.className = 'nt-logo';
+        logo.alt = '';
+        logo.src = chrome.runtime.getURL('icon/logo.png');
+        noTabEl.appendChild(logo);
     }
 
     // Re-render the no-tab placeholder when the storage values backing

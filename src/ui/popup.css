@@ -154,6 +154,14 @@ a { color: var(--os-color-primary-hex); }
 }
 .no-tab .nt-timer-row:last-child { border-bottom: none; }
 .no-tab .nt-timer-label { color: var(--os-color-text-grey); }
+.no-tab .nt-logo {
+    display: block;
+    width: calc(100% + 40px);
+    margin: 24px -20px 0;
+    height: auto;
+    pointer-events: none;
+    user-select: none;
+}
 
 /* ─── Locked-tab placeholder (Expeditions under rework) ────────────── */
 .locked-tab {
