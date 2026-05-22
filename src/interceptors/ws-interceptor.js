@@ -82,6 +82,13 @@
                 ws.__cor3Url = url;
                 trackedSockets.push(ws);
 
+                // Ensure binary frames arrive as ArrayBuffer (cor3.gg uses
+                // msgpack-encoded binary frames since May 2026). socket.io
+                // itself sets this on the underlying transport, but if our
+                // Proxy intercepts an instance before the lib assigns it
+                // we'd otherwise get Blobs and decode would fail.
+                try { ws.binaryType = 'arraybuffer'; } catch (_) {}
+
                 ws.addEventListener('message', (event) => {
                     try {
                         if (activeSocket !== ws) {
@@ -89,7 +96,15 @@
                             activeSocket = ws;
                         }
                         socketLastActivity.set(ws, Date.now());
-                        handleWsMessage(event.data, ws);
+                        const d = event.data;
+                        if (d instanceof ArrayBuffer || ArrayBuffer.isView(d)) {
+                            handleWsBinary(d, ws);
+                        } else if (typeof d === 'string') {
+                            // engine.io control frames — open ("0{...}"),
+                            // ping ("2"), pong ("3"), Socket.IO-level text
+                            // packets if cor3.gg ever falls back from msgpack.
+                            handleWsText(d, ws);
+                        }
                     } catch (_) { /* silent */ }
                 });
 
@@ -137,16 +152,37 @@
 
     // ──────────────────────────────────────────────────────────────────────
     // Inbound message dispatch
+    //
+    // Cor3.gg's May-2026 protocol shift: every Socket.IO-level message is
+    // now an ArrayBuffer carrying msgpack {type, data, nsp}. Engine.io
+    // control frames ("0{sid:...}", "2"/"3" ping/pong) are still text.
+    //
+    // handleWsText  — text path, only engine.io controls in practice.
+    // handleWsBinary — the hot path: msgpack-decode, then funnel into
+    //                  dispatchEvent which is the same switch the old
+    //                  text parser fed.
     // ──────────────────────────────────────────────────────────────────────
-    function handleWsMessage(rawData, _socket) {
-        if (typeof rawData !== 'string') return;
-        if (!wsFrames.isEventFrame(rawData)) return;
-
+    function handleWsText(rawData, _socket) {
+        // engine.io control frames carry no Socket.IO payload — skip.
+        if (!rawData || rawData.length === 0) return;
+        const engineType = rawData[0];
+        if (engineType !== '4') return;
+        // If cor3.gg ever falls back to JSON-text Socket.IO packets, the
+        // legacy parser still works. Production path is binary; this is
+        // defensive code, not the hot path.
         const frame = wsFrames.parseFrame(rawData);
         if (!frame || frame.eventName === null) return;
-        const eventName = frame.eventName;
-        const payload = frame.payload;
+        dispatchEvent(frame.eventName, frame.payload);
+    }
 
+    function handleWsBinary(buffer, _socket) {
+        const frame = wsFrames.parseBinaryFrame(buffer);
+        if (!frame) return;
+        if (frame.sioType !== 2 || frame.eventName === null) return;
+        dispatchEvent(frame.eventName, frame.payload);
+    }
+
+    function dispatchEvent(eventName, payload) {
         // Token-expired → close all sockets, queue retries
         if (eventName === 'error' && payload && payload.message === 'token-expired') {
             console.log('[COR3] Token expired — closing sockets to force reconnect');
@@ -650,16 +686,44 @@
         return true;
     }
 
+    // ─── Binary frame helpers (May-2026 msgpack protocol) ─────────────
+    // All RPC / room-management goes through these. wsSend at the bottom
+    // accepts either a string (legacy / engine.io control) or an
+    // ArrayBuffer (the actual Socket.IO frames we now emit).
+    function wsSendRpc(name, action, data) {
+        const payload = {
+            event: { name, action },
+            data: data == null ? null : data,
+            // cor3.gg started attaching this on every outbound; servers
+            // tolerate its absence but include it to stay isomorphic to
+            // what the site itself produces.
+            options: { compress: false },
+        };
+        return wsSend(wsFrames.encodeEventBinary('event', payload));
+    }
+
+    function jwtBearer() {
+        try { return localStorage.getItem('cor3-tkey') || ''; } catch (_) { return ''; }
+    }
+
+    function wsSendJoinRoom(room) {
+        return wsSend(wsFrames.encodeEventBinary('join-room', { room, jwtToken: jwtBearer() }));
+    }
+
+    function wsSendLeaveRoom(room) {
+        return wsSend(wsFrames.encodeEventBinary('leave-room', { room, jwtToken: jwtBearer() }));
+    }
+
     const joinedRooms = new Set();
 
     function leaveRoom(room) {
         if (!joinedRooms.has(room)) return false;
-        wsSend('42["leave-room",{"room":"' + room + '"}]');
+        wsSendLeaveRoom(room);
         joinedRooms.delete(room);
         return true;
     }
     function sendJoin(room) {
-        wsSend('42["join-room",{"room":"' + room + '"}]');
+        wsSendJoinRoom(room);
         joinedRooms.add(room);
     }
     function leaveRoomsInOrder(rooms) {
@@ -702,32 +766,32 @@
         enterRooms(['expeditions']).then(() => {
             setTimeout(() => {
                 window.removeEventListener('message', onExpData);
-                if (!gotData) wsSend('42["event",{"event":{"name":"expeditions","action":"get.active"}}]');
+                if (!gotData) wsSendRpc('expeditions', 'get.active', {});
             }, 2000);
         });
         return true;
     };
 
     root.__cor3RespondDecision = function (expeditionId, messageId, selectedOption) {
-        const payload = JSON.stringify({ expeditionId, messageId, selectedOption });
-        const sent = wsSend('42["event",{"event":{"name":"expeditions","action":"respond.event"},"data":' + payload + '}]');
-        if (!sent) queueRetryOp('decision:' + payload);
+        const data = { expeditionId, messageId, selectedOption };
+        const sent = wsSendRpc('expeditions', 'respond.event', data);
+        if (!sent) queueRetryOp('decision:' + JSON.stringify(data));
         return sent;
     };
 
     root.__cor3RequestArchivedExpeditions = function () {
-        wsSend('42["event",{"event":{"name":"expeditions","action":"get.archived"},"data":{"cursor":null,"limit":20}}]');
+        wsSendRpc('expeditions', 'get.archived', { cursor: null, limit: 20 });
         return true;
     };
 
     root.__cor3RequestMercenaries = function (marketId) {
         const mid = marketId || root.__cor3LastMarketId || '019d3ea4-85bd-7389-904d-8f7c85841134';
-        wsSend('42["event",{"event":{"name":"expeditions","action":"get.mercenaries"},"data":{"marketId":"' + mid + '"}}]');
+        wsSendRpc('expeditions', 'get.mercenaries', { marketId: mid });
         return true;
     };
 
     root.__cor3RequestExpeditionConfig = function () {
-        wsSend('42["event",{"event":{"name":"expeditions","action":"get.config"}}]');
+        wsSendRpc('expeditions', 'get.config', {});
         return true;
     };
 
@@ -735,26 +799,26 @@
         const mid = marketId || root.__cor3LastMarketId || '019d3ea4-85bd-7389-904d-8f7c85841134';
         root.__cor3PendingMercConfigures.push(mercenaryId);
         const data = { mercenaryId, marketId: mid, locationConfigId, zoneConfigId, objectiveId, hasInsurance: false };
-        wsSend('42["event",{"event":{"name":"expeditions","action":"configure"},"data":' + JSON.stringify(data) + '}]');
+        wsSendRpc('expeditions', 'configure', data);
         return true;
     };
 
     root.__cor3LaunchExpedition = function (configData) {
         console.log('[COR3] Launching expedition:', configData);
-        wsSend('42["event",{"event":{"name":"expeditions","action":"configure"},"data":' + JSON.stringify(configData) + '}]');
+        wsSendRpc('expeditions', 'configure', configData);
         setTimeout(() => {
-            wsSend('42["event",{"event":{"name":"expeditions","action":"launch"},"data":' + JSON.stringify(configData) + '}]');
+            wsSendRpc('expeditions', 'launch', configData);
         }, humanDelay() + 500);
         return true;
     };
 
     root.__cor3OpenContainer = function (expeditionId) {
-        wsSend('42["event",{"event":{"name":"expeditions","action":"open.container"},"data":{"expeditionId":"' + expeditionId + '"}}]');
+        wsSendRpc('expeditions', 'open.container', { expeditionId });
         return true;
     };
 
     root.__cor3CollectAll = function (expeditionId) {
-        wsSend('42["event",{"event":{"name":"expeditions","action":"collect.all"},"data":{"expeditionId":"' + expeditionId + '"}}]');
+        wsSendRpc('expeditions', 'collect.all', { expeditionId });
         return true;
     };
 
@@ -785,8 +849,7 @@
                 sendSetEndpoint(requiredServer);
                 await sleep(800);
             }
-            const data = JSON.stringify({ marketId, jobId });
-            const ok = wsSend('42["event",{"event":{"name":"market","action":"job.take"},"data":' + data + '}]');
+            const ok = wsSendRpc('market', 'job.take', { marketId, jobId });
             dbg(`job.take sent ok=${ok}`);
             if (!ok) {
                 post('COR3_ACCEPT_JOB_SEND_FAILED', { jobId, marketId });
@@ -796,8 +859,7 @@
     };
 
     root.__cor3CompleteJob = function (jobId, marketId) {
-        const data = JSON.stringify({ marketId, jobId });
-        return wsSend('42["event",{"event":{"name":"market","action":"job.complete"},"data":' + data + '}]');
+        return wsSendRpc('market', 'job.complete', { marketId, jobId });
     };
 
     // Dismiss a FAILED job (`market.job.dismiss`) — clears it from the
@@ -807,15 +869,12 @@
     // remote markets we tail-queue behind inflightRemoteFetch with a
     // set.endpoint→dismiss→revert dance, mirroring fetchRemoteMarketSequence.
     root.__cor3DismissJob = function (jobId, marketId) {
-        const dismissFrame = (() => {
-            const data = JSON.stringify({ marketId, jobId });
-            return '42["event",{"event":{"name":"market","action":"job.dismiss"},"data":' + data + '}]';
-        })();
+        const sendDismiss = () => wsSendRpc('market', 'job.dismiss', { marketId, jobId });
         const cfg = MARKET_BY_ID[marketId];
         const requiredServer = cfg ? cfg.serverId : null;
         // HOME (or unknown market — best-effort) — endpoint already correct.
         if (!requiredServer || requiredServer === HOME_SERVER_ID) {
-            return wsSend(dismissFrame);
+            return sendDismiss();
         }
         // Remote market — flip endpoint, dismiss, revert. Sequenced behind
         // inflightRemoteFetch so it can't interleave with get.jobs preflights.
@@ -830,7 +889,7 @@
                 sendSetEndpoint(requiredServer);
                 await sleep(800);
             }
-            wsSend(dismissFrame);
+            sendDismiss();
             await sleep(800);
             if (needPreflight && saved && saved !== requiredServer) {
                 sendSetEndpoint(saved);
@@ -848,7 +907,7 @@
 
     root.__cor3SellItem = function (itemId, quantity) {
         const qty = quantity || 1;
-        wsSend('42["event",{"event":{"name":"stash","action":"sell.item"},"data":{"itemId":"' + itemId + '","quantity":' + qty + '}}]');
+        wsSendRpc('stash', 'sell.item', { itemId, quantity: qty });
         setTimeout(() => root.__cor3RequestStash(), 1500);
         return true;
     };
@@ -906,46 +965,64 @@
         return pendingMarketJobsRequests.shift() || null;
     }
 
-    // Outbound parser. Recognises socket.io v4 event frames of the shape
-    //   42["event",{"event":{"name":"market","action":"get.jobs"},"data":{"marketId":"..."}}]
-    // (cor3.gg's own getJobs(marketId) and our wsSend below produce the same
-    // shape — confirmed by inspecting cor3.gg's bundle: the runAction wrapper
-    // always emits via this.emit("event",{event:{name,action},data})).
-    function captureOutboundGetJobs(rawData) {
-        if (typeof rawData !== 'string') return;
-        if (rawData.length > 4096) return;          // cheap guard; get.jobs frames are small
-        if (!rawData.startsWith('42[')) return;
-        if (rawData.indexOf('"get.jobs"') < 0) return;
-        const m = rawData.match(/"marketId"\s*:\s*"([0-9a-f-]{36})"/i);
-        if (!m) return;
-        pushPendingMarketJobsRequest(m[1]);
+    // Decode an outbound event payload to { name, action, data } regardless
+    // of wire format (legacy text "42[...]" or current msgpack binary).
+    // Returns null if not a recognisable event frame. Cor3.gg's own outbound
+    // (e.g. when the user opens Market or clicks a Network Map server) goes
+    // through the same shape, so capturing here keeps us in sync with the
+    // user's manual actions.
+    function decodeOutboundEvent(rawData) {
+        if (typeof rawData === 'string') {
+            if (rawData.length === 0 || rawData.length > 65536) return null;
+            if (!rawData.startsWith('42[')) return null;
+            const frame = wsFrames.parseFrame(rawData);
+            if (!frame || frame.sioType !== 2 || frame.eventName !== 'event' || !frame.payload) return null;
+            const p = frame.payload;
+            if (!p.event) return null;
+            return { name: p.event.name, action: p.event.action, data: p.data };
+        }
+        if (rawData instanceof ArrayBuffer || ArrayBuffer.isView(rawData)) {
+            // Skip cheap guard: socket.io rarely sends > 64KB frames in
+            // outbound get.jobs / set.endpoint paths.
+            const byteLen = (rawData instanceof ArrayBuffer) ? rawData.byteLength : rawData.byteLength;
+            if (byteLen === 0 || byteLen > 65536) return null;
+            const frame = wsFrames.parseBinaryFrame(rawData);
+            if (!frame || frame.sioType !== 2 || frame.eventName !== 'event' || !frame.payload) return null;
+            const p = frame.payload;
+            if (!p.event) return null;
+            return { name: p.event.name, action: p.event.action, data: p.data };
+        }
+        return null;
     }
 
-    // Outbound parser for network-map.set.endpoint. We optimistically update
-    // currentEndpoint on every observed outbound (ours OR cor3.gg's) — the
-    // server response will correct us via the data.servers parse below if
-    // the request actually fails. Without this, our preflight-revert dance
-    // for remote markets would always think the user is on HOME and revert
-    // to it even if they had manually navigated elsewhere.
+    function captureOutboundGetJobs(rawData) {
+        const ev = decodeOutboundEvent(rawData);
+        if (!ev || ev.name !== 'market' || ev.action !== 'get.jobs') return;
+        const marketId = ev.data && ev.data.marketId;
+        if (typeof marketId === 'string') pushPendingMarketJobsRequest(marketId);
+    }
+
+    // Optimistically update currentEndpoint on every observed outbound
+    // set.endpoint (ours OR cor3.gg's) — the server response corrects us
+    // via the data.servers parse if the request fails. Without this, our
+    // preflight-revert dance for remote markets would always think the
+    // user is on HOME and revert to it even if they had manually navigated.
     function captureOutboundSetEndpoint(rawData) {
-        if (typeof rawData !== 'string') return;
-        if (rawData.length > 4096) return;
-        if (!rawData.startsWith('42[')) return;
-        if (rawData.indexOf('"set.endpoint"') < 0) return;
-        const m = rawData.match(/"serverId"\s*:\s*"([0-9a-f-]{36})"/i);
-        if (!m) return;
-        currentEndpoint = m[1];
+        const ev = decodeOutboundEvent(rawData);
+        if (!ev || ev.name !== 'network-map' || ev.action !== 'set.endpoint') return;
+        const sid = ev.data && ev.data.serverId;
+        if (typeof sid === 'string') currentEndpoint = sid;
     }
 
     function sendGetJobs(marketId) {
         // Don't push the queue here — the wrapped ws.send will, via
         // captureOutboundGetJobs, on the actual transmit. Pushing here too
         // would double-count.
-        return wsSend('42["event",{"event":{"name":"market","action":"get.jobs"},"data":{"marketId":"' + marketId + '"}}]');
+        return wsSendRpc('market', 'get.jobs', { marketId });
     }
 
     function sendSetEndpoint(serverId) {
-        return wsSend('42["event",{"event":{"name":"network-map","action":"set.endpoint"},"data":{"serverId":"' + serverId + '"}}]');
+        return wsSendRpc('network-map', 'set.endpoint', { serverId });
     }
 
     root.__cor3RequestNetworkMap = function () {
@@ -953,7 +1030,7 @@
         // hackTools }. Doesn't change endpoint or open any UI panel — pure
         // data fetch. Response is BFS-processed in handleWsMessage and
         // posted as MSG.GAME.NM_GRAPH.
-        return wsSend('42["event",{"event":{"name":"network-map","action":"get.map"}}]');
+        return wsSendRpc('network-map', 'get.map', {});
     };
 
     // Ensure currentEndpoint is HOME before something endpoint-sensitive
