@@ -30,6 +30,14 @@
             JOB_COMPLETED: 'COR3_WS_JOB_COMPLETED',
             CONTAINER_OPENED: 'COR3_WS_CONTAINER_OPENED',
             COLLECTED_ALL: 'COR3_WS_COLLECTED_ALL',
+            // Loadout: full snapshot pushed by the server in response to
+            // join-room {room:"loadout"}. Payload shape:
+            //   { ownedHardware:[], ownedSoftware:[], equippedHardware:{cpu,gpu,ram,psu},
+            //     equippedSoftware:[], resources:{supply,demand,canBoot,softwarePower} }
+            // Each software has specs:[{type:"DECRYPT|HACK|SEARCH", fileTypes?, power, remote}]
+            // which is what drives the dynamic minigame file allow-list and
+            // the per-job-type pre-rejection in the Auto-Jobs planner.
+            LOADOUT: 'COR3_WS_LOADOUT',
             EXPEDITION_LAUNCHED: 'COR3_WS_EXPEDITION_LAUNCHED',
             EXPEDITION_LAUNCH_ERROR: 'COR3_WS_EXPEDITION_LAUNCH_ERROR',
             EXPEDITION_RETRY_LAUNCH: 'COR3_WS_EXPEDITION_RETRY_LAUNCH',
@@ -64,6 +72,9 @@
             NM_SERVERS: 'COR3_NM_SERVERS',
             REQUEST_NM_MAP: 'COR3_REQUEST_NM_MAP',
             NM_GRAPH: 'COR3_NM_GRAPH',
+            // Re-request current loadout snapshot. Trivial: join-room
+            // {room:"loadout"} — server replies with loadout/get.options.
+            REQUEST_LOADOUT: 'COR3_REQUEST_LOADOUT',
             // Tell MAIN to revert the network-map endpoint back to HOME
             // (used by auto-jobs at end of a bulk-accept batch that may
             // have left endpoint on DARK/SRM after a remote-market accept).
@@ -169,6 +180,8 @@
         MERC_CONFIG_AT: 'mercConfigUpdatedAt',
         DAILY_OPS: 'dailyOpsData',
         DAILY_OPS_AT: 'dailyOpsUpdatedAt',
+        LOADOUT: 'loadoutData',
+        LOADOUT_AT: 'loadoutDataUpdatedAt',
         DAILY_OPS_ERROR: 'dailyOpsError',
         DAILY_OPS_ERROR_AT: 'dailyOpsErrorUpdatedAt',
         DAILY_REWARDS: 'dailyRewardsData',

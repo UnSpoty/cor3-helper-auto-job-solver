@@ -208,6 +208,15 @@
             return;
         }
 
+        // loadout → COR3_WS_LOADOUT. Server only emits one action so far
+        // (get.options, in reply to our join-room). Forward the whole
+        // payload.data verbatim — both the data-module and the
+        // loadout-panel UI consume it.
+        if (eventName === 'loadout' && payload && payload.data) {
+            post(MSG.WS.LOADOUT, { data: payload.data });
+            return;
+        }
+
         // expeditions: many actions
         if (eventName === 'expeditions') {
             const action = payload && payload.event && payload.event.action;
@@ -690,14 +699,16 @@
     // All RPC / room-management goes through these. wsSend at the bottom
     // accepts either a string (legacy / engine.io control) or an
     // ArrayBuffer (the actual Socket.IO frames we now emit).
-    function wsSendRpc(name, action, data) {
+    function wsSendRpc(name, action, data, opts) {
         const payload = {
             event: { name, action },
             data: data == null ? null : data,
             // cor3.gg started attaching this on every outbound; servers
             // tolerate its absence but include it to stay isomorphic to
-            // what the site itself produces.
-            options: { compress: false },
+            // what the site itself produces. Default compress:false,
+            // but loadout mutations specifically ship with compress:true
+            // on the real site — see __cor3LoadoutEquip*.
+            options: { compress: (opts && opts.compress) || false },
         };
         return wsSend(wsFrames.encodeEventBinary('event', payload));
     }
@@ -903,6 +914,35 @@
     root.__cor3RequestStash = function () {
         enterRooms(['stash']);
         return true;
+    };
+
+    root.__cor3RequestLoadout = function () {
+        enterRooms(['loadout']);
+        return true;
+    };
+
+    // ─── LOADOUT mutations ────────────────────────────────────────────
+    // All three actions share the same envelope shape:
+    //   { event:{name:"loadout", action:<X>}, data:{moduleConfigId} }
+    // with options.compress=true (matches what cor3.gg's own UI emits;
+    // server accepts either, kept true for byte-for-byte parity).
+    //
+    // Response is a full loadout snapshot pushed back on the same
+    // "loadout" event channel — the existing eventName === 'loadout'
+    // route forwards it to MSG.WS.LOADOUT, so the panel + data module
+    // refresh automatically. No ack/correlation needed here.
+    root.__cor3LoadoutEquipSoftware = function (moduleConfigId) {
+        if (!moduleConfigId) return false;
+        return wsSendRpc('loadout', 'equip.software', { moduleConfigId }, { compress: true });
+    };
+    root.__cor3LoadoutUnequipSoftware = function (moduleConfigId) {
+        if (!moduleConfigId) return false;
+        return wsSendRpc('loadout', 'unequip.software', { moduleConfigId }, { compress: true });
+    };
+    root.__cor3LoadoutEquipHardware = function (moduleConfigId) {
+        if (!moduleConfigId) return false;
+        // Same payload as software — server figures category from the id.
+        return wsSendRpc('loadout', 'equip.hardware', { moduleConfigId }, { compress: true });
     };
 
     root.__cor3SellItem = function (itemId, quantity) {
@@ -1213,6 +1253,7 @@
     const handlers = {
         [MSG.GAME.REQUEST_EXPEDITIONS]: () => root.__cor3RequestExpeditions(),
         'COR3_REQUEST_STASH': () => root.__cor3RequestStash(),
+        [MSG.GAME.REQUEST_LOADOUT]: () => root.__cor3RequestLoadout(),
         'COR3_REQUEST_MARKET': () => root.__cor3RequestMarket(),
         'COR3_REQUEST_DARK_MARKET': () => root.__cor3RequestDarkMarket(),
         'COR3_REQUEST_SRM_MARKET': () => root.__cor3RequestSrmMarket(),

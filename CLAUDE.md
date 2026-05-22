@@ -180,6 +180,21 @@ Quick list of every registered module ID and its world:
 
 **MAIN content_scripts (world: 'MAIN'):**
 - `network-map`, `server-connect`, `sai-navigator`, `flows-core` — game core
+- `loadout-panel` — site-embedded UI: pill anchored next to cor3.gg's
+  Notifications widget (via Sentry data-attr, language-independent).
+  Opening it auto-powers the system off (`localStorage["loadout-powered"]`
+  client-side flag, restored on close — toggleable via AUTO mini-pill),
+  then renders equipped/owned hardware + software, resources usage bars
+  with hover-delta preview when picking alternatives, and a dynamically
+  discovered capability list (DECRYPT/HACK/SEARCH targets — file
+  extensions or server types — coloured green=active / grey=available).
+  Mutations (equip/unequip software, swap hardware) go via plain WS
+  RPCs in src/interceptors/ws-interceptor.js (`__cor3Loadout*` helpers
+  — `loadout/equip.software`, `unequip.software`, `equip.hardware`,
+  all with options.compress=true). Pre-flight floor-check on install +
+  snapshot-diff watchdog + in-panel toast notifications surface
+  resource conflicts and silent server rejections. See
+  `plans/loadout-recon.md` for full WS recon notes.
 - `flow-file-decryption`, `flow-ip-injection`, `flow-ip-cleanup`,
   `flow-file-upload`, `flow-log-deletion`, `flow-log-download`,
   `flow-file-elimination`, `flow-data-download`, `flow-decrypt-extract`
@@ -187,7 +202,7 @@ Quick list of every registered module ID and its world:
 
 **Isolated content_scripts:**
 - `auth`, `expeditions`, `decisions`, `market`, `dark-market`, `stash`,
-  `mercenaries`, `merc-config`, `expedition-config` — data
+  `loadout`, `mercenaries`, `merc-config`, `expedition-config` — data
 - `timers`, `auto-refresh`, `auto-send-merc`, `auto-choose-decision`,
   `auto-decrypt`, `auto-ice-wall`, `daily-ops`, `auto-jobs`,
   `runtime-bridge` — automation
