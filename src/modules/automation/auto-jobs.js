@@ -921,8 +921,7 @@
     }
     // Within a server-priority tier, transit jobs (IP inject / IP cleanup) run
     // first. Rationale: they affect *who can route through this server next*,
-    // so doing them early avoids losing access mid-cycle. Pattern lifted from
-    // the Femtocel11 competitor's JOB_TYPE_PRIORITY scheme — but as a
+    // so doing them early avoids losing access mid-cycle. Applied as a
     // tie-breaker rather than the dominant key, so depth-based draining still
     // wins on the primary axis.
     const TRANSIT_JOB_TYPES = new Set([C.FLOW.IP_INJECTION, C.FLOW.IP_CLEANUP]);
