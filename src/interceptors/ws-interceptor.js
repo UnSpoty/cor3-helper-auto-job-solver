@@ -869,8 +869,45 @@
         return true;
     };
 
+    // market.job.complete behaves like job.take / job.dismiss: currentEndpoint
+    // must match the market's home server. Sending it from HOME against a
+    // DARK/SRM job comes back as {error:"market-not-reachable"} — exactly the
+    // post-flow rejection cascade seen in the 2026-05-22 auto-jobs debug dump,
+    // where IP Injection and Data Download both finished their work, then the
+    // complete RPC was rejected because the endpoint was still HOME after the
+    // SAI dance. HOME-market jobs send directly; remote markets tail-queue
+    // behind inflightRemoteFetch with a set.endpoint → complete → revert dance,
+    // mirroring __cor3DismissJob.
     root.__cor3CompleteJob = function (jobId, marketId) {
-        return wsSendRpc('market', 'job.complete', { marketId, jobId });
+        const sendComplete = () => wsSendRpc('market', 'job.complete', { marketId, jobId });
+        const cfg = MARKET_BY_ID[marketId];
+        const requiredServer = cfg ? cfg.serverId : null;
+        const dbg = (m) => post(MSG.JOB.LOG, { msg: `[complete/dbg] ${m}`, level: 'debug' });
+        if (!requiredServer || requiredServer === HOME_SERVER_ID) {
+            return sendComplete();
+        }
+        dbg(`job ${jobId.slice(-12)} market=${cfg.name} reqServer=${requiredServer.slice(-12)} cur=${currentEndpoint.slice(-12)} — flip+send+revert`);
+        const run = inflightRemoteFetch.then(async () => {
+            const lockDeadline = Date.now() + 60_000;
+            while (root.__pipelineLocked && Date.now() < lockDeadline) {
+                await sleep(500);
+            }
+            const saved = currentEndpoint;
+            const needPreflight = (saved !== requiredServer);
+            if (needPreflight) {
+                dbg(`set.endpoint(${requiredServer.slice(-12)})`);
+                sendSetEndpoint(requiredServer);
+                await sleep(800);
+            }
+            sendComplete();
+            await sleep(800);
+            if (needPreflight && saved && saved !== requiredServer) {
+                sendSetEndpoint(saved);
+                await sleep(300);
+            }
+        }).catch((e) => { console.warn('[COR3] complete-with-endpoint failed', e); });
+        inflightRemoteFetch = run;
+        return true;
     };
 
     // Dismiss a FAILED job (`market.job.dismiss`) — clears it from the
