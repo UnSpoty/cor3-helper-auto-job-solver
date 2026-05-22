@@ -26,3 +26,15 @@ node_modules/
 __pycache__/
 *.pyc
 *.pyo
+
+# Dev-only injection harness for live-testing MAIN-world code on cor3.gg
+# without packaging the extension (see inject-server.js for the helper).
+# Bundle is auto-generated; the server + the JSON escape file are local
+# dev tooling only.
+inject-bundle.js
+inject-bundle.json
+inject-server.js
+
+# Ad-hoc reverse-engineering snapshots (wire-format dumps, debug exports).
+new-protocol-dump.json
+cor3-autojobs-debug-*.txt
