@@ -30,6 +30,17 @@
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
     const { Module, Bus, Registry, dom, constants: C } = root.COR3;
     const MSG = C.MSG;
+    // Translation helper. Falls back to the key name if i18n hasn't
+    // loaded yet (shouldn't happen — manifest loads i18n.js before
+    // this module — but defensive).
+    function t(key, vars) {
+        const i18n = root.COR3 && root.COR3.i18n;
+        if (i18n && typeof i18n.t === 'function') return i18n.t(key, vars);
+        return key;
+    }
+    // The Bus message the i18n bridge broadcasts when the user picks a
+    // new language in the popup. Matches src/shared/i18n-bridge.js.
+    const LANG_MSG = 'COR3_UI_LANGUAGE';
 
     // ─── ID / selector constants ─────────────────────────────────────────
     const HOST_ID   = 'cor3-loadout-panel-host';
@@ -283,6 +294,12 @@
                     canBoot: env.data.resources && env.data.resources.canBoot,
                 });
             }));
+            // Re-localise immediately on language change broadcast by
+            // the i18n-bridge (popup picker → chrome.storage.sync →
+            // bridge → Bus.window). Static chrome (pill / header /
+            // refresh / auto pill) is rewritten in place; if the body
+            // is open we re-render the whole panel.
+            this.track(Bus.window.on(LANG_MSG, () => this._relocalize()));
             this._mountTimer = setInterval(() => {
                 if (document.querySelector(DOCK_SEL)) {
                     clearInterval(this._mountTimer);
@@ -317,8 +334,8 @@
                 <div id="${PANEL_ID}">
                     <div class="cor3-lp-header">
                         <div class="cor3-lp-hdr-left">
-                            <span>СНАРЯЖЕНИЕ</span>
-                            <button class="cor3-lp-power-btn" data-role="power" title="Включить / выключить систему">⏻</button>
+                            <span data-role="hdr-title">${escapeHtml(t('loadout.title'))}</span>
+                            <button class="cor3-lp-power-btn" data-role="power" title="${escapeHtml(t('loadout.power.tooltip'))}">⏻</button>
                         </div>
                         <div class="cor3-lp-hdr-right">
                             <span class="cor3-lp-status" data-role="status">…</span>
@@ -327,16 +344,16 @@
                     <div class="cor3-lp-scroll" data-role="body"></div>
                     <div class="cor3-lp-foot">
                         <span data-role="updated">—</span>
-                        <button class="cor3-lp-btn" data-role="refresh">ОБНОВИТЬ</button>
+                        <button class="cor3-lp-btn" data-role="refresh">${escapeHtml(t('loadout.refresh'))}</button>
                     </div>
                 </div>
                 <div class="cor3-lp-toasts" data-role="toasts"></div>
-                <div class="cor3-lp-auto" data-role="auto" title="Авто-выключение системы при открытии панели">
+                <div class="cor3-lp-auto" data-role="auto">
                     <span class="cor3-lp-auto-dot"></span>
-                    <span class="cor3-lp-auto-label">AUTO</span>
+                    <span class="cor3-lp-auto-label" data-role="auto-label">${escapeHtml(t('loadout.auto.label'))}</span>
                 </div>
                 <div id="${PILL_ID}">
-                    <span>СНАРЯЖЕНИЕ</span>
+                    <span data-role="pill-title">${escapeHtml(t('loadout.title'))}</span>
                     <span class="cor3-lp-chev" data-role="chev">▲</span>
                 </div>
             `;
@@ -468,11 +485,9 @@
                 this._refreshPowerBtn();
             }
             this._showToast(
-                this._autoPower ? 'Авто-выключение включено' : 'Авто-выключение выключено',
+                t(this._autoPower ? 'loadout.auto.toggledOn' : 'loadout.auto.toggledOff'),
                 'ok',
-                this._autoPower
-                    ? 'При открытии панели система будет выключаться, при закрытии — возвращаться.'
-                    : 'Состояние питания больше не трогается при открытии/закрытии.'
+                t(this._autoPower ? 'loadout.auto.toggledOnBody' : 'loadout.auto.toggledOffBody')
             );
         }
 
@@ -480,15 +495,36 @@
             const auto = document.querySelector(`#${HOST_ID} [data-role="auto"]`);
             if (!auto) return;
             auto.classList.toggle('off', !this._autoPower);
-            auto.title = this._autoPower
-                ? 'AUTO ВКЛ — система выключается при открытии панели'
-                : 'AUTO ВЫКЛ — система остаётся в текущем состоянии';
+            auto.title = t(this._autoPower ? 'loadout.auto.titleOn' : 'loadout.auto.titleOff');
+        }
+
+        // Re-apply translated labels to the static chrome of the panel
+        // (pill + header + refresh + auto-pill + power tooltip). Called
+        // on language-change broadcast. If the body is currently
+        // visible, also re-render so section titles / chips / toasts
+        // pick up the new locale.
+        _relocalize() {
+            const host = document.getElementById(HOST_ID);
+            if (!host) return;
+            const setText = (sel, value) => {
+                const el = host.querySelector(sel);
+                if (el) el.textContent = value;
+            };
+            setText('[data-role="hdr-title"]',  t('loadout.title'));
+            setText('[data-role="pill-title"]', t('loadout.title'));
+            setText('[data-role="refresh"]',   t('loadout.refresh'));
+            setText('[data-role="auto-label"]', t('loadout.auto.label'));
+            const power = host.querySelector('[data-role="power"]');
+            if (power) power.title = t('loadout.power.tooltip');
+            this._refreshPowerBtn();
+            this._refreshAutoPill();
+            if (this._open) this._render();
         }
 
         _requestSnapshot() {
-            this._setStatus('запрос…', '');
+            this._setStatus(t('loadout.status.requesting'), '');
             if (typeof root.__cor3RequestLoadout === 'function') root.__cor3RequestLoadout();
-            else this._setStatus('WS not ready', 'err');
+            else this._setStatus(t('loadout.status.wsNotReady'), 'err');
         }
 
         _refreshPowerBtn() {
@@ -497,10 +533,10 @@
             btn.disabled = false;
             btn.classList.remove('on');
             if (this._powerState === true) {
-                btn.textContent = '⏻ ВКЛ';
+                btn.textContent = t('loadout.power.on');
                 btn.classList.add('on');
             } else if (this._powerState === false) {
-                btn.textContent = '⏻ ВЫКЛ';
+                btn.textContent = t('loadout.power.off');
             } else {
                 btn.textContent = '⏻';
             }
@@ -557,9 +593,12 @@
             const issues = this._checkInstallFeasibility(sw);
             if (issues.length > 0) {
                 this._showToast(
-                    'Не хватает ресурсов',
+                    t('loadout.toast.notEnoughResources'),
                     'err',
-                    `Чтобы поставить «${sw.name}», нужно: ${issues.map((i) => i.label + ' +' + fmt(i.short) + ' ' + i.unit).join(', ')}.`
+                    t('loadout.toast.notEnoughResourcesBody', {
+                        name: sw.name,
+                        issues: issues.map((i) => i.label + ' +' + fmt(i.short) + ' ' + i.unit).join(', '),
+                    })
                 );
                 return;
             }
@@ -577,9 +616,9 @@
             this._pendingMutationTimer = setTimeout(() => {
                 if (!this._pendingMutation || this._pendingMutation.id !== id) return;
                 this._showToast(
-                    'Сервер не ответил',
+                    t('loadout.toast.serverNoReply'),
                     'warn',
-                    `Запрос «${name}» отправлен, но обновлённый снимок не пришёл за 3с.`
+                    t('loadout.toast.serverNoReplyBody', { name })
                 );
                 this._pendingMutation = null;
                 this._pendingMutationTimer = null;
@@ -603,11 +642,13 @@
             if (this._pendingMutationTimer) { clearTimeout(this._pendingMutationTimer); this._pendingMutationTimer = null; }
             this._pendingMutation = null;
             if (!success) {
-                const verb = p.kind === 'equip-sw' ? 'установить' : p.kind === 'unequip-sw' ? 'удалить' : 'поменять';
+                const verbKey = p.kind === 'equip-sw' ? 'loadout.verb.equipSw'
+                              : p.kind === 'unequip-sw' ? 'loadout.verb.unequipSw'
+                              : 'loadout.verb.swapHw';
                 this._showToast(
-                    `Не удалось ${verb}`,
+                    t('loadout.toast.couldNotVerb', { verb: t(verbKey) }),
                     'err',
-                    `Сервер отклонил «${p.name}» — скорее всего, не хватает ресурсов или конфликт.`
+                    t('loadout.toast.serverRejectedBody', { name: p.name })
                 );
             }
         }
@@ -630,12 +671,12 @@
             if (!r || !r.supply || !r.demand) return [];   // can't check
             const consuming = (sw && sw.consuming) || {};
             const RES_INFO = {
-                cpu_frequency: { label: 'CPU freq', unit: 'GHz' },
-                cpu_cores:     { label: 'CPU cores', unit: '' },
-                gpu_power:     { label: 'GPU power', unit: 'PFLOPS' },
-                gpu_memory:    { label: 'GPU memory', unit: 'TB' },
-                ram_frequency: { label: 'RAM freq', unit: 'GHz' },
-                ram_memory:    { label: 'RAM memory', unit: 'TB' },
+                cpu_frequency: { labelKey: 'loadout.resIssue.cpuFreq',    unit: 'GHz' },
+                cpu_cores:     { labelKey: 'loadout.resIssue.cpuCores',   unit: '' },
+                gpu_power:     { labelKey: 'loadout.resIssue.gpuPower',   unit: 'PFLOPS' },
+                gpu_memory:    { labelKey: 'loadout.resIssue.gpuMemory',  unit: 'TB' },
+                ram_frequency: { labelKey: 'loadout.resIssue.ramFreq',    unit: 'GHz' },
+                ram_memory:    { labelKey: 'loadout.resIssue.ramMemory',  unit: 'TB' },
             };
             const issues = [];
             for (const key of Object.keys(consuming)) {
@@ -646,8 +687,10 @@
                 const cap  = Number(r.supply[key] ?? 0);
                 const newD = curD + delta;
                 if (newD > cap + 1e-9) {
-                    const info = RES_INFO[key] || { label: key, unit: '' };
-                    issues.push({ key, label: info.label, unit: info.unit, cap, newD, short: newD - cap });
+                    const info = RES_INFO[key];
+                    const label = info ? t(info.labelKey) : key;
+                    const unit  = info ? info.unit : '';
+                    issues.push({ key, label, unit, cap, newD, short: newD - cap });
                 }
             }
             return issues;
@@ -665,9 +708,9 @@
                 .sort((a, b) => (Number(a.price) || 0) - (Number(b.price) || 0));
             if (candidates.length === 0) {
                 this._showToast(
-                    `Нет ПО с возможностью ${capType}`,
+                    t('loadout.toast.noSoftwareWith', { cap: capType }),
                     'warn',
-                    'Купи такое ПО на маркете или попробуй другую способность.'
+                    t('loadout.toast.noSoftwareWithBody')
                 );
                 return;
             }
@@ -682,9 +725,9 @@
                         this._armMutationWatchdog('equip-sw', sw.id, sw.name);
                         root.__cor3LoadoutEquipSoftware(sw.id);
                         this._showToast(
-                            'Установка…',
+                            t('loadout.toast.installing'),
                             'ok',
-                            `«${sw.name}» — самое дешёвое ПО с ${capType}, которое влезает в текущий конфиг.`
+                            t('loadout.toast.installingBody', { name: sw.name, cap: capType })
                         );
                         this.info('install cheapest cap', { capType, name: sw.name, price: sw.price });
                     }
@@ -695,9 +738,9 @@
             const issues = this._checkInstallFeasibility(candidates[0]);
             const need = issues.map((i) => i.label + ' +' + fmt(i.short) + ' ' + i.unit).join(', ');
             this._showToast(
-                `${capType}: не хватает ресурсов`,
+                t('loadout.toast.capNotFits', { cap: capType }),
                 'err',
-                `Ни одно из доступных ПО с ${capType} не помещается. Минимум для «${candidates[0].name}»: ${need}.`
+                t('loadout.toast.capNotFitsBody', { cap: capType, name: candidates[0].name, need })
             );
         }
 
@@ -734,9 +777,9 @@
                 // Missing: install cheapest viable.
                 if (status === 'missing') this._installCheapestForCapability(capType);
                 else if (status === 'unowned') this._showToast(
-                    `Нет ПО с ${capType}`,
+                    t('loadout.toast.noSoftwareWith', { cap: capType }),
                     'warn',
-                    'Сначала купи такое ПО на маркете.'
+                    t('loadout.toast.installFirstBody')
                 );
                 return;
             }
@@ -788,7 +831,7 @@
             const hh = String(d.getHours()).padStart(2,'0');
             const mm = String(d.getMinutes()).padStart(2,'0');
             const ss = String(d.getSeconds()).padStart(2,'0');
-            el.textContent = `обновлено ${hh}:${mm}:${ss}`;
+            el.textContent = t('loadout.updatedAt', { time: `${hh}:${mm}:${ss}` });
         }
 
         // ─── Hover delta math ─────────────────────────────────────────
@@ -826,7 +869,7 @@
             if (!body) return;
             const snap = this._snapshot;
             if (!snap) {
-                body.innerHTML = `<div class="cor3-lp-opt-empty">Загружаю снаряжение…</div>`;
+                body.innerHTML = `<div class="cor3-lp-opt-empty">${escapeHtml(t('loadout.loading'))}</div>`;
                 return;
             }
             const r = snap.resources || {};
@@ -874,7 +917,7 @@
             const capsAvailable = new Set(Object.keys(capDetails));
 
             const canBoot = !!r.canBoot;
-            this._setStatus(canBoot ? 'GO' : 'НЕ ГОТОВО', canBoot ? 'ok' : 'warn');
+            this._setStatus(t(canBoot ? 'loadout.status.ready' : 'loadout.status.notReady'), canBoot ? 'ok' : 'warn');
 
             // CAPABILITIES — dynamic, discovered from snapshot. Order
             // alphabetically for stable visual layout. Equipped types
@@ -885,7 +928,8 @@
             // rendered — there's nothing useful to click for those.)
             const caps = [...capsAvailable].sort().map((c) => {
                 const status = capsHave.has(c) ? 'have' : 'missing';
-                return `<span class="cor3-lp-cap ${status}" data-role="cap" data-cap="${escapeHtml(c)}" data-status="${status}" title="${status === 'missing' ? 'Кликни — установлю самое дешёвое ПО с ' + c : ''}">${escapeHtml(c)}</span>`;
+                const tip = status === 'missing' ? t('loadout.cap.installCheapest', { cap: c }) : '';
+                return `<span class="cor3-lp-cap ${status}" data-role="cap" data-cap="${escapeHtml(c)}" data-status="${status}" title="${escapeHtml(tip)}">${escapeHtml(c)}</span>`;
             }).join('');
             // Per-capability target breakdown — full union of what the
             // user could decrypt / hack / search if they equipped the
@@ -926,21 +970,21 @@
 
             body.innerHTML = `
                 <div class="cor3-lp-section">
-                    <div class="cor3-lp-section-title">Возможности</div>
+                    <div class="cor3-lp-section-title">${escapeHtml(t('loadout.section.capabilities'))}</div>
                     <div class="cor3-lp-caps">${caps}</div>
                     ${capLines}
                 </div>
                 <div class="cor3-lp-section" data-role="bars-section">
-                    <div class="cor3-lp-section-title">Ресурсы</div>
+                    <div class="cor3-lp-section-title">${escapeHtml(t('loadout.section.resources'))}</div>
                     <div data-role="bars">${this._barsHtml(null)}</div>
                 </div>
                 <div class="cor3-lp-section">
-                    <div class="cor3-lp-section-title">Железо</div>
+                    <div class="cor3-lp-section-title">${escapeHtml(t('loadout.section.hardware'))}</div>
                     ${slotHtml}
                 </div>
                 <div class="cor3-lp-section">
-                    <div class="cor3-lp-section-title">Программы</div>
-                    ${progsHtml || `<div class="cor3-lp-opt-empty">программ нет</div>`}
+                    <div class="cor3-lp-section-title">${escapeHtml(t('loadout.section.programs'))}</div>
+                    ${progsHtml || `<div class="cor3-lp-opt-empty">${escapeHtml(t('loadout.noPrograms'))}</div>`}
                 </div>
             `;
             this._setUpdated();
@@ -962,14 +1006,17 @@
             const demand = r.demand;
             const previewSupply = preview ? preview.supply : null;
             const previewDemand = preview ? preview.demand : null;
+            // Labels are i18n keys; resolved per render so a live
+            // language change picks up immediately. Units are
+            // language-neutral abbreviations.
             const DEFS = [
-                ['ЧАСТОТА CPU', 'cpu_frequency', 'GHZ'],
-                ['ЯДРА CPU',    'cpu_cores',     'COUNT'],
-                ['МОЩНОСТЬ GPU','gpu_power',     'PFLOPS'],
-                ['ПАМЯТЬ GPU',  'gpu_memory',    'TB'],
-                ['ЧАСТОТА RAM', 'ram_frequency', 'GHZ'],
-                ['ПАМЯТЬ RAM',  'ram_memory',    'TB'],
-                ['МОЩНОСТЬ PSU','psu_total',     'KW', 'psu_power'],
+                [t('loadout.res.cpuFreq'),    'cpu_frequency', 'GHZ'],
+                [t('loadout.res.cpuCores'),   'cpu_cores',     'COUNT'],
+                [t('loadout.res.gpuPower'),   'gpu_power',     'PFLOPS'],
+                [t('loadout.res.gpuMemory'),  'gpu_memory',    'TB'],
+                [t('loadout.res.ramFreq'),    'ram_frequency', 'GHZ'],
+                [t('loadout.res.ramMemory'),  'ram_memory',    'TB'],
+                [t('loadout.res.psuPower'),   'psu_total',     'KW', 'psu_power'],
             ];
             return DEFS.map(([label, demandKey, unit, supplyKeyOverride]) => {
                 const supplyKey = supplyKeyOverride || demandKey;
@@ -1021,7 +1068,7 @@
             const slotClass = `cor3-lp-slot ${equipped ? 'equipped' : ''} ${isOpen ? 'open' : ''}`;
             const optsHtml = alternatives.length
                 ? alternatives.map((h) => this._optHtml(cat, h)).join('')
-                : `<div class="cor3-lp-opt-empty">других вариантов нет</div>`;
+                : `<div class="cor3-lp-opt-empty">${escapeHtml(t('loadout.noAlternatives'))}</div>`;
             return `
                 <div class="${slotClass}">
                     <div class="cor3-lp-slot-head" data-role="slot-head" data-cat="${cat}">
@@ -1029,7 +1076,7 @@
                         ${equipped && equipped.image ? `<img src="${equipped.image}" alt="">` : ''}
                         <div class="cor3-lp-slot-body">
                             <div class="cor3-lp-slot-cat">${cat.toUpperCase()}</div>
-                            <div class="cor3-lp-slot-name">${equipped ? escapeHtml(equipped.name) : '— нет —'}</div>
+                            <div class="cor3-lp-slot-name">${equipped ? escapeHtml(equipped.name) : escapeHtml(t('loadout.noSlot'))}</div>
                             <div class="cor3-lp-slot-meta">${equipped ? hwSummary(equipped) : ''}</div>
                         </div>
                         ${equipped ? tierBadge(equipped.tier) : ''}
@@ -1063,7 +1110,12 @@
             }).filter(Boolean).join(' &nbsp; ');
             const toggleClass = isEquipped ? 'uninstall' : 'install';
             const toggleSym   = isEquipped ? '−' : '+';
-            const toggleTitle = isEquipped ? 'Удалить' : 'Установить';
+            // Reuse the verb translations from the watchdog toast,
+            // title-cased for tooltip context. Works for ru/en/fr/es/de/pl/uk/tr;
+            // CJK locales don't case (operations are no-ops there).
+            const verbKey = isEquipped ? 'loadout.verb.unequipSw' : 'loadout.verb.equipSw';
+            const verb = t(verbKey);
+            const toggleTitle = verb.charAt(0).toUpperCase() + verb.slice(1);
             return `
                 <div class="cor3-lp-prog ${isEquipped ? 'equipped' : ''}">
                     ${sw.image ? `<img src="${sw.image}" alt="">` : ''}
@@ -1090,13 +1142,14 @@
     function hwSummary(hw) {
         if (!hw || !hw.specs) return '';
         const s = hw.specs;
+        const c = t('loadout.hw.coresShort');
         let line;
-        if (hw.category === 'CPU') line = `${s.cpuFrequency} GHz • ${s.cpuCores}c • ${s.cpuConsuming} kW`;
+        if (hw.category === 'CPU') line = `${s.cpuFrequency} GHz • ${s.cpuCores}${c} • ${s.cpuConsuming} kW`;
         else if (hw.category === 'GPU') line = `${s.gpuPower} PFLOPS • ${s.gpuMemory} TB • ${s.gpuConsuming} kW`;
         else if (hw.category === 'RAM') line = `${s.ramFrequency} GHz • ${s.ramMemory} TB`;
-        else if (hw.category === 'PSU') line = `${s.psuPower} kW • ${s.psuProtection}% защита`;
+        else if (hw.category === 'PSU') line = `${s.psuPower} kW • ${s.psuProtection}% ${t('loadout.hw.psuProtection')}`;
         else line = '';
-        const vuln = (typeof hw.itemVulnerability === 'number') ? ` • ${hw.itemVulnerability}% vuln` : '';
+        const vuln = (typeof hw.itemVulnerability === 'number') ? ` • ${hw.itemVulnerability}% ${t('loadout.hw.vuln')}` : '';
         return line + vuln;
     }
     function escapeHtml(s) {
