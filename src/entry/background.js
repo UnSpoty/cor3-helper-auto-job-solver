@@ -87,3 +87,70 @@ chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
         return true;
     }
 });
+
+// ─── Upstream extension-version checker ───────────────────────────────
+// Fetches release.json from the main branch and writes the diff against
+// the locally-installed manifest.version to chrome.storage.local. The
+// popup's version-mismatch banner reads that key (EXT_UPDATE_INFO) and
+// renders an "update available" notice when isOutdated===true.
+//
+// raw.githubusercontent.com sits behind a CDN with a ~5min Cache-Control;
+// we append a timestamp query to bypass that and pick up new releases
+// within minutes rather than hours. The result is then cached in
+// chrome.storage.local for UPDATE_CHECK_STALE_MS so we don't refetch on
+// every SW wake.
+const UPDATE_CHECK_URL =
+    'https://raw.githubusercontent.com/UnSpoty/cor3-helper-auto-job-solver/main/release.json';
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const UPDATE_CHECK_STALE_MS    = 6 * 60 * 60 * 1000;
+
+function _parseSemver(v) {
+    if (!v) return null;
+    const m = String(v).trim().replace(/^v/i, '').match(/^(\d+)\.(\d+)\.(\d+)/);
+    if (!m) return null;
+    return [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)];
+}
+function _isNewerSemver(remote, local) {
+    const a = _parseSemver(remote), b = _parseSemver(local);
+    if (!a || !b) return false;
+    for (let i = 0; i < 3; i++) {
+        if (a[i] > b[i]) return true;
+        if (a[i] < b[i]) return false;
+    }
+    return false;
+}
+
+async function checkForUpdate() {
+    let localVersion = '';
+    try { localVersion = chrome.runtime.getManifest().version || ''; } catch (_) { return; }
+    try {
+        const existing = await chrome.storage.local.get('extUpdateInfo');
+        const prev = existing && existing.extUpdateInfo;
+        // Skip the network call when we already have a fresh probe for
+        // this exact local version. If the user upgraded (localVersion
+        // changed) we always re-probe, even if the cache is still warm.
+        if (prev && prev.checkedAt && prev.localVersion === localVersion &&
+            (Date.now() - prev.checkedAt) < UPDATE_CHECK_STALE_MS) {
+            return;
+        }
+        const res = await fetch(`${UPDATE_CHECK_URL}?t=${Date.now()}`, { cache: 'no-store' });
+        if (!res.ok) return;
+        const json = await res.json();
+        const latestVersion = String((json && json.version) || '').trim();
+        const changes = Array.isArray(json && json.changes)
+            ? json.changes.slice(0, 20).map((s) => String(s))
+            : [];
+        if (!latestVersion) return;
+        await chrome.storage.local.set({
+            extUpdateInfo: {
+                localVersion,
+                latestVersion,
+                isOutdated: _isNewerSemver(latestVersion, localVersion),
+                changes,
+                checkedAt: Date.now(),
+            },
+        });
+    } catch (_) { /* network/parse error — leave previous value in place */ }
+}
+checkForUpdate();
+setInterval(checkForUpdate, UPDATE_CHECK_INTERVAL_MS);

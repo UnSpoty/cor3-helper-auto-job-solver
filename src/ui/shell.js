@@ -343,30 +343,73 @@
     } catch (_) { /* permission missing */ }
 
     // ─── Version-mismatch warning ─────────────────────────────────────
+    // The banner is a single container that can host TWO independent
+    // notices: an upstream extension-update notice (driven by
+    // EXT_UPDATE_INFO written by background.js) and a web-client version
+    // mismatch (driven by WEB_VERSION written by http-interceptor). They
+    // stack — extension update first because the user can act on it —
+    // and either one can be absent without affecting the other.
     const versionWarningEl = document.getElementById('versionWarning');
     let cachedWebVersion = null;
+    let cachedExtUpdate = null;  // { localVersion, latestVersion, isOutdated, changes, checkedAt }
 
     function renderVersionWarning() {
-        if (!cachedWebVersion) {
+        const showExt = !!(cachedExtUpdate && cachedExtUpdate.isOutdated && cachedExtUpdate.latestVersion);
+        const showWeb = !!(cachedWebVersion && cachedWebVersion !== EXPECTED_WEB_VERSION);
+        if (!showExt && !showWeb) {
             versionWarningEl.hidden = true;
-            return;
-        }
-        if (cachedWebVersion === EXPECTED_WEB_VERSION) {
-            versionWarningEl.hidden = true;
+            versionWarningEl.innerHTML = '';
             return;
         }
         versionWarningEl.hidden = false;
         versionWarningEl.innerHTML = '';
-        const title = document.createElement('div');
-        title.innerHTML = `<strong>⚠ ${escapeHtml(i18n.t('version.warningTitle'))}</strong>`;
-        const detail = document.createElement('div');
-        detail.className = 'vw-detail';
-        detail.textContent = i18n.t('version.warningBody', {
-            expected: EXPECTED_WEB_VERSION,
-            detected: cachedWebVersion || i18n.t('version.unknownDetected'),
-        });
-        versionWarningEl.appendChild(title);
-        versionWarningEl.appendChild(detail);
+
+        if (showExt) {
+            const card = document.createElement('div');
+            card.className = 'vw-section';
+            const title = document.createElement('div');
+            title.innerHTML = `<strong>⚠ ${escapeHtml(i18n.t('version.extUpdateTitle'))}</strong>`;
+            const body = document.createElement('div');
+            body.className = 'vw-detail';
+            body.textContent = i18n.t('version.extUpdateBody', {
+                latest: cachedExtUpdate.latestVersion,
+                current: cachedExtUpdate.localVersion || chrome.runtime.getManifest().version,
+            });
+            card.appendChild(title);
+            card.appendChild(body);
+            const changes = Array.isArray(cachedExtUpdate.changes) ? cachedExtUpdate.changes : [];
+            if (changes.length) {
+                const label = document.createElement('div');
+                label.className = 'vw-detail vw-changes-label';
+                label.textContent = i18n.t('version.extUpdateChangesLabel');
+                const ul = document.createElement('ul');
+                ul.className = 'vw-changes';
+                for (const line of changes) {
+                    const li = document.createElement('li');
+                    li.textContent = String(line);
+                    ul.appendChild(li);
+                }
+                card.appendChild(label);
+                card.appendChild(ul);
+            }
+            versionWarningEl.appendChild(card);
+        }
+
+        if (showWeb) {
+            const card = document.createElement('div');
+            card.className = 'vw-section';
+            const title = document.createElement('div');
+            title.innerHTML = `<strong>⚠ ${escapeHtml(i18n.t('version.warningTitle'))}</strong>`;
+            const detail = document.createElement('div');
+            detail.className = 'vw-detail';
+            detail.textContent = i18n.t('version.warningBody', {
+                expected: EXPECTED_WEB_VERSION,
+                detected: cachedWebVersion || i18n.t('version.unknownDetected'),
+            });
+            card.appendChild(title);
+            card.appendChild(detail);
+            versionWarningEl.appendChild(card);
+        }
     }
     function escapeHtml(s) {
         return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -393,8 +436,14 @@
             // capture it.
         }
     }
+    async function refreshExtUpdate() {
+        const info = await Store.local.getOne(C.STORAGE_LOCAL.EXT_UPDATE_INFO, null);
+        cachedExtUpdate = info && typeof info === 'object' ? info : null;
+        renderVersionWarning();
+    }
     Store.local.onChanged((changes) => {
         if (changes[C.STORAGE_LOCAL.WEB_VERSION]) refreshVersion();
+        if (changes[C.STORAGE_LOCAL.EXT_UPDATE_INFO]) refreshExtUpdate();
     });
 
     // ─── Boot ─────────────────────────────────────────────────────────
@@ -406,6 +455,7 @@
         mountSections();
         await syncTabState();
         await refreshVersion();
+        await refreshExtUpdate();
 
         // Restore last active tab or default to overview.
         let initial = 'overview';

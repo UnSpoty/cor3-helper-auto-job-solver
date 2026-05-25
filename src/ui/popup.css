@@ -119,6 +119,20 @@ a { color: var(--os-color-primary-hex); }
 }
 .version-warning strong { color: var(--os-color-warning); font-weight: 600; }
 .version-warning .vw-detail { color: var(--os-color-text-grey); margin-top: 2px; }
+/* Each notice (extension update / web version mismatch) is its own
+   section. When both are present they stack with a thin divider. */
+.version-warning .vw-section + .vw-section {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(255, 200, 87, 0.25);
+}
+.version-warning .vw-changes-label { margin-top: 4px; }
+.version-warning .vw-changes {
+    margin: 2px 0 0;
+    padding-left: 16px;
+    color: var(--os-color-text-grey);
+}
+.version-warning .vw-changes li { margin-top: 1px; }
 
 /* ─── No-tab placeholder (shown when no cor3.gg tab is open) ──────── */
 .no-tab {

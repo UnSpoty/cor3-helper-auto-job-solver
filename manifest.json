@@ -22,7 +22,8 @@
   "host_permissions": [
     "https://cor3.gg/*",
     "https://os.cor3.gg/*",
-    "https://svc-corie.cor3.gg/*"
+    "https://svc-corie.cor3.gg/*",
+    "https://raw.githubusercontent.com/*"
   ],
   "background": {
     "service_worker": "src/entry/background.js",

@@ -183,6 +183,11 @@
         BEARER_TOKEN: 'bearerToken',
         WEB_VERSION: 'webVersion',
         SYSTEM_VERSION: 'systemVersion',
+        // Upstream extension-version probe. Written by background.js after
+        // fetching release.json from the main branch. Shape:
+        //   { localVersion, latestVersion, isOutdated, changes:[...], checkedAt }
+        // Consumed by the popup's version-mismatch banner.
+        EXT_UPDATE_INFO: 'extUpdateInfo',
 
         // Expedition runtime
         LAST_LAUNCH: 'lastExpeditionLaunchData',
