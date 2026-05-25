@@ -678,20 +678,53 @@
                 ram_memory:    { labelKey: 'loadout.resIssue.ramMemory',  unit: 'TB' },
             };
             const issues = [];
+            const rows = [];
             for (const key of Object.keys(consuming)) {
                 const arr = consuming[key];
                 if (!Array.isArray(arr) || arr.length === 0) continue;
-                const delta = Number(arr[0]) || 0;     // minimum requirement
+                const delta = Number(arr[0]) || 0;
                 const curD = Number(r.demand[key] ?? 0);
                 const cap  = Number(r.supply[key] ?? 0);
-                const newD = curD + delta;
-                if (newD > cap + 1e-9) {
+                // 2-elt arrays (cpu_frequency, ram_frequency) are
+                // [min_supply, max_supply] — shared across equipped sw,
+                // so the post-install demand is max(curD, arr[0]),
+                // not a sum. 3-elt arrays
+                // ([per_install, min_supply, max_supply]) add to the
+                // running demand.
+                const rule = arr.length === 2 ? 'max' : 'sum';
+                const newD = rule === 'max' ? Math.max(curD, delta) : curD + delta;
+                const fits = newD <= cap + 1e-9;
+                rows.push({
+                    key,
+                    consuming: arr,
+                    'arr[0]': delta,
+                    'curD(demand)': curD,
+                    'cap(supply)': cap,
+                    rule,
+                    newD,
+                    short: fits ? 0 : (newD - cap),
+                    fits: fits ? 'OK' : 'FAIL',
+                });
+                if (!fits) {
                     const info = RES_INFO[key];
                     const label = info ? t(info.labelKey) : key;
                     const unit  = info ? info.unit : '';
                     issues.push({ key, label, unit, cap, newD, short: newD - cap });
                 }
             }
+            try {
+                const tag = `[COR3 loadout pre-flight] ${sw && sw.name} (id=${sw && sw.id}) — ${issues.length === 0 ? 'PASS' : 'BLOCK (' + issues.length + ' issue' + (issues.length === 1 ? '' : 's') + ')'}`;
+                console.groupCollapsed(tag);
+                console.log('sw.consuming:', consuming);
+                console.log('snapshot.resources.supply:', { ...r.supply });
+                console.log('snapshot.resources.demand:', { ...r.demand });
+                console.table(rows);
+                if (issues.length > 0) {
+                    console.warn('Blocking issues:', issues);
+                    console.info('Floor-check rule: newD = curD + arr[0]. Real game may use MAX/middle/sum depending on key — if in-game install succeeds despite a BLOCK here, the floor-check is over-conservative.');
+                }
+                console.groupEnd();
+            } catch (_) { /* DevTools console may be closed; non-fatal */ }
             return issues;
         }
 
