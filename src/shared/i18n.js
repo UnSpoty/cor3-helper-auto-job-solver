@@ -58,6 +58,8 @@
             'noTab.title': 'cor3.gg is not open',
             'noTab.body': 'Open https://cor3.gg in a tab to use COR3 Helper.',
             'noTab.openBtn': 'Open cor3.gg',
+            'noTab.dailyClaimed': 'Claimed',
+            'noTab.dailyNotSolved': 'Not solved',
 
             'version.warningTitle': 'Web version mismatch',
             'version.warningBody': 'COR3 Helper was tested against web version {expected}. Detected: {detected}. The plugin may behave incorrectly on this version.',
@@ -431,6 +433,8 @@
             'noTab.title': 'cor3.gg не открыт',
             'noTab.body': 'Откройте https://cor3.gg во вкладке, чтобы использовать COR3 Helper.',
             'noTab.openBtn': 'Открыть cor3.gg',
+            'noTab.dailyClaimed': 'Получено',
+            'noTab.dailyNotSolved': 'Не решено',
             'version.warningTitle': 'Несовпадение версии веб-клиента',
             'version.warningBody': 'COR3 Helper протестирован с версией {expected}. Обнаружена: {detected}. На этой версии плагин может работать некорректно.',
             'version.unknownDetected': 'неизвестна',

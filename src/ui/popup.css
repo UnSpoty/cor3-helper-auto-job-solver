@@ -169,6 +169,21 @@ a { color: var(--os-color-primary-hex); }
 }
 .no-tab .nt-timer-row:last-child { border-bottom: none; }
 .no-tab .nt-timer-label { color: var(--os-color-text-grey); }
+.no-tab .nt-timer-right {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+.no-tab .nt-timer-status {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    border: 1px solid currentColor;
+}
+.no-tab .nt-timer-status.ok   { color: var(--os-color-success); }
+.no-tab .nt-timer-status.warn { color: var(--os-color-warning); }
 .no-tab .nt-logo {
     display: block;
     width: calc(100% + 40px);

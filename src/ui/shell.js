@@ -210,9 +210,14 @@
     // we can stop the per-instance setIntervals on re-render and avoid
     // ticking ghosts when the user opens cor3.gg and the placeholder hides.
     let noTabTimers = [];
+    let noTabResetTimeoutId = null;
     function clearNoTabTimers() {
         for (const tm of noTabTimers) try { tm.stop(); } catch (_) {}
         noTabTimers = [];
+        if (noTabResetTimeoutId != null) {
+            clearTimeout(noTabResetTimeoutId);
+            noTabResetTimeoutId = null;
+        }
     }
 
     async function renderNoTab() {
@@ -258,32 +263,61 @@
         const list = document.createElement('div');
         list.className = 'nt-timers';
 
-        function row(label, target, isUnreachable) {
+        function row(label, target, isUnreachable, status) {
             const r = document.createElement('div');
             r.className = 'nt-timer-row';
             const lab = document.createElement('span');
             lab.className = 'nt-timer-label';
             lab.textContent = label;
             r.appendChild(lab);
+            const right = document.createElement('span');
+            right.className = 'nt-timer-right';
+            if (status) {
+                const st = document.createElement('span');
+                st.className = 'nt-timer-status ' + (status.claimed ? 'ok' : 'warn');
+                st.textContent = status.claimed
+                    ? i18n.t('noTab.dailyClaimed')
+                    : i18n.t('noTab.dailyNotSolved');
+                right.appendChild(st);
+            }
             if (isUnreachable) {
                 const un = document.createElement('span');
                 un.className = 'muted sm';
                 un.textContent = i18n.t('overview.unreachable');
-                r.appendChild(un);
+                right.appendChild(un);
             } else if (target) {
                 const inst = tm.create(target);
                 noTabTimers.push(inst);
-                r.appendChild(inst.el);
+                right.appendChild(inst.el);
             } else {
                 const dash = document.createElement('span');
                 dash.className = 'muted sm';
                 dash.textContent = '—';
-                r.appendChild(dash);
+                right.appendChild(dash);
             }
+            r.appendChild(right);
             return r;
         }
 
-        list.appendChild(row(i18n.t('overview.dailyOps'), daily && daily.nextTaskTime, false));
+        // Past nextTaskTime, today's window is over — without a live tab we
+        // can't get a fresh `hasClaimedToday`, so treat it as not solved
+        // regardless of the stale snapshot. Also schedule a one-shot
+        // re-render at the reset moment so an open popup flips the badge
+        // live instead of waiting for the user to close + reopen.
+        const dailyResetMs = (daily && daily.nextTaskTime)
+            ? new Date(daily.nextTaskTime).getTime() : 0;
+        const dailyExpired = dailyResetMs > 0 && dailyResetMs <= Date.now();
+        const dailyStatus = daily
+            ? { claimed: !!daily.hasClaimedToday && !dailyExpired }
+            : null;
+        if (dailyResetMs > Date.now()) {
+            const delay = Math.min(dailyResetMs - Date.now() + 500, 0x7fffffff);
+            noTabResetTimeoutId = setTimeout(() => {
+                noTabResetTimeoutId = null;
+                if (!noTabEl.hidden) renderNoTab();
+            }, delay);
+        }
+        list.appendChild(row(i18n.t('overview.dailyOps'), daily && daily.nextTaskTime, false, dailyStatus));
         list.appendChild(row(i18n.t('overview.homeMarket'), market && market.nextJobsResetAt, false));
         list.appendChild(row(i18n.t('overview.darkMarket'), dark && dark.nextJobsResetAt, darkAvail === false));
         list.appendChild(row(i18n.t('overview.srm'), srm && srm.nextJobsResetAt, srmAvail === false));
