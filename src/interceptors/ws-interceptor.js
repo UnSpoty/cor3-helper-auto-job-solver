@@ -580,10 +580,32 @@
             namedConnections.push({ a: aName, b: bName, isHidden: !!c.isHidden });
         }
 
+        // Active path HOME → currentEndpoint. UI highlights these edges
+        // cyan so the operator sees which servers are being traversed.
+        // Walks parents chain back from endpoint until we hit a node with
+        // no parent (HOME). visible.parents wins; falls back to all.parents
+        // for endpoints only reachable via a hidden gateway.
+        const homePath = [];
+        const endpointId = data.currentEndpointId || null;
+        if (endpointId && endpointId !== (home && home.id)) {
+            let cur = endpointId;
+            let guard = 200;
+            while (cur != null && guard-- > 0) {
+                const pid = visible.parents[cur] !== undefined ? visible.parents[cur] : all.parents[cur];
+                if (pid === undefined) break;
+                const aName = nameById[pid];
+                const bName = nameById[cur];
+                if (aName && bName) homePath.push({ a: aName, b: bName });
+                cur = pid;
+            }
+        }
+
         return {
             home: home ? home.serverName : null,
             homeId: home ? home.id : null,
             currentEndpointId: data.currentEndpointId || null,
+            currentEndpointName: endpointId ? (nameById[endpointId] || null) : null,
+            homePath,
             // Timestamp so UI can show last-refresh time (helps confirm the
             // Refresh button actually fired even when topology didn't change).
             updatedAt: Date.now(),
@@ -628,6 +650,32 @@
                     marketId: s.marketId || null,
                     canSetEndpoint: !!s.canSetEndpoint,
                     isInMaintenance: !!s.isInMaintenance,
+                    // ── Fields added for the popup Network Map renderer ──
+                    // serverPlace: [x, y] in the game's coordinate system.
+                    // Used directly for positioning — no computed layout.
+                    serverPlace: (Array.isArray(s.serverPlace) && s.serverPlace.length === 2
+                        && Number.isFinite(s.serverPlace[0]) && Number.isFinite(s.serverPlace[1]))
+                        ? [s.serverPlace[0], s.serverPlace[1]]
+                        : null,
+                    // serverColor: { main, secondary, highlighted } shipped
+                    // per-server by the game. Renderer uses these directly
+                    // so we don't have to maintain a faction → palette map.
+                    serverColor: (s.serverColor && typeof s.serverColor === 'object') ? {
+                        main: s.serverColor.main || null,
+                        secondary: s.serverColor.secondary || null,
+                        highlighted: s.serverColor.highlighted || null,
+                    } : null,
+                    // transitType: 'public' | 'private' | 'restricted'.
+                    // Selects which type-glyph (4-triangle cross / quarter-
+                    // disc flower / 2×2 diamond grid) renders in the centre.
+                    transitType: s.transitType || null,
+                    // serverTypeName: raw '<faction> <type>' string
+                    // (e.g. 'CEDRT public') or 'Home'. Kept for HOME detect
+                    // + debug; transitType is the cleaner field to consume.
+                    serverTypeName: s.serverTypeName || null,
+                    isNew: !!s.isNew,
+                    isAccessible: !!s.isAccessible,
+                    hasAdminAccess: !!s.hasAdminAccess,
                 };
             }),
         };

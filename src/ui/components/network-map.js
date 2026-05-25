@@ -1,13 +1,21 @@
 // Local Network Map renderer for the popup.
 //
-//   - Tree layout (Reingold-Tilford-lite — recursive subtree-sizing so siblings
-//     never overlap and parents centre over their children).
-//   - Card-style nodes mirroring the in-game look: rounded rectangle with a
-//     faction-tinted left stripe, the server name inside, an availability
-//     dot, and a K/D corner badge when the server is in maintenance.
-//   - Pan (drag) + zoom (wheel) via a top-level <g> transform; the SVG
-//     itself is fixed-size, the camera is what moves. % indicator + Fit
-//     button live in a tiny HUD overlay over the canvas.
+//   - Positions taken directly from each server's serverPlace[x,y] (the
+//     in-game world coordinate). Auto-fitted into the popup canvas via the
+//     camera transform — no computed layout, no Reingold-Tilford. Topology
+//     is therefore identical to the in-game Network Map.
+//   - Colours taken directly from serverColor.{main,secondary,highlighted}
+//     shipped per-server in the WS payload. No faction palette table —
+//     the game's own colours are used inline as gradient stops + stroke.
+//   - Type-glyph (Public/Private/Restricted) rendered from transitType
+//     via shared <symbol> definitions in <defs>.
+//   - Edges drawn with Manhattan-routed paths (cardinal tail → curve →
+//     diagonal → curve → cardinal tail) under a single feGaussianBlur
+//     glow filter, matching the in-game ConnectionsLayerStyled look.
+//     Active path HOME → currentEndpoint is stroked cyan.
+//   - Pan (drag) + zoom (wheel) via a top-level <g> transform; the camera
+//     survives storage-driven re-renders. % indicator + Fit button live
+//     in a tiny HUD overlay over the canvas.
 //   - Subscribes to NM_GRAPH, the three market envelopes, settings, and
 //     priorities; component-level destroy() tears the listeners down so
 //     re-mounting on tab switch doesn't leak.
@@ -25,13 +33,32 @@
     const SS = C.STORAGE_SYNC;
     const SVG_NS = 'http://www.w3.org/2000/svg';
 
-    // Card geometry — SVG units. Picked to fit ~7 chars of typical server names
-    // ("RM7-E1L1") with a faction stripe + status dot.
-    const NODE_W       = 92;
-    const NODE_H       = 38;
-    const COL_GAP      = 22;       // px between columns
-    const ROW_GAP      = 26;       // px between rows
-    const PADDING      = 18;       // around the whole graph
+    // Compact node geometry. Native cor3.gg nodes are 88×88; we shrink to
+    // 60×44 so the full graph fits in the popup at fit-zoom without forcing
+    // operators to pan to see a neighbour. World coordinates stay 1:1 with
+    // serverPlace so relative positions match the game exactly.
+    const NODE_W   = 60;
+    const NODE_H   = 44;
+    const NODE_FASCIA = 8;  // top-right corner chamfer (px)
+
+    // Edge geometry. Cor3.gg uses tail=6, radius=10 in the live paths we
+    // sampled. Same numbers reproduce the railway feel at our scale.
+    const EDGE_TAIL = 6;
+    const EDGE_RADIUS = 10;
+
+    // serverPlace lives in "logical units" in the WS payload (e.g. [3.5, 2]
+    // for a server the game positions at [350, -200] on screen). The game's
+    // own renderer multiplies by ~100 and negates Y (game uses cartesian
+    // y-up; SVG uses y-down). We do the same on the way into world coords
+    // so node spacing + orientation match the in-game layout 1:1.
+    const PLACE_SCALE = 50;
+    const PLACE_Y_SIGN = -1;
+
+    // Default colour fallbacks when the WS payload doesn't ship a
+    // serverColor (very rare, but never crash the renderer over it).
+    const DEFAULT_COLOR = { main: '#7D8488', secondary: '#3D4146', highlighted: '#A4A9AC' };
+    const EDGE_DEFAULT  = '#828282';
+    const EDGE_ACTIVE   = 'rgba(118, 193, 209, 0.75)';
 
     function svgEl(name, attrs) {
         const e = document.createElementNS(SVG_NS, name);
@@ -46,114 +73,68 @@
         if (html !== undefined) e.innerHTML = html;
         return e;
     }
+    // Safely turn any server id/name into a string fit for an SVG `id`
+    // attribute — gradients reference it via url(#…) and SVG ids reject
+    // most punctuation.
+    function safeId(s) { return String(s || '').replace(/[^a-zA-Z0-9_-]/g, '_'); }
 
-    // ─── Layout: Reingold-Tilford-lite ────────────────────────────────────
+    // ─── Layout: project serverPlace into world coords ────────────────────
     //
-    // For each tree, recursively determine the leaf-level x of every node.
-    // Internal-node x is the midpoint of its children's xs (so parents
-    // always sit centred above their subtree). Sibling subtrees are placed
-    // contiguously without ever overlapping. y comes from BFS depth so the
-    // layered look matches the in-game vertical structure.
-    //
-    // Disconnected components (orphan nodes that have no parentName but
-    // aren't HOME — e.g. a side-network we haven't traversed yet) become
-    // separate roots placed side by side with a small inter-component gap.
-    function layoutTree(graph) {
-        const byName = new Map();
-        const childrenOf = new Map();
-        const roots = [];
-        for (const s of (graph.servers || [])) {
-            byName.set(s.name, s);
-        }
-        for (const s of (graph.servers || [])) {
-            if (s.parentName && byName.has(s.parentName)) {
-                if (!childrenOf.has(s.parentName)) childrenOf.set(s.parentName, []);
-                childrenOf.get(s.parentName).push(s);
+    // Compute the bbox of all servers' serverPlace values, then shift so
+    // the world origin is positive (SVG coords don't go negative for our
+    // camera setup). Orphans without serverPlace get a synthetic row under
+    // the main cluster so the user still sees them.
+    function projectPositions(graph) {
+        const positions = new Map();   // name → { x, y } in world units
+        const placed   = [];
+        const orphans  = [];
+        for (const s of graph.servers || []) {
+            if (s.serverPlace && Number.isFinite(s.serverPlace[0]) && Number.isFinite(s.serverPlace[1])) {
+                placed.push(s);
             } else {
-                roots.push(s);
+                orphans.push(s);
             }
         }
-        // Stable child ordering — name sort gives deterministic layouts so
-        // re-renders after a graph update don't reshuffle siblings.
-        for (const arr of childrenOf.values()) {
-            arr.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const s of placed) {
+            // Scale + flip Y to match the in-game renderer's coord mapping.
+            // Raw serverPlace is the game's logical coord; PLACE_SCALE
+            // brings it to "pixels of separation", PLACE_Y_SIGN flips so
+            // a "northern" server (raw y > 0) renders above center.
+            const x = s.serverPlace[0] * PLACE_SCALE;
+            const y = s.serverPlace[1] * PLACE_SCALE * PLACE_Y_SIGN;
+            if (x < minX) minX = x;
+            if (y < minY) minY = y;
+            if (x > maxX) maxX = x;
+            if (y > maxY) maxY = y;
+            positions.set(s.name, { x, y });
         }
-        // HOME first among roots; the rest sorted by name.
-        roots.sort((a, b) => {
-            const aHome = (a.name === graph.home) ? 0 : 1;
-            const bHome = (b.name === graph.home) ? 0 : 1;
-            if (aHome !== bHome) return aHome - bHome;
-            return (a.name || '').localeCompare(b.name || '');
+        if (!placed.length) { minX = 0; minY = 0; maxX = 0; maxY = 0; }
+
+        // Orphans row: just below the bbox, evenly spaced. They lose
+        // topological accuracy but at least show up in the map.
+        const ORPHAN_GAP = 120;
+        orphans.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+        orphans.forEach((s, i) => {
+            const x = minX + i * ORPHAN_GAP;
+            const y = maxY + 240;
+            positions.set(s.name, { x, y });
+            if (x > maxX) maxX = x;
+            if (y > maxY) maxY = y;
         });
 
-        const positions = new Map();   // name → { col, row }
-        let cursor = 0;
-
-        function place(name, depth) {
-            const node = byName.get(name);
-            if (!node) return { width: 0, leftCol: 0, rightCol: 0 };
-            const kids = childrenOf.get(name) || [];
-            if (kids.length === 0) {
-                positions.set(name, { col: cursor, row: depth });
-                cursor += 1;
-                return { width: 1, leftCol: cursor - 1, rightCol: cursor - 1 };
-            }
-            // First child anchors leftCol; we centre the parent over the
-            // span between first leaf and last leaf of its subtree.
-            const firstCol = cursor;
-            const childResults = [];
-            for (const k of kids) childResults.push(place(k.name, depth + 1));
-            const lastCol = cursor - 1;
-            // Parent's column is the midpoint between the leftmost-placed
-            // child and the rightmost-placed child columns. This keeps
-            // hub nodes visually balanced over their subtrees.
-            const firstChildCol = positions.get(kids[0].name).col;
-            const lastChildCol  = positions.get(kids[kids.length - 1].name).col;
-            const parentCol = (firstChildCol + lastChildCol) / 2;
-            positions.set(name, { col: parentCol, row: depth });
-            return { width: lastCol - firstCol + 1, leftCol: firstCol, rightCol: lastCol };
-        }
-
-        const COMPONENT_GAP = 1.5;
-        for (const r of roots) {
-            const baseDepth = Number.isFinite(r.depth) ? r.depth : 0;
-            place(r.name, baseDepth);
-            cursor = Math.ceil(cursor) + COMPONENT_GAP;
-        }
-
-        // Compute world bounds.
-        let maxRow = 0;
-        let maxCol = 0;
+        // Shift to positive coords + add padding for node half-widths.
+        const PAD = 80;
+        const offsetX = -minX + PAD;
+        const offsetY = -minY + PAD;
         for (const p of positions.values()) {
-            if (p.row > maxRow) maxRow = p.row;
-            if (p.col > maxCol) maxCol = p.col;
+            p.x += offsetX;
+            p.y += offsetY;
         }
-
-        // Defensive fallback: any server we somehow failed to place (e.g.
-        // a node whose parentName references a server that isn't in
-        // servers[]). Drop unplaced nodes onto an "orphan" row underneath
-        // the tree so the user sees them instead of silently losing data.
-        const unplaced = [];
-        for (const s of (graph.servers || [])) {
-            if (!positions.has(s.name)) unplaced.push(s);
-        }
-        if (unplaced.length > 0) {
-            unplaced.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-            const orphanRow = maxRow + 2;  // gap of one row from the main tree
-            unplaced.forEach((s, i) => {
-                positions.set(s.name, { col: i, row: orphanRow });
-                if (i > maxCol) maxCol = i;
-            });
-            maxRow = orphanRow;
-        }
-
-        const worldW = PADDING * 2 + (maxCol + 1) * (NODE_W + COL_GAP) - COL_GAP;
-        const worldH = PADDING * 2 + (maxRow + 1) * (NODE_H + ROW_GAP) - ROW_GAP;
+        const worldW = (maxX - minX) + PAD * 2;
+        const worldH = (maxY - minY) + PAD * 2;
         return { positions, worldW, worldH };
     }
-
-    function colToX(col) { return PADDING + col * (NODE_W + COL_GAP); }
-    function rowToY(row) { return PADDING + row * (NODE_H + ROW_GAP); }
 
     // ─── Classification ───────────────────────────────────────────────────
     function classifyNode(node, ctx) {
@@ -163,14 +144,6 @@
         if (ctx.skipSet.has(node.name)) return 'skip';
         if (node.marketId && ctx.disabledMarketIds.has(node.marketId)) return 'off';
         return 'ok';
-    }
-
-    // Faction tint for the card's left stripe. Falls back to a neutral
-    // grey if a faction we don't have a colour for ever shows up.
-    function factionClass(node) {
-        const f = (node && node.faction || '').toUpperCase();
-        if (!f) return 'nm-faction-unknown';
-        return 'nm-faction-' + f.toLowerCase();
     }
 
     // Count available jobs per server. Each market envelope's jobs[] entries
@@ -193,10 +166,94 @@
         return counts;
     }
 
+    // ─── Edge geometry: cardinal-tail → curve → diagonal → curve → tail ─
+    //
+    // Reproduces the in-game ConnectionsLayerStyled path pattern:
+    //   M a.x a.y  L tailA  Q cornerA endA  L startB  Q cornerB tailB  L b.x b.y
+    // The diagonal segment runs between the two "corner-extreme" points
+    // (anchor + tail + radius in port direction). Q endpoints sit `radius`
+    // along the diagonal from those corners. dirA / dirB are outward unit
+    // vectors at each port; the path tail leaves cardinally before curving
+    // toward the other node.
+    function manhattanPath(ax, ay, bx, by, dirA, dirB, tail, radius) {
+        const t = (tail != null) ? tail : EDGE_TAIL;
+        const r = (radius != null) ? radius : EDGE_RADIUS;
+        const aTX = ax + dirA[0] * t;
+        const aTY = ay + dirA[1] * t;
+        const bTX = bx + dirB[0] * t;
+        const bTY = by + dirB[1] * t;
+        const aCX = ax + dirA[0] * (t + r);
+        const aCY = ay + dirA[1] * (t + r);
+        const bCX = bx + dirB[0] * (t + r);
+        const bCY = by + dirB[1] * (t + r);
+        const dx = bCX - aCX;
+        const dy = bCY - aCY;
+        const len = Math.hypot(dx, dy) || 1;
+        const ux = dx / len;
+        const uy = dy / len;
+        // Q endpoint on the A side sits `radius` along the diagonal from
+        // the A corner control point — same on the B side, mirrored.
+        const aEx = aCX + ux * r;
+        const aEy = aCY + uy * r;
+        const bSx = bCX - ux * r;
+        const bSy = bCY - uy * r;
+        return `M ${ax} ${ay} L ${aTX} ${aTY} Q ${aCX} ${aCY} ${aEx} ${aEy} L ${bSx} ${bSy} Q ${bCX} ${bCY} ${bTX} ${bTY} L ${bx} ${by}`;
+    }
+
+    // Decide which side of each node hosts the port for an edge. The port
+    // closest to the other end-point along the dominant axis wins, matching
+    // how the in-game map lays its ports out. Returns { aSide, bSide,
+    // aAnchor, bAnchor } where side ∈ {'right','left','top','bottom'} and
+    // anchor is the [x,y] on the node's perimeter.
+    function pickPortSides(aCenter, bCenter) {
+        const dx = bCenter.x - aCenter.x;
+        const dy = bCenter.y - aCenter.y;
+        let aSide, bSide;
+        if (Math.abs(dx) >= Math.abs(dy)) {
+            // Horizontal dominance: side ports.
+            aSide = dx > 0 ? 'right' : 'left';
+            bSide = dx > 0 ? 'left'  : 'right';
+        } else {
+            aSide = dy > 0 ? 'bottom' : 'top';
+            bSide = dy > 0 ? 'top'    : 'bottom';
+        }
+        const sideAnchor = (center, side) => {
+            switch (side) {
+                case 'right':  return { x: center.x + NODE_W / 2, y: center.y, dir: [ 1,  0] };
+                case 'left':   return { x: center.x - NODE_W / 2, y: center.y, dir: [-1,  0] };
+                case 'top':    return { x: center.x, y: center.y - NODE_H / 2, dir: [ 0, -1] };
+                case 'bottom': return { x: center.x, y: center.y + NODE_H / 2, dir: [ 0,  1] };
+            }
+            return { x: center.x, y: center.y, dir: [1, 0] };
+        };
+        return { a: sideAnchor(aCenter, aSide), b: sideAnchor(bCenter, bSide) };
+    }
+
+    // Node body path: rect (60×44) with a top-right corner chamfer.
+    // Drawn as a single closed <path> so fill + stroke render in one go.
+    function nodePathD() {
+        const W = NODE_W;
+        const H = NODE_H;
+        const F = NODE_FASCIA;
+        const R = 3;  // outer corner radius (excluding the chamfer)
+        // Walk clockwise: top-left → top-right-pre-chamfer → diag-chamfer →
+        // right-side-down → bottom-right → bottom-left → close.
+        return [
+            `M ${R} 0`,
+            `L ${W - F} 0`,
+            `L ${W} ${F}`,
+            `L ${W} ${H - R}`,
+            `Q ${W} ${H} ${W - R} ${H}`,
+            `L ${R} ${H}`,
+            `Q 0 ${H} 0 ${H - R}`,
+            `L 0 ${R}`,
+            `Q 0 0 ${R} 0`,
+            'Z'
+        ].join(' ');
+    }
+
     // ─── Render ───────────────────────────────────────────────────────────
     function render(camera, ctx) {
-        // Clear the camera <g> — we keep the camera between renders so its
-        // transform (pan/zoom) survives storage-driven refreshes.
         while (camera.firstChild) camera.removeChild(camera.firstChild);
 
         const graph = ctx.graph;
@@ -210,167 +267,209 @@
             return { worldW: 320, worldH: 160 };
         }
 
-        const { positions, worldW, worldH } = layoutTree(graph);
+        const { positions, worldW, worldH } = projectPositions(graph);
 
-        // Edges first so node cards render on top.
+        // Per-node colour-gradient defs. Re-created each render so a server
+        // whose serverColor changed between snapshots actually updates.
+        const defs = svgEl('defs');
+        const usedColors = new Map();   // server id → resolved color triple
+        for (const s of graph.servers) {
+            const col = (s.serverColor && s.serverColor.main) ? s.serverColor : DEFAULT_COLOR;
+            const idSafe = safeId(s.id || s.name);
+            usedColors.set(s.id || s.name, { col, idSafe });
+            const grad = svgEl('linearGradient', {
+                id: `nm-grad-${idSafe}`,
+                x1: 0, y1: 0, x2: 0, y2: 1,
+            });
+            const stop1 = svgEl('stop', { offset: '0%',   'stop-color': col.main });
+            const stop2 = svgEl('stop', { offset: '100%', 'stop-color': col.secondary || col.main, 'stop-opacity': 0.55 });
+            grad.appendChild(stop1);
+            grad.appendChild(stop2);
+            defs.appendChild(grad);
+        }
+        camera.appendChild(defs);
+
+        // ── Edges ───────────────────────────────────────────────────────
         //
         // Two layers:
-        //   1. Tree edges (parentName-based) — drawn as a soft cubic bezier
-        //      from bottom-of-parent to top-of-child. This is the spanning
-        //      tree the BFS built; gives the layered "branch" look.
+        //   1. Tree edges (parentName-based) — the BFS spanning tree.
         //   2. Extra edges — every connection in graph.connections that
-        //      isn't already covered by the tree. Cor3.gg's post-May-2026
-        //      map has multi-parent servers (multiple upstream links into a
-        //      single node); without rendering these the user sees a tree
-        //      but the real network is a DAG. Drawn as a thin straight line
-        //      with a distinct class so they read as "secondary connection"
-        //      and don't fight visually with the tree.
+        //      isn't already covered by the tree (the map is a DAG with
+        //      multi-parent nodes).
+        //
+        // Active path HOME → currentEndpoint gets cyan stroke. We index
+        // homePath as an unordered pair set for cheap lookup.
+        const pairKey = (a, b) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+        const activeSet = new Set();
+        for (const e of (graph.homePath || [])) {
+            if (e && e.a && e.b) activeSet.add(pairKey(e.a, e.b));
+        }
+        const isActive = (a, b) => activeSet.has(pairKey(a, b));
+
         const edgesG = svgEl('g', { class: 'nm-edges' });
 
-        // Side-edge anchors for non-tree edges. We anchor on the right edge
-        // of both endpoints and bow the curve out to the right of the whole
-        // layout. This keeps the dashed line OUT of the column where cards
-        // live (centre-to-centre routing would cross straight through any
-        // card sitting between the two endpoints — visible-through-cards
-        // bug reported on real cor3.gg layouts).
-        function rightAnchor(pos) {
-            return { x: colToX(pos.col) + NODE_W, y: rowToY(pos.row) + NODE_H / 2 };
-        }
-
-        // Tree edges first. We also track which undirected name-pairs are
-        // already rendered as tree edges so the extras pass can skip them.
         const treePairs = new Set();
         for (const s of graph.servers) {
-            if (!s.parentName || !positions.has(s.parentName) || !positions.has(s.name)) continue;
-            const a = positions.get(s.parentName);
-            const b = positions.get(s.name);
-            const ax = colToX(a.col) + NODE_W / 2;
-            const ay = rowToY(a.row) + NODE_H;     // bottom of parent card
-            const bx = colToX(b.col) + NODE_W / 2;
-            const by = rowToY(b.row);              // top of child card
-            const midY = (ay + by) / 2;
-            const d = `M${ax},${ay} C${ax},${midY} ${bx},${midY} ${bx},${by}`;
+            if (!s.parentName) continue;
+            const pa = positions.get(s.parentName);
+            const pb = positions.get(s.name);
+            if (!pa || !pb) continue;
+            const ports = pickPortSides(pa, pb);
+            const d = manhattanPath(ports.a.x, ports.a.y, ports.b.x, ports.b.y, ports.a.dir, ports.b.dir);
+            const stroke = isActive(s.parentName, s.name) ? EDGE_ACTIVE : EDGE_DEFAULT;
             edgesG.appendChild(svgEl('path', {
-                d, class: 'nm-edge' + (s.viaHidden ? ' nm-edge-hidden' : ''),
+                d,
+                class: 'nm-edge' + (isActive(s.parentName, s.name) ? ' nm-edge-active' : '') + (s.viaHidden ? ' nm-edge-hidden' : ''),
+                stroke,
             }));
-            const key = s.parentName < s.name ? `${s.parentName}|${s.name}` : `${s.name}|${s.parentName}`;
-            treePairs.add(key);
+            treePairs.add(pairKey(s.parentName, s.name));
         }
 
-        // Extra (non-tree) edges. graph.connections is the full undirected
-        // edge list shipped by ws-interceptor (May-2026). Older snapshots
-        // without this field gracefully degrade to tree-only rendering.
-        //
-        // Routing: anchor on each card's right edge, bow the curve out to
-        // the right of the world bounds. With multiple extras at varying
-        // row spans we offset each subsequent bow further right so two
-        // overlapping curves stay readable as separate links.
         const allConns = Array.isArray(graph.connections) ? graph.connections : [];
-        const BOW_BASE = 28;       // px clearance from the rightmost card
-        const BOW_STEP = 14;       // additional offset per stacked curve
-        let bowIndex = 0;
         for (const c of allConns) {
             if (!c.a || !c.b) continue;
-            const key = c.a < c.b ? `${c.a}|${c.b}` : `${c.b}|${c.a}`;
+            const key = pairKey(c.a, c.b);
             if (treePairs.has(key)) continue;
-            if (!positions.has(c.a) || !positions.has(c.b)) continue;
-            const pa = rightAnchor(positions.get(c.a));
-            const pb = rightAnchor(positions.get(c.b));
-            // Control point sits to the right of the rightmost card column
-            // at a y midway between the endpoints. As more extras accumulate
-            // we step the control point further out so curves don't merge.
-            const cx = Math.max(pa.x, pb.x) + BOW_BASE + bowIndex * BOW_STEP;
-            const cy = (pa.y + pb.y) / 2;
-            const d = `M${pa.x},${pa.y} Q${cx},${cy} ${pb.x},${pb.y}`;
+            const pa = positions.get(c.a);
+            const pb = positions.get(c.b);
+            if (!pa || !pb) continue;
+            const ports = pickPortSides(pa, pb);
+            const d = manhattanPath(ports.a.x, ports.a.y, ports.b.x, ports.b.y, ports.a.dir, ports.b.dir);
+            const stroke = isActive(c.a, c.b) ? EDGE_ACTIVE : EDGE_DEFAULT;
             edgesG.appendChild(svgEl('path', {
-                d, class: 'nm-edge nm-edge-extra' + (c.isHidden ? ' nm-edge-hidden' : ''),
+                d,
+                class: 'nm-edge nm-edge-extra' + (isActive(c.a, c.b) ? ' nm-edge-active' : '') + (c.isHidden ? ' nm-edge-hidden' : ''),
+                stroke,
             }));
-            bowIndex += 1;
         }
 
         camera.appendChild(edgesG);
 
-        // Cards
+        // ── Nodes ───────────────────────────────────────────────────────
+        const nodeBodyD = nodePathD();
         const cardsG = svgEl('g', { class: 'nm-cards' });
         for (const s of graph.servers) {
             const pos = positions.get(s.name);
             if (!pos) continue;
             const cls = classifyNode(s, ctx);
-            const x = colToX(pos.col);
-            const y = rowToY(pos.row);
+            const { col, idSafe } = usedColors.get(s.id || s.name);
+            // Translate so the node's top-left sits at (pos - half size).
+            const tx = Math.round(pos.x - NODE_W / 2);
+            const ty = Math.round(pos.y - NODE_H / 2);
+            const isHome = s.serverTypeName === 'Home' || s.name === ctx.homeName;
+            const isActiveEndpoint = ctx.currentEndpointName && s.name === ctx.currentEndpointName;
+
             const g = svgEl('g', {
-                class: `nm-node nm-state-${cls} ${factionClass(s)}`,
+                class: `nm-node nm-state-${cls}${isHome ? ' nm-home' : ''}${isActiveEndpoint ? ' nm-active' : ''}`,
                 'data-name': s.name,
-                transform: `translate(${x}, ${y})`,
+                transform: `translate(${tx}, ${ty})`,
             });
-            // Card body
-            g.appendChild(svgEl('rect', {
-                class: 'nm-card-bg',
-                x: 0, y: 0, width: NODE_W, height: NODE_H, rx: 5, ry: 5,
+
+            // Body — gradient fill + faction-coloured stroke.
+            g.appendChild(svgEl('path', {
+                class: 'nm-card',
+                d: nodeBodyD,
+                fill: `url(#nm-grad-${idSafe})`,
+                'fill-opacity': cls === 'off' ? 0.2 : 0.4,
+                stroke: col.main,
+                'stroke-opacity': cls === 'off' ? 0.3 : 0.65,
+                'stroke-width': isHome || isActiveEndpoint ? 1.5 : 1,
             }));
-            // Faction stripe (left edge)
-            g.appendChild(svgEl('rect', {
-                class: 'nm-card-stripe',
-                x: 0, y: 0, width: 4, height: NODE_H, rx: 2, ry: 2,
-            }));
-            // Status dot (top-right corner of the card)
-            g.appendChild(svgEl('circle', {
-                class: 'nm-status-dot',
-                cx: NODE_W - 7, cy: 7, r: 3.5,
-            }));
-            // Server name (truncated to fit). Keep a leading prefix strip
-            // so RM7-* names still read cleanly inside the narrow card.
-            const display = (s.name || '').replace(/^RM7-/, '').slice(0, 10);
-            const labelMain = svgEl('text', {
-                x: 11, y: NODE_H / 2 + 4, class: 'nm-card-label',
-            });
-            labelMain.textContent = display || '?';
-            g.appendChild(labelMain);
-            // Faction sub-label below the name in muted text — gives
-            // operators an at-a-glance read of which network a node is in.
-            const sub = (s.faction || '').toString();
-            if (sub) {
-                const subLbl = svgEl('text', {
-                    x: 11, y: NODE_H - 5, class: 'nm-card-sub',
-                });
-                subLbl.textContent = sub;
-                g.appendChild(subLbl);
+
+            // Type-glyph (Public/Private/Restricted) centred. Skip for
+            // HOME — its faction colour already says "home" at a glance.
+            const glyph = !isHome && s.transitType ? `nm-glyph-${s.transitType}` : null;
+            if (glyph) {
+                const G = 16;
+                g.appendChild(svgEl('use', {
+                    href: `#${glyph}`,
+                    x: (NODE_W - G) / 2,
+                    y: NODE_H - G - 4,
+                    width: G,
+                    height: G,
+                    fill: col.main,
+                    'fill-opacity': 0.55,
+                }));
             }
 
-            // K/D badge (top-right). When isInMaintenance is true on the
-            // graph node, draw a small red tag. We don't have the live timer
-            // here (the timer lives in DOM on cor3.gg, not in the WS payload),
-            // so the tag just reads "K/D" — the tooltip carries the rest.
+            // Server name — small caps near the top of the card.
+            const nameTrim = (s.name || '').replace(/^RM7-/, '').slice(0, 9);
+            const lbl = svgEl('text', {
+                x: NODE_W / 2,
+                y: 12,
+                class: 'nm-name',
+                'text-anchor': 'middle',
+            });
+            lbl.textContent = nameTrim || '?';
+            g.appendChild(lbl);
+
+            // Corner brackets — appear on hover/selected/active via CSS.
+            // Each is a 5×5 "L" path positioned just outside one corner of
+            // the body; CSS translates them further outward on hover for
+            // the cor3.gg pop-out feel.
+            const cornerSize = 5;
+            const cornerColor = col.highlighted || col.main;
+            const brackets = [
+                { cls: 'nm-corner nm-corner-tl', d: `M 0 ${cornerSize} L 0 0 L ${cornerSize} 0`,                 tx: -2, ty: -2 },
+                { cls: 'nm-corner nm-corner-tr', d: `M ${-cornerSize} 0 L 0 0 L 0 ${cornerSize}`,                 tx: NODE_W + 2, ty: -2 },
+                { cls: 'nm-corner nm-corner-bl', d: `M 0 ${-cornerSize} L 0 0 L ${cornerSize} 0`,                 tx: -2, ty: NODE_H + 2 },
+                { cls: 'nm-corner nm-corner-br', d: `M ${-cornerSize} 0 L 0 0 L 0 ${-cornerSize}`,                tx: NODE_W + 2, ty: NODE_H + 2 },
+            ];
+            for (const b of brackets) {
+                g.appendChild(svgEl('path', {
+                    class: b.cls,
+                    d: b.d,
+                    transform: `translate(${b.tx}, ${b.ty})`,
+                    stroke: cornerColor,
+                    'stroke-width': 1.2,
+                    fill: 'none',
+                }));
+            }
+
+            // K/D badge (top-right of the body, above the fascia).
             if (cls === 'kd') {
                 const bg = svgEl('g', { class: 'nm-kd-badge', transform: `translate(${NODE_W - 22}, -7)` });
-                bg.appendChild(svgEl('rect', { x: 0, y: 0, width: 24, height: 11, rx: 2.5, ry: 2.5, class: 'nm-kd-bg' }));
-                const tx = svgEl('text', { x: 12, y: 8, class: 'nm-kd-text' });
+                bg.appendChild(svgEl('rect', { x: 0, y: 0, width: 22, height: 10, rx: 2, ry: 2, class: 'nm-kd-bg' }));
+                const tx = svgEl('text', { x: 11, y: 7.5, class: 'nm-kd-text' });
                 tx.textContent = 'K/D';
                 bg.appendChild(tx);
                 g.appendChild(bg);
             }
 
-            // Jobs badge (bottom-right).
+            // Jobs badge — bottom-right corner circle with the count.
             const jobs = ctx.jobCounts[s.name] || 0;
             if (jobs > 0) {
-                const bg = svgEl('g', { class: 'nm-jobs-badge', transform: `translate(${NODE_W - 9}, ${NODE_H - 9})` });
-                bg.appendChild(svgEl('circle', { r: 8, class: 'nm-badge-circle' }));
+                const bg = svgEl('g', { class: 'nm-jobs-badge', transform: `translate(${NODE_W - 8}, ${NODE_H - 8})` });
+                bg.appendChild(svgEl('circle', { r: 7, class: 'nm-badge-circle' }));
                 const t = svgEl('text', { y: 3, 'text-anchor': 'middle', class: 'nm-badge-text' });
                 t.textContent = jobs > 99 ? '99+' : String(jobs);
                 bg.appendChild(t);
                 g.appendChild(bg);
             }
 
-            // Tooltip
+            // "NEW" pill — game flags fresh servers. Small white tag,
+            // bottom-left of the body.
+            if (s.isNew) {
+                const bg = svgEl('g', { class: 'nm-new-badge', transform: `translate(3, ${NODE_H - 12})` });
+                bg.appendChild(svgEl('rect', { x: 0, y: 0, width: 18, height: 9, rx: 1.5, ry: 1.5, class: 'nm-new-bg' }));
+                const t = svgEl('text', { x: 9, y: 7, class: 'nm-new-text' });
+                t.textContent = 'NEW';
+                bg.appendChild(t);
+                g.appendChild(bg);
+            }
+
+            // Tooltip via native <title>. Keeps the popup chrome-free.
             const title = svgEl('title');
             const parts = [s.name];
-            if (s.faction)             parts.push(`faction: ${s.faction}`);
+            if (s.serverTypeName)        parts.push(s.serverTypeName);
+            if (s.cluster)               parts.push(`cluster: ${s.cluster}`);
             if (Number.isFinite(s.depth)) parts.push(`depth: ${s.depth}${s.viaHidden ? ' (via hidden)' : ''}`);
-            if (s.parentName)          parts.push(`from: ${s.parentName}`);
-            if (cls === 'kd')          parts.push('K/D — temporarily in maintenance');
-            if (cls === 'skip')        parts.push('user-skipped');
-            if (cls === 'off')         parts.push('market disabled in settings');
-            if (jobs > 0)              parts.push(`${jobs} job(s) available`);
+            if (s.parentName)            parts.push(`from: ${s.parentName}`);
+            if (isActiveEndpoint)        parts.push('← current endpoint');
+            if (cls === 'kd')            parts.push('K/D — temporarily in maintenance');
+            if (cls === 'skip')          parts.push('user-skipped');
+            if (cls === 'off')           parts.push('market disabled in settings');
+            if (jobs > 0)                parts.push(`${jobs} job(s) available`);
             title.textContent = parts.join('\n');
             g.appendChild(title);
 
@@ -378,20 +477,78 @@
         }
         camera.appendChild(cardsG);
 
-        // Widen world bounds to include the rightmost bowed-out extra-edge
-        // control point so fit() doesn't clip the curves. bowIndex carries
-        // the final count of extras rendered above.
-        const widenedW = bowIndex > 0
-            ? Math.max(worldW, worldW + BOW_BASE + bowIndex * BOW_STEP + PADDING)
-            : worldW;
-        return { worldW: widenedW, worldH };
+        return { worldW, worldH };
+    }
+
+    // Build the shared <defs> that the camera references via url(#…).
+    // Lives in the root <svg> (outside camera) so it's not wiped between
+    // renders. Type-glyph <symbol>s come from the in-game legend SVGs
+    // (legend-icons.tsx) so the shapes are pixel-identical.
+    function ensureSharedDefs(svg) {
+        if (svg.querySelector('defs.nm-shared-defs')) return;
+        const defs = svgEl('defs', { class: 'nm-shared-defs' });
+
+        // Edge glow filter — feGaussianBlur stdDeviation=2 (lighter than
+        // the game's 4 because our compact node spacing would otherwise
+        // bleed the glow across neighbours).
+        const filter = svgEl('filter', {
+            id: 'nm-glow-line',
+            x: '-50%', y: '-50%', width: '200%', height: '200%',
+        });
+        filter.appendChild(svgEl('feGaussianBlur', { stdDeviation: 2, result: 'blur' }));
+        const merge = svgEl('feMerge');
+        merge.appendChild(svgEl('feMergeNode', { in: 'blur' }));
+        merge.appendChild(svgEl('feMergeNode', { in: 'SourceGraphic' }));
+        filter.appendChild(merge);
+        defs.appendChild(filter);
+
+        // Type-glyph symbols. Coords are 24×24 (Public/Restricted) or 20×20
+        // (Private); SVG <use> scales them to whatever width/height we set
+        // on the use element.
+        //
+        // Public: 4 triangles forming a 4-petal star/diamond.
+        const pub = svgEl('symbol', { id: 'nm-glyph-public', viewBox: '0 0 24 24' });
+        const pubPaths = [
+            'M12.047 2.35352L16.9375 10.8241H7.15646L12.047 2.35352Z',
+            'M12.0472 20.5176L7.15666 12.047L16.9377 12.047L12.0472 20.5176Z',
+            'M5.92941 12.2354L10.8199 20.7059H1.03891L5.92941 12.2354Z',
+            'M18.1649 12.2354L23.0554 20.7059H13.2744L18.1649 12.2354Z',
+        ];
+        for (const d of pubPaths) pub.appendChild(svgEl('path', { d }));
+        defs.appendChild(pub);
+
+        // Private: 4 quarter-disc petals.
+        const priv = svgEl('symbol', { id: 'nm-glyph-private', viewBox: '0 0 20 20' });
+        const privPaths = [
+            'M9.28418 10.7178V20.001C4.31684 19.6501 0.350896 15.6851 0 10.7178H9.28418Z',
+            'M20.002 10.7178C19.6511 15.6851 15.6851 19.6501 10.7178 20.001V10.7178H20.002Z',
+            'M10.7178 0C15.6852 0.350889 19.6511 4.31679 20.002 9.28418H10.7178V0Z',
+            'M9.28418 9.28418H0C0.350878 4.31679 4.3168 0.350889 9.28418 0V9.28418Z',
+        ];
+        for (const d of privPaths) priv.appendChild(svgEl('path', { d }));
+        defs.appendChild(priv);
+
+        // Restricted: 4 rotated squares (diamonds) in 2×2 arrangement.
+        const restricted = svgEl('symbol', { id: 'nm-glyph-restricted', viewBox: '0 0 24 24' });
+        const rects = [
+            { y: 11.6035, x: 0,        rot: '-45 0 11.6035' },
+            { y: 5.15723, x: 6.44604, rot: '-45 6.44604 5.15723' },
+            { y: 18.0498, x: 6.44604, rot: '-45 6.44604 18.0498' },
+            { y: 11.6035, x: 12.8921, rot: '-45 12.8921 11.6035' },
+        ];
+        for (const r of rects) {
+            restricted.appendChild(svgEl('rect', {
+                x: r.x, y: r.y, width: 7.29293, height: 7.29293, transform: `rotate(${r.rot})`,
+            }));
+        }
+        defs.appendChild(restricted);
+
+        // Insert defs as the first child so renders below it can reference.
+        if (svg.firstChild) svg.insertBefore(defs, svg.firstChild);
+        else svg.appendChild(defs);
     }
 
     // ─── Pan + Zoom (camera transform) ────────────────────────────────────
-    //
-    // Camera = a single <g> wrapping all rendered geometry, with
-    // transform="translate(pan.x, pan.y) scale(zoom)". Pan is in screen
-    // pixels (1 unit = 1 px when zoom=1); zoom is multiplicative.
     function attach(container) {
         container.classList.add('network-map-host');
         container.innerHTML = '';
@@ -406,7 +563,13 @@
 
         const canvasHost = htmlEl('div', 'network-map-canvas');
 
-        // The HUD: zoom %, Refresh button, Fit button. Floats over the SVG.
+        // Background grid layer (sized to the world, scrolled by the camera
+        // transform). Lives behind the <svg> so the dotted lattice stays
+        // perfectly aligned with the SVG content under pan+zoom.
+        const gridLayer = htmlEl('div', 'network-map-grid');
+        canvasHost.appendChild(gridLayer);
+
+        // HUD: zoom %, Refresh button, Fit button.
         const hud = htmlEl('div', 'nm-hud');
         const zoomLabel = htmlEl('span', 'nm-hud-zoom muted xs', '100%');
         const refreshBtn = htmlEl('button', 'btn small nm-hud-btn', '↻');
@@ -419,10 +582,6 @@
         canvasHost.appendChild(hud);
 
         refreshBtn.addEventListener('click', async () => {
-            // Mirror what auto-jobs section's "rescan" did before — relay
-            // a chrome.tabs.sendMessage to the cor3.gg tab; the runtime
-            // bridge doesn't include rescanNetworkMap, so go through
-            // chrome.tabs directly so the in-page interceptor receives it.
             try {
                 refreshBtn.disabled = true;
                 refreshBtn.textContent = '…';
@@ -439,28 +598,17 @@
         svg.setAttribute('width', '100%');
         canvasHost.appendChild(svg);
 
+        ensureSharedDefs(svg);
+
         const camera = svgEl('g', { class: 'nm-camera' });
         svg.appendChild(camera);
 
-        const legend = htmlEl('div', 'network-map-legend muted xs');
-        legend.innerHTML = `
-            <span class="nm-legend-dot nm-state-home"></span> home
-            <span class="nm-legend-dot nm-state-ok"></span> ok
-            <span class="nm-legend-dot nm-state-kd"></span> K/D
-            <span class="nm-legend-dot nm-state-skip"></span> skipped
-            <span class="nm-legend-dot nm-state-off"></span> market off
-        `;
-
         wrap.appendChild(canvasHost);
-        wrap.appendChild(legend);
         container.appendChild(wrap);
 
         // ── Camera state ────────────────────────────────────────────────
-        // world.{worldW, worldH} mirrors the field names render() returns
-        // — keep them aligned, fit() does division by these and any typo
-        // gives a NaN zoom which breaks the wheel handler silently.
         const cam = { x: 0, y: 0, zoom: 1, world: { worldW: 320, worldH: 160 } };
-        const ZOOM_MIN = 0.3, ZOOM_MAX = 3;
+        const ZOOM_MIN = 0.15, ZOOM_MAX = 3;
 
         function applyCamera() {
             const z = Number.isFinite(cam.zoom) && cam.zoom > 0 ? cam.zoom : 1;
@@ -468,6 +616,14 @@
             const y = Number.isFinite(cam.y) ? cam.y : 0;
             cam.zoom = z; cam.x = x; cam.y = y;
             camera.setAttribute('transform', `translate(${x}, ${y}) scale(${z})`);
+            // Grid layer follows the camera so the dotted lattice stays
+            // glued to the world coords. background-position scrolls;
+            // background-size scales with the zoom (so 70-unit world grid
+            // matches the camera scale).
+            const gridUnit = 70 * z;
+            const gridSub  = 35 * z;
+            gridLayer.style.backgroundPosition = `${x}px ${y}px, ${x + gridSub}px ${y + gridSub}px, ${x}px ${y}px, ${x}px ${y}px, ${x}px ${y}px, ${x}px ${y}px`;
+            gridLayer.style.backgroundSize = `${gridUnit}px ${gridUnit}px, ${gridUnit}px ${gridUnit}px, ${gridUnit}px ${gridUnit}px, ${gridUnit}px ${gridUnit}px, ${gridSub}px ${gridSub}px, ${gridSub}px ${gridSub}px`;
             zoomLabel.textContent = Math.round(z * 100) + '%';
         }
 
@@ -482,7 +638,13 @@
             }
             const sx = rect.width  / ww;
             const sy = rect.height / wh;
-            const z = Math.min(sx, sy, 1.2);
+            // Fit-to-world but clamp to a readable minimum: in-game coord
+            // ranges easily span 2000+ units (counting D4RK/SRM side
+            // networks), which would zoom the home cluster down to noise.
+            // FIT_MIN keeps the default view readable; user pans/zooms
+            // out further via wheel if they want the whole expanse.
+            const FIT_MIN = 0.35;
+            const z = Math.max(FIT_MIN, Math.min(sx, sy, 1.2));
             cam.zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
             cam.x = (rect.width  - ww * cam.zoom) / 2;
             cam.y = (rect.height - wh * cam.zoom) / 2;
@@ -490,10 +652,6 @@
         }
 
         // ── Drag-to-pan ─────────────────────────────────────────────────
-        // pointerdown captures the pointer so the drag survives the cursor
-        // leaving the SVG bounds; pointerup releases it. Skips drags on
-        // <a>/<button>/<input> children just in case the future card grows
-        // interactive controls.
         let dragging = null;
         svg.addEventListener('pointerdown', (e) => {
             if (e.button !== 0) return;
@@ -520,19 +678,7 @@
         svg.addEventListener('pointercancel', endDrag);
 
         // ── Wheel-to-zoom ───────────────────────────────────────────────
-        // Zoom centred on cursor: convert cursor (screen px relative to svg)
-        // to world coords, scale, then re-anchor pan so the same world
-        // point is back under the cursor.
-        //
-        // The listener lives on canvasHost (the wrapping div), not the
-        // <svg> itself, with `capture: true` so we run before any ancestor
-        // scroll handler can claim the wheel event. Without this, the
-        // popup's outer scrollable container in some Chrome builds eats
-        // the wheel before it reaches the SVG and the zoom never fires.
-        // `passive: false` is required to call preventDefault().
         function onWheel(e) {
-            // Only react to wheels actually over our canvas. (Capture:true
-            // means we'd otherwise catch wheels anywhere in the popup.)
             const rect = svg.getBoundingClientRect();
             if (e.clientX < rect.left || e.clientX > rect.right ||
                 e.clientY < rect.top  || e.clientY > rect.bottom) return;
@@ -579,6 +725,7 @@
             const ctx = {
                 graph,
                 homeName: graph?.home || null,
+                currentEndpointName: graph?.currentEndpointName || null,
                 skipSet,
                 disabledMarketIds,
                 jobCounts: buildJobCounts([home, dark, srm]),
@@ -586,15 +733,10 @@
 
             const dims = render(camera, ctx);
             cam.world = dims;
-            // No viewBox: SVG renders in native pixel units, so the camera
-            // transform's translate/scale operates in *screen* pixels. With
-            // a viewBox the SVG would auto-scale content under our camera
-            // and the two scalings compound — that was the source of the
-            // post-Fit "shrunk into the corner" bug.
-            //
-            // Fixed visual height — pan moves long networks inside the
-            // canvas rather than the canvas growing the popup.
-            const visualHeight = Math.min(360, Math.max(240, dims.worldH));
+            // Fixed visual height in the popup — pan/zoom the camera
+            // inside this box. Grid layer is `position: absolute; inset: 0`
+            // so it follows canvasHost height automatically.
+            const visualHeight = 320;
             svg.style.height = visualHeight + 'px';
 
             if (summaryStatus) {
@@ -608,8 +750,6 @@
             }
             if (firstRender) {
                 firstRender = false;
-                // Defer fit() to next frame so the browser has a measured
-                // bounding rect for the SVG (style.height was just applied).
                 requestAnimationFrame(() => fit());
             } else {
                 applyCamera();
@@ -638,8 +778,6 @@
                 if (typeof syncUnsub === 'function') syncUnsub();
                 if (resizeObs) resizeObs.disconnect();
                 if (resizeTimer) clearTimeout(resizeTimer);
-                // Same { capture: true } flag the addEventListener used —
-                // omit it and removeEventListener silently no-ops.
                 canvasHost.removeEventListener('wheel', onWheel, { capture: true });
                 container.innerHTML = '';
             },

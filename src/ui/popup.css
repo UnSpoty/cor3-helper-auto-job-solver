@@ -568,10 +568,13 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
 .aj-action-row .btn.small { flex: 1; min-width: 0; }
 
 /* ─── Network Map (component) ─────────────────────────────────────────
-   Card-style nodes + pan/zoom (camera = single <g> transform). The
-   visual goal is a compact echo of the in-game Network Map: rectangular
-   server cards with a faction-tinted left stripe, dashed parent→child
-   curves, and a small HUD overlay for the zoom %. */
+   Node + edge renderer that visually echoes the in-game Network Map app
+   in cor3.gg: faction-coloured chamfered nodes, type-glyph in the
+   centre, Manhattan-routed dashed edges under a neon glow filter, and
+   a dotted cyan grid background. Positions come straight from each
+   server's serverPlace[x,y] so the topology matches the game. Colours
+   come from each server's serverColor.{main,secondary,highlighted} so
+   the popup palette stays correct even when new factions ship. */
 .aj-network-host { margin-top: 8px; }
 .network-map-wrap {
     background: var(--os-color-bg-card);
@@ -589,26 +592,54 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
     margin-top: 6px;
     overflow: hidden;
     border-radius: 4px;
-    background: var(--os-color-bg-secondary);
+    background: rgb(13, 16, 23);
     /* touch-action: none stops the browser from interpreting wheel /
-       pinch / pan gestures inside the canvas as outer scroll. Without
-       this the popup's parent scroller would eat wheel events on
-       trackpads even when our handler calls preventDefault(). */
+       pinch / pan gestures inside the canvas as outer scroll. */
     touch-action: none;
     overscroll-behavior: contain;
 }
+/* Dotted lattice grid lifted off cor3.gg's NetworkMapViewport. Six
+   layers: dot at (0,0) on a 70-px grid + offset dot at (35,35) on a
+   sub-grid + 1-px lines on both grids. The dots+lines all use cyan
+   #095F6F at varying opacities so the lattice reads as a single
+   coherent surface. JS scrolls background-position with the camera so
+   the lattice stays glued to world coords. */
+.network-map-grid {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background-color: transparent;
+    background-image:
+        url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='70' height='70'><rect x='0' y='0' width='2' height='2' fill='%23095F6F'/></svg>"),
+        url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='70' height='70'><rect x='35' y='35' width='2' height='2' fill='%23095F6F' opacity='0.5'/></svg>"),
+        repeating-linear-gradient(  0deg, rgba(9,95,111,0.2) 0px, rgba(9,95,111,0.2) 1px, transparent 1px, transparent 70px),
+        repeating-linear-gradient(90deg, rgba(9,95,111,0.2) 0px, rgba(9,95,111,0.2) 1px, transparent 1px, transparent 70px),
+        repeating-linear-gradient(  0deg, rgba(9,95,111,0.1) 0px, rgba(9,95,111,0.1) 1px, transparent 1px, transparent 35px),
+        repeating-linear-gradient(90deg, rgba(9,95,111,0.1) 0px, rgba(9,95,111,0.1) 1px, transparent 1px, transparent 35px);
+    background-size: 70px 70px, 70px 70px, 70px 70px, 70px 70px, 35px 35px, 35px 35px;
+    background-repeat: repeat;
+}
+/* Subtle cyan glow in the centre + dark vignette at the edges, lifted
+   from cor3.gg's radial overlays on top of the lattice. */
+.network-map-canvas::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+        radial-gradient(50% 50% at 50% 50%, rgba(5,37,48,0.5) 0%, transparent 60%),
+        radial-gradient(50% 50% at 50% 50%, transparent 30%, rgba(13,16,23,0.65) 100%);
+    z-index: 1;
+}
 .network-map-svg {
+    position: relative;
+    z-index: 1;
     display: block;
     width: 100%;
     cursor: grab;
     user-select: none;
     touch-action: none;
-    /* Faint grid hint matching the in-game look — not strictly required
-       but it gives the viewport a "this is a map" affordance. */
-    background-image:
-        linear-gradient(rgba(118,193,209,0.04) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(118,193,209,0.04) 1px, transparent 1px);
-    background-size: 24px 24px;
+    background: transparent;
 }
 .network-map-svg.nm-grabbing { cursor: grabbing; }
 
@@ -619,7 +650,7 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
     display: flex;
     align-items: center;
     gap: 6px;
-    z-index: 2;
+    z-index: 3;
     pointer-events: none;
 }
 .nm-hud-zoom {
@@ -650,83 +681,96 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
     background: rgba(118,193,209,0.28);
 }
 
-.network-map-legend {
-    margin-top: 6px;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-    align-items: center;
-}
-.nm-legend-dot {
-    display: inline-block;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    margin-right: 3px;
-    vertical-align: middle;
-    border: 1px solid rgba(255,255,255,0.15);
-}
-
 /* ─── SVG primitives ──────────────────────────────────────────────── */
 .nm-empty       { fill: var(--os-color-text-tertiary); font-size: 11px; }
-.nm-edge        { stroke: rgba(107,120,136,0.55); stroke-width: 1.4; fill: none; }
+
+/* Edges: dashed grey lines with a soft neon glow filter applied via
+   the nm-edges <g>. Active path (HOME → currentEndpoint) recolours to
+   cyan; the glow stays the same so all edges share the lattice glow. */
+.nm-edges { filter: url(#nm-glow-line); }
+.nm-edge {
+    stroke-width: 1.5;
+    stroke-dasharray: 6 4;
+    fill: none;
+    transition: stroke 0.2s;
+}
+.nm-edge-active { stroke-width: 1.8; }
 .nm-edge-hidden { stroke-dasharray: 3 4; opacity: 0.6; }
-/* Non-tree edges — multi-parent links the BFS spanning tree dropped.
-   Thinner, more muted, dashed so they read as "secondary connection". */
-.nm-edge-extra  { stroke: rgba(107,120,136,0.32); stroke-width: 1; stroke-dasharray: 2 3; }
+.nm-edge-extra  { stroke-width: 1.2; opacity: 0.7; }
 
 /* Now-solving prominent card — visual lift so the currently-running job
    stands out from the regular jobs list below it. */
 .aj-now-solving { border-left: 3px solid var(--os-color-success, #5dd57a); }
 
-/* Card body */
-.nm-card-bg     { fill: var(--os-color-bg-card); stroke: rgba(255,255,255,0.08); stroke-width: 1; }
-.nm-card-stripe { fill: var(--os-color-text-tertiary); }
-.nm-card-label  { font-size: 11px; fill: var(--os-color-text); font-weight: 500; pointer-events: none; }
-.nm-card-sub    { font-size: 8px; fill: var(--os-color-text-tertiary); letter-spacing: 0.4px; pointer-events: none; }
-.nm-status-dot  { fill: var(--os-color-text-tertiary); stroke: rgba(0,0,0,0.4); stroke-width: 0.5; }
+/* Node body, name, badges. Colour comes from inline fill/stroke (driven
+   by serverColor in the WS payload) so no per-faction CSS rules. */
+.nm-card { transition: stroke-width 0.15s; }
+.nm-name {
+    font-size: 9px;
+    font-weight: 700;
+    fill: #fff;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+    pointer-events: none;
+    paint-order: stroke;
+    stroke: rgba(0,0,0,0.55);
+    stroke-width: 0.6px;
+}
+.nm-node { cursor: default; }
+.nm-node:hover .nm-card { stroke-width: 1.6; }
+
+/* Corner brackets — 4 small "L" paths that sit just outside each
+   corner. opacity:0 by default; revealed on hover / selected via a
+   small outward translate that gives the cor3.gg cyber pop-out feel. */
+.nm-corner {
+    opacity: 0;
+    transition: opacity 0.18s, transform 0.18s;
+    pointer-events: none;
+}
+.nm-node:hover .nm-corner,
+.nm-node.nm-home .nm-corner,
+.nm-node.nm-active .nm-corner { opacity: 0.95; }
+.nm-node:hover .nm-corner-tl,
+.nm-node.nm-home .nm-corner-tl,
+.nm-node.nm-active .nm-corner-tl { transform: translate(-4px, -4px); }
+.nm-node:hover .nm-corner-tr,
+.nm-node.nm-home .nm-corner-tr,
+.nm-node.nm-active .nm-corner-tr { transform: translate(4px, -4px); }
+.nm-node:hover .nm-corner-bl,
+.nm-node.nm-home .nm-corner-bl,
+.nm-node.nm-active .nm-corner-bl { transform: translate(-4px, 4px); }
+.nm-node:hover .nm-corner-br,
+.nm-node.nm-home .nm-corner-br,
+.nm-node.nm-active .nm-corner-br { transform: translate(4px, 4px); }
+/* CSS transform on SVG children uses local coords — the path was
+   already authored relative to a corner so the translate just nudges
+   it outward. The base transform attribute pins each bracket to its
+   corner before CSS adds the outward nudge. */
+.nm-corner { transform-box: fill-box; }
 
 /* K/D corner badge */
 .nm-kd-bg       { fill: var(--os-color-danger); }
-.nm-kd-text     { font-size: 7px; fill: var(--os-color-text); font-weight: 700; text-anchor: middle; letter-spacing: 0.5px; pointer-events: none; }
+.nm-kd-text     { font-size: 6.5px; fill: #fff; font-weight: 700; text-anchor: middle; letter-spacing: 0.4px; pointer-events: none; }
 
 /* Jobs corner badge */
-.nm-badge-circle{ fill: var(--os-color-warning); stroke: var(--os-color-bg); stroke-width: 1.2; }
-.nm-badge-text  { font-size: 9px; fill: var(--os-color-text-black); font-weight: 700; pointer-events: none; }
+.nm-badge-circle{ fill: var(--os-color-warning); stroke: rgba(0,0,0,0.4); stroke-width: 0.8; }
+.nm-badge-text  { font-size: 8px; fill: var(--os-color-text-black); font-weight: 700; pointer-events: none; }
 
-/* ─── Node states ─────────────────────────────────────────────────────
-   Each state tints the status-dot (and the legend-dot inline) — the
-   stripe stays faction-coloured so users can read both axes at once. */
-.nm-state-home .nm-status-dot,
-.nm-legend-dot.nm-state-home  { fill: var(--os-color-primary); background: var(--os-color-primary); }
-.nm-state-ok   .nm-status-dot,
-.nm-legend-dot.nm-state-ok    { fill: var(--os-color-success); background: var(--os-color-success); }
-.nm-state-kd   .nm-status-dot,
-.nm-legend-dot.nm-state-kd    { fill: var(--os-color-danger);  background: var(--os-color-danger); }
-.nm-state-skip .nm-status-dot,
-.nm-legend-dot.nm-state-skip  { fill: var(--os-color-text-tertiary); background: var(--os-color-text-tertiary); }
-.nm-state-off  .nm-status-dot,
-.nm-legend-dot.nm-state-off   { fill: rgba(107,120,136,0.35); background: rgba(107,120,136,0.35); }
+/* NEW pill — small white tag for fresh servers (isNew flag). */
+.nm-new-bg      { fill: #fff; }
+.nm-new-text    { font-size: 6px; fill: #000; font-weight: 700; text-anchor: middle; letter-spacing: 0.3px; pointer-events: none; }
 
-/* Card-body emphasis per state. Home gets a subtle blue glow ring; K/D
-   gets a red border so the affected card stands out at any zoom level. */
-.nm-state-home .nm-card-bg { stroke: var(--os-color-primary); stroke-width: 1.5; }
-.nm-state-kd   .nm-card-bg { stroke: var(--os-color-danger);  stroke-width: 1.5; }
-.nm-state-skip .nm-card-label { text-decoration: line-through; opacity: 0.7; }
-.nm-state-off  .nm-card-bg    { opacity: 0.45; stroke-dasharray: 3 3; }
-.nm-state-off  .nm-card-label,
-.nm-state-off  .nm-card-sub   { opacity: 0.55; }
-
-/* ─── Faction tint for the left stripe ────────────────────────────── */
-.nm-faction-home    .nm-card-stripe { fill: var(--os-color-primary); }
-.nm-faction-d4rk    .nm-card-stripe { fill: rgba(167, 139, 250, 0.85); }
-.nm-faction-srm     .nm-card-stripe { fill: rgba(248, 113, 113, 0.7); }
-.nm-faction-cemit   .nm-card-stripe { fill: rgba(74, 222, 128, 0.7); }
-.nm-faction-uni     .nm-card-stripe { fill: rgba(255, 200, 87, 0.7); }
-.nm-faction-unknown .nm-card-stripe { fill: rgba(107,120,136,0.45); }
-
-.nm-node { cursor: default; }
-.nm-node:hover .nm-card-bg { stroke: var(--os-color-primary); stroke-width: 1.5; }
+/* State overlays. Most categorisation comes from inline serverColor;
+   states layered on top express *operator* state (skipped, market off,
+   K/D) rather than game-side categorisation. */
+.nm-state-kd .nm-card {
+    stroke: var(--os-color-danger) !important;
+    stroke-width: 1.8 !important;
+    stroke-dasharray: none;
+}
+.nm-state-skip .nm-name { text-decoration: line-through; opacity: 0.7; }
+.nm-state-off  .nm-card { stroke-dasharray: 3 3; }
+.nm-state-off  .nm-name { opacity: 0.55; }
 
 /* ─── State-history timeline ─────────────────────────────────────────── */
 .aj-timeline-list {
