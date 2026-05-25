@@ -24,8 +24,14 @@
     ];
 
     // Mode detection
+    // - `mode=popout`     → отдельное окно (открывается из popup.js)
+    // - `mode=side-panel` → Chrome side panel (см. manifest.json side_panel.default_path)
+    // - без параметра     → action popup (зафиксирован 380px в popup.css)
     const params = new URLSearchParams(location.search);
-    if (params.get('mode') === 'popout') document.body.classList.add('mode-popout');
+    const mode = params.get('mode');
+    if (mode === 'popout' || mode === 'side-panel') {
+        document.body.classList.add(`mode-${mode}`);
+    }
 
     // ─── Theme switcher ───────────────────────────────────────────────
     // Default cor3-style theme is the palette baked into popup.css's :root.

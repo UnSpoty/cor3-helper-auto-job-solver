@@ -17,7 +17,7 @@
     "scripting"
   ],
   "side_panel": {
-    "default_path": "src/ui/popup.html"
+    "default_path": "src/ui/popup.html?mode=side-panel"
   },
   "host_permissions": [
     "https://cor3.gg/*",
