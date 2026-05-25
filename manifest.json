@@ -7,7 +7,7 @@
       "strict_min_version": "128.0"
     }
   },
-  "version": "1.3.2",
+  "version": "1.4.0",
   "description": "Monitor markets, expeditions, daily ops, and get timer alerts for cor3.gg.",
   "permissions": [
     "storage",
@@ -82,6 +82,7 @@
         "src/modules/solvers/decrypt.js",
         "src/modules/solvers/daily-ops.js",
         "src/modules/solvers/ice-wall.js",
+        "src/modules/solvers/simple-decrypt.js",
         "src/entry/content-early.js"
       ],
       "run_at": "document_start",
@@ -125,6 +126,7 @@
         "src/modules/automation/auto-choose-decision.js",
         "src/modules/automation/auto-decrypt.js",
         "src/modules/automation/auto-ice-wall.js",
+        "src/modules/automation/auto-simple-decrypt.js",
         "src/modules/automation/daily-ops.js",
         "src/modules/automation/auto-jobs/action-cooldown.js",
         "src/modules/automation/auto-jobs/log-export.js",

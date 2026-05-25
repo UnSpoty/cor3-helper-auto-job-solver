@@ -37,6 +37,21 @@
             // which is what drives the dynamic minigame file allow-list and
             // the per-job-type pre-rejection in the Auto-Jobs planner.
             LOADOUT: 'COR3_WS_LOADOUT',
+            // Desktop OS-shell events. Emitted by the WS interceptor when
+            // cor3.gg's server pushes desktop:get.options / open.folder /
+            // open.file / update.file frames. Consumers:
+            //   • file-decryption flow listens to DESKTOP_FILE so it can
+            //     follow the latest fileId if the server regenerates it
+            //     after job.take (encrypted file is re-issued per user).
+            //   • file-decryption flow uses DESKTOP_FOLDER as the response
+            //     channel for its WS open.folder call (instead of having
+            //     to scrape the FolderApplication DOM).
+            //   • get.options is also used to cache the Downloads folder
+            //     id on window.__cor3DownloadFolderId so subsequent
+            //     open.folder calls don't need to re-resolve it.
+            DESKTOP_FOLDER: 'COR3_WS_DESKTOP_FOLDER',
+            DESKTOP_FILE: 'COR3_WS_DESKTOP_FILE',
+            DESKTOP_OPTIONS: 'COR3_WS_DESKTOP_OPTIONS',
             EXPEDITION_LAUNCHED: 'COR3_WS_EXPEDITION_LAUNCHED',
             EXPEDITION_LAUNCH_ERROR: 'COR3_WS_EXPEDITION_LAUNCH_ERROR',
             EXPEDITION_RETRY_LAUNCH: 'COR3_WS_EXPEDITION_RETRY_LAUNCH',
@@ -101,6 +116,12 @@
             // before the flow even gets to run.
             ICE_WALL_BUSY: 'COR3_ICE_WALL_BUSY',
             STOP_ICE_WALL: 'COR3_STOP_ICE_WALL',
+            // Simple Decrypt — one-click "Decrypt" minigame. MAIN watches
+            // for [data-sentry-component="SimpleDecryptApplication"], clicks
+            // the Decrypt button, then polls progress until the app
+            // disappears or the percentage label reads 100%.
+            START_SIMPLE_DECRYPT: 'COR3_START_SIMPLE_DECRYPT',
+            STOP_SIMPLE_DECRYPT: 'COR3_STOP_SIMPLE_DECRYPT',
         },
 
         // Job-flow dispatch (isolated → MAIN job-manager)
@@ -266,9 +287,10 @@
         // Auto-send merc
         AUTO_SEND_MERC: 'autoSendMerc',
 
-        // Auto-decrypt / Auto-ice-wall
+        // Auto-decrypt / Auto-ice-wall / Auto-simple-decrypt
         AUTO_DECRYPT_ENABLED: 'autoDecryptEnabled',
         AUTO_ICE_WALL_ENABLED: 'autoIceWallEnabled',
+        AUTO_SIMPLE_DECRYPT_ENABLED: 'autoSimpleDecryptEnabled',
 
         // Auto-refresh
         AUTO_REFRESH: 'autoRefresh',

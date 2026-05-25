@@ -1,8 +1,13 @@
 {
-  "version": "1.3.2",
+  "version": "1.4.0",
   "changes": [
-    "Added: in-popup notification when a newer extension version is published upstream.",
-    "Notice now includes a button that opens the GitHub repository.",
-    "Pulled from release.json on the main branch every ~6 hours."
+    "Added: Simple Decrypt minigame solver — auto-clicks the Decrypt button and waits for completion. Toggle via chrome.storage.sync.autoSimpleDecryptEnabled.",
+    "File Decryption flow: now recognises the Simple Decrypt minigame variant (previously timed out after 90s and could mark the job bugged after a few retries).",
+    "File Decryption flow: opens files via direct WebSocket (desktop.open.file) when the server-side fileId is known — bypasses the DOM lookup that fails on name mismatches or stale folder views.",
+    "File Decryption flow: tracks the file's live id during the run, so jobs survive the server re-issuing the encrypted file under the same name after take.",
+    "WebSocket interceptor: exposes desktop.get.options / open.folder / open.file RPCs and caches the Downloads folder id once per session.",
+    "UI: Overview, Expeditions and Auto Jobs sections now build their skeleton once and swap content atomically, eliminating the flicker that happened on every WebSocket update.",
+    "UI: Simple Decrypt toggle added next to Auto-decrypt and Auto-ICE-Wall in the Auto solvers card.",
+    "Update check: upstream release.json is now polled every 10 minutes (was every 6 hours) so new releases show up in the popup almost immediately."
   ]
 }

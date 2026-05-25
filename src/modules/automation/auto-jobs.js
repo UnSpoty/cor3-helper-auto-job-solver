@@ -80,6 +80,13 @@
     const IDLE_STATE = Object.freeze({
         status: 'idle', jobId: null, marketId: null, jobName: null,
         jobType: null, serverName: null, ips: null, fileCondition: null,
+        // fileId is the optional server-canonical id parsed out of the job's
+        // DecryptFile / DecryptDownloadedFile condition. When present the
+        // file-decryption flow opens the file via WS (desktop.open.file)
+        // instead of scraping the Downloads-folder DOM by name. Absent in
+        // pre-fileId queue entries (legacy persisted state) — flow falls
+        // back to the name-based path, so no migration required.
+        fileId: null,
         fileNames: null, logSeqs: null,
     });
 
@@ -96,7 +103,7 @@
     };
 
     const FLOW_DISPATCH = {
-        file_decryption:  (j) => ({ type: MSG.JOB.START_DECRYPTION,       jobId: j.jobId, marketId: j.marketId, fileCondition: j.fileCondition }),
+        file_decryption:  (j) => ({ type: MSG.JOB.START_DECRYPTION,       jobId: j.jobId, marketId: j.marketId, fileCondition: j.fileCondition, fileId: j.fileId || null }),
         ip_injection:     (j) => ({ type: MSG.JOB.START_IP_INJECTION,     jobId: j.jobId, marketId: j.marketId, serverName: j.serverName, ips: j.ips || [] }),
         ip_cleanup:       (j) => ({ type: MSG.JOB.START_IP_CLEANUP,       jobId: j.jobId, marketId: j.marketId, serverName: j.serverName, ips: j.ips || [] }),
         data_upload:      (j) => ({ type: MSG.JOB.START_UPLOAD,           jobId: j.jobId, marketId: j.marketId, serverName: j.serverName, fileCondition: j.fileCondition }),
@@ -460,7 +467,8 @@
     function clearJobFromState() {
         state.jobId = null; state.marketId = null; state.jobName = null;
         state.jobType = null; state.serverName = null; state.ips = null;
-        state.fileCondition = null; state.fileNames = null; state.logSeqs = null;
+        state.fileCondition = null; state.fileId = null;
+        state.fileNames = null; state.logSeqs = null;
     }
 
     // Plain status setter — saves + emits a transition. No recovery side
@@ -705,7 +713,16 @@
             case 'file_decryption': {
                 const fileName = pickDetail((d) => d.fileNames?.[0] || d.fileName || d.files?.[0]?.name);
                 if (!fileName) return { ok: false, reason: 'no fileName in conditions' };
-                return { ok: true, params: { fileCondition: fileName } };
+                // Pull the canonical fileId too if the server included it
+                // in the condition's `files[0].id`. Cor3.gg's File
+                // Decryption conditions ship as type=DecryptFile or
+                // DecryptDownloadedFile with details.files = [{id, name,
+                // …}]. Optional — flow falls back to the name-based DOM
+                // path if absent. Helps when the server re-issues the file
+                // under the same name (latestFileId), or when the rendered
+                // DOM name differs from the conditions' fileName.
+                const fileId = pickDetail((d) => d.files?.[0]?.id) || null;
+                return { ok: true, params: { fileCondition: fileName, fileId } };
             }
             case 'data_upload':
             case 'file_elimination':
@@ -949,7 +966,8 @@
 
         state = { ...IDLE_STATE, status: 'solving', jobId: job.jobId, marketId: job.marketId, jobName: job.jobName,
                   jobType: job.jobType, serverName: job.serverName || null, ips: job.ips || null,
-                  fileCondition: job.fileCondition || null, fileNames: job.fileNames || null, logSeqs: job.logSeqs || null };
+                  fileCondition: job.fileCondition || null, fileId: job.fileId || null,
+                  fileNames: job.fileNames || null, logSeqs: job.logSeqs || null };
         solvingStartedAt = Date.now();
         saveState();
         // Map jobType → specific FLOW_* state via orchestrator's helper so the
@@ -1018,6 +1036,7 @@
                 jobName: job.name || job.category || job.id,
                 serverName: r.params.serverName || null,
                 fileCondition: r.params.fileCondition || null,
+                fileId: r.params.fileId || null,
                 fileNames: r.params.fileNames || null,
                 ips: r.params.ips || null,
                 logSeqs: r.params.logSeqs || null,
@@ -1518,6 +1537,7 @@
                             jobName: sentJob.name || sentJob.id,
                             serverName: r.params.serverName || null,
                             fileCondition: r.params.fileCondition || null,
+                            fileId: r.params.fileId || null,
                             fileNames: r.params.fileNames || null,
                             ips: r.params.ips || null,
                             logSeqs: r.params.logSeqs || null,

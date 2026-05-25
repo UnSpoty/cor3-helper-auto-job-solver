@@ -211,6 +211,42 @@
             return;
         }
 
+        // desktop — OS-shell events. Three actions matter to us:
+        //   • get.options — full snapshot of folders/files; used to cache
+        //     the Downloads folder id once per session.
+        //   • open.folder — list of files in a folder; replaces the
+        //     scrape-FolderApplication-DOM path for file-decryption.
+        //   • open.file / update.file — emitted when a file's metadata
+        //     changes (notably when the server re-issues a fileId after
+        //     job.take). file-decryption uses this to follow the live id.
+        // Forward as MSG.WS.DESKTOP_* with the raw payload so consumers
+        // can inspect data + error themselves.
+        if (eventName === 'desktop' && payload && payload.event) {
+            const dAction = payload.event.action;
+            if (dAction === 'get.options') {
+                // Cache the Downloads folder id globally so flows / future
+                // open.folder calls don't have to re-resolve it. Safe to
+                // overwrite — the id is stable for the session.
+                if (payload.data && Array.isArray(payload.data.folders)) {
+                    const dl = payload.data.folders.find((f) => f && (f.name === 'Downloads'));
+                    if (dl && dl.id) root.__cor3DownloadFolderId = dl.id;
+                }
+                post(MSG.WS.DESKTOP_OPTIONS, { data: payload.data || null, error: payload.error || null });
+                return;
+            }
+            if (dAction === 'open.folder') {
+                post(MSG.WS.DESKTOP_FOLDER, { data: payload.data || null, error: payload.error || null });
+                return;
+            }
+            if (dAction === 'open.file' || dAction === 'update.file') {
+                post(MSG.WS.DESKTOP_FILE, { data: payload.data || null, error: payload.error || null });
+                return;
+            }
+            // Other desktop actions (move/rename/delete) — no consumers
+            // today, drop silently to avoid noise on the bus.
+            return;
+        }
+
         // expeditions: many actions
         if (eventName === 'expeditions') {
             const action = payload && payload.event && payload.event.action;
@@ -960,6 +996,27 @@
         if (!moduleConfigId) return false;
         // Same payload as software — server figures category from the id.
         return wsSendRpc('loadout', 'equip.hardware', { moduleConfigId }, { compress: true });
+    };
+
+    // ─── DESKTOP RPC ──────────────────────────────────────────────────
+    // Replacements for the legacy DOM-driven path in flows/file-decryption.
+    // All three reply via the existing `desktop` inbound dispatcher above
+    // (MSG.WS.DESKTOP_OPTIONS / DESKTOP_FOLDER / DESKTOP_FILE).
+    //
+    // source:'desktop' matches what cor3.gg's own UI emits when the user
+    // double-clicks a folder/file from the desktop shell. Server accepts
+    // calls without `source` too, but keeping parity avoids surprises if
+    // the server starts gating on it.
+    root.__cor3DesktopGetOptions = function () {
+        return wsSendRpc('desktop', 'get.options', {});
+    };
+    root.__cor3DesktopOpenFolder = function (folderId) {
+        if (!folderId) return false;
+        return wsSendRpc('desktop', 'open.folder', { folderId, source: 'desktop' });
+    };
+    root.__cor3DesktopOpenFile = function (fileId) {
+        if (!fileId) return false;
+        return wsSendRpc('desktop', 'open.file', { fileId, source: 'desktop' });
     };
 
     root.__cor3SellItem = function (itemId, quantity) {

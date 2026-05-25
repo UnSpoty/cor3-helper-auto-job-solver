@@ -101,8 +101,8 @@ chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
 // every SW wake.
 const UPDATE_CHECK_URL =
     'https://raw.githubusercontent.com/UnSpoty/cor3-helper-auto-job-solver/main/release.json';
-const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
-const UPDATE_CHECK_STALE_MS    = 6 * 60 * 60 * 1000;
+const UPDATE_CHECK_INTERVAL_MS = 10 * 60 * 1000;
+const UPDATE_CHECK_STALE_MS    = 10 * 60 * 1000;
 
 function _parseSemver(v) {
     if (!v) return null;

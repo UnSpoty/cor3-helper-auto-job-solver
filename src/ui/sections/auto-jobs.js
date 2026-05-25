@@ -245,7 +245,6 @@
     function escapeAttr(s) { return escape(s); }
 
     function renderSources(host, settings) {
-        host.innerHTML = '';
         // Wrapped in <details> so the user can collapse it. Defaults closed
         // — most users set their markets once and never touch this again.
         const wrap = document.createElement('details');
@@ -299,7 +298,9 @@
             });
         });
         wrap.appendChild(card);
-        host.appendChild(wrap);
+        // Atomic swap — no intermediate empty paint. See architecture
+        // comment near buildPanel().
+        host.replaceChildren(wrap);
     }
 
     // Per-job-type whitelist. Each toggle writes into
@@ -309,7 +310,6 @@
     // is hard-coded against UI_JOB_TYPE_KEYWORDS so adding a new job type
     // means touching this file once + the orchestrator's dispatch table.
     function renderJobTypes(host, settings) {
-        host.innerHTML = '';
         const wrap = document.createElement('details');
         wrap.className = 'collapsible';
         const enabledMap = settings.enabledJobTypes || {};
@@ -347,7 +347,7 @@
         });
         card.appendChild(list);
         wrap.appendChild(card);
-        host.appendChild(wrap);
+        host.replaceChildren(wrap);
     }
 
     // Renders the "Permanently skipped" subsection (replaces Phase-2 "Failed/
@@ -689,7 +689,6 @@
     }
 
     function renderServerPriorities(host, nmGraph, priorities) {
-        host.innerHTML = '';
         const wrap = document.createElement('details');
         wrap.className = 'collapsible';
         const skipCount = Object.values(priorities || {}).filter((v) => v === 'skip').length;
@@ -773,7 +772,7 @@
         }
         card.appendChild(list);
         wrap.appendChild(card);
-        host.appendChild(wrap);
+        host.replaceChildren(wrap);
     }
 
     // State-history timeline. Reads STORAGE_LOCAL.AJ_STATE_HISTORY
@@ -781,9 +780,10 @@
     // by default — most users don't need it but it's invaluable when
     // debugging "stuck" reports.
     function renderTimeline(host, history) {
-        host.innerHTML = '';
-        if (!Array.isArray(history) || history.length === 0) return;
-
+        if (!Array.isArray(history) || history.length === 0) {
+            host.replaceChildren();
+            return;
+        }
         const states = root.COR3.autoJobs && root.COR3.autoJobs.states;
         const labels = states && states.STATE_LABELS;
         const wrap = document.createElement('details');
@@ -810,7 +810,7 @@
                 `<span class="muted xs aj-timeline-ts">${escape(tsTxt)}</span> ${fromTxt}<span class="pill aj-state aj-state-${escape(stateClass)}">${escape(toLabel)}</span>${reasonTxt}`));
         }
         wrap.appendChild(card);
-        host.appendChild(wrap);
+        host.replaceChildren(wrap);
     }
 
     let liveNetworkMap = null;
