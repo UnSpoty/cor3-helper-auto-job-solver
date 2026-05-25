@@ -392,6 +392,13 @@
                 card.appendChild(label);
                 card.appendChild(ul);
             }
+            const btn = document.createElement('button');
+            btn.className = 'btn small vw-open-btn';
+            btn.textContent = i18n.t('version.extUpdateOpenBtn');
+            btn.addEventListener('click', () => {
+                chrome.tabs.create({ url: 'https://github.com/UnSpoty/cor3-helper-auto-job-solver' });
+            });
+            card.appendChild(btn);
             versionWarningEl.appendChild(card);
         }
 

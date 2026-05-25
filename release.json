@@ -2,6 +2,7 @@
   "version": "1.3.2",
   "changes": [
     "Added: in-popup notification when a newer extension version is published upstream.",
+    "Notice now includes a button that opens the GitHub repository.",
     "Pulled from release.json on the main branch every ~6 hours."
   ]
 }

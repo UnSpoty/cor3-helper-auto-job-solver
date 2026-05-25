@@ -133,6 +133,7 @@ a { color: var(--os-color-primary-hex); }
     color: var(--os-color-text-grey);
 }
 .version-warning .vw-changes li { margin-top: 1px; }
+.version-warning .vw-open-btn { margin-top: 8px; }
 
 /* ─── No-tab placeholder (shown when no cor3.gg tab is open) ──────── */
 .no-tab {
