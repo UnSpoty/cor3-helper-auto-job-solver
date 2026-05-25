@@ -4,8 +4,8 @@ Chrome MV3 / Firefox extension that augments [cor3.gg](https://cor3.gg) with
 markets, expeditions, alarms, minigame solvers and a full auto-jobs pipeline.
 
 **Compatibility:** cor3.gg `v1.19.43` and newer. Communicates with the game
-over the site's Socket.IO connection using its current MessagePack-encoded
-binary wire format (the May 2026 protocol shift).
+over the site's Socket.IO connection using its MessagePack-encoded binary
+wire format.
 
 ## Features
 
@@ -46,7 +46,7 @@ binary wire format (the May 2026 protocol shift).
 
 ### Minigame solvers
 - **Decrypt** — solves the config-hack minimax minigame (arrow-key + click
-  submit layer, ported verbatim from the legacy implementation).
+  submit layer).
 - **Ice Wall** — solves SAI's Porter-lite r4 break minigame: parses cells in
   grid coords, runs positive / elimination matching against the target
   preview, commits when a unique candidate survives, retries on missed
@@ -106,8 +106,6 @@ cor3-helper/
 │   ├── debugging.md       ← chrome-devtools-mcp runbook + common issues
 │   ├── glossary.md        ← K/D, SAI, Network Map terminology + DOM selectors
 │   └── module-spec.md     ← Module contract + how to add a new one
-├── plans/
-│   └── todo.md            ← cross-session todo / next-session priorities
 └── src/
     ├── core/              ← Bus, Store, Logger, Module, Registry, Settings
     ├── shared/            ← constants, dom helpers, ws-frames (msgpack codec), errors

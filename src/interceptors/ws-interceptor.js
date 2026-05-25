@@ -1,11 +1,9 @@
-// src/interceptors/ws-interceptor.js
-// MAIN-world WebSocket interceptor. Replaces the legacy content-early.js
-// WS handling. Responsibilities:
+// MAIN-world WebSocket interceptor. Responsibilities:
 //   • Wrap window.WebSocket so all cor3/corie connections are tracked.
 //   • Parse Socket.IO v4 frames via COR3.wsFrames.
 //   • Translate inbound game events to typed Bus messages (MSG.WS.*).
-//   • Provide all window.__cor3* outbound helpers used by legacy
-//     job-manager.js / content.js / decrypt-solver.js / daily-hack-solver.js.
+//   • Expose window.__cor3* outbound helpers consumed by the isolated
+//     world (job manager, solvers, UI).
 // IIFE — no Module class here (no chrome.storage in MAIN world).
 
 (function () {
@@ -82,11 +80,11 @@
                 ws.__cor3Url = url;
                 trackedSockets.push(ws);
 
-                // Ensure binary frames arrive as ArrayBuffer (cor3.gg uses
-                // msgpack-encoded binary frames since May 2026). socket.io
-                // itself sets this on the underlying transport, but if our
-                // Proxy intercepts an instance before the lib assigns it
-                // we'd otherwise get Blobs and decode would fail.
+                // Ensure binary frames arrive as ArrayBuffer (cor3.gg
+                // uses msgpack-encoded binary frames). socket.io itself
+                // sets this on the underlying transport, but if our Proxy
+                // intercepts an instance before the lib assigns it we'd
+                // otherwise get Blobs and decode would fail.
                 try { ws.binaryType = 'arraybuffer'; } catch (_) {}
 
                 ws.addEventListener('message', (event) => {
@@ -151,25 +149,21 @@
     window.WebSocket = WebSocketProxy;
 
     // ──────────────────────────────────────────────────────────────────────
-    // Inbound message dispatch
+    // Inbound message dispatch.
     //
-    // Cor3.gg's May-2026 protocol shift: every Socket.IO-level message is
-    // now an ArrayBuffer carrying msgpack {type, data, nsp}. Engine.io
-    // control frames ("0{sid:...}", "2"/"3" ping/pong) are still text.
+    // Every Socket.IO-level message is an ArrayBuffer carrying msgpack
+    // {type, data, nsp}. Engine.io control frames ("0{sid:...}", "2"/"3"
+    // ping/pong) are text.
     //
-    // handleWsText  — text path, only engine.io controls in practice.
-    // handleWsBinary — the hot path: msgpack-decode, then funnel into
-    //                  dispatchEvent which is the same switch the old
-    //                  text parser fed.
+    // handleWsText  — engine.io controls (and a defensive JSON-text path
+    //                 in case cor3.gg ever falls back).
+    // handleWsBinary — hot path: msgpack-decode, then funnel into
+    //                  dispatchEvent.
     // ──────────────────────────────────────────────────────────────────────
     function handleWsText(rawData, _socket) {
-        // engine.io control frames carry no Socket.IO payload — skip.
         if (!rawData || rawData.length === 0) return;
         const engineType = rawData[0];
         if (engineType !== '4') return;
-        // If cor3.gg ever falls back to JSON-text Socket.IO packets, the
-        // legacy parser still works. Production path is binary; this is
-        // defensive code, not the hot path.
         const frame = wsFrames.parseFrame(rawData);
         if (!frame || frame.eventName === null) return;
         dispatchEvent(frame.eventName, frame.payload);
@@ -256,7 +250,6 @@
 
             if (action === 'collect.all') {
                 if (payload.error && payload.error.message === 'stash.error.insufficient_capacity') {
-                    // Legacy content.js listens on COR3_WS_STASH_FULL; not in MSG enum, send raw
                     post('COR3_WS_STASH_FULL', { error: payload.error.message, requestId: payload.requestId });
                 } else {
                     post(MSG.WS.COLLECTED_ALL, { data: payload.data });
@@ -290,10 +283,8 @@
             }
 
             if (action === 'get.archived') {
-                // Archived expeditions: re-wired May 2026 to a real data module.
-                // The interceptor unwraps data.expeditions when present so the
-                // module can subscribe with the same envelope shape as
-                // MSG.WS.EXPEDITIONS — keeps consumers symmetrical.
+                // Unwrap data.expeditions when present so the module can
+                // subscribe with the same envelope shape as MSG.WS.EXPEDITIONS.
                 const archived = (payload.data && Array.isArray(payload.data.expeditions))
                     ? payload.data.expeditions
                     : (Array.isArray(payload.data) ? payload.data : []);
@@ -417,10 +408,9 @@
         // network-map: set.endpoint result. We do TWO things here:
         //   1. Correct currentEndpoint from data.servers — server returns the
         //      full server list with isEndpoint flags, the truthful source.
-        //   2. Surface no-path-to-server failures (used by solver server-
-        //      reachability checks; we kept the legacy DARK_MARKET_UNREACHABLE
-        //      post though the canonical unreachable detection now lives on
-        //      the market.get.jobs response (market-not-reachable error)).
+        //   2. Surface no-path-to-server failures. (Canonical unreachable
+        //      detection lives on the market.get.jobs response
+        //      `market-not-reachable` error; this is a secondary signal.)
         if (eventName === 'network-map' && payload && payload.event) {
             if (payload.event.action === 'set.endpoint') {
                 if (payload.data && Array.isArray(payload.data.servers)) {
@@ -437,7 +427,6 @@
                     root.__serverPathFailed = true;
                     setTimeout(() => { root.__serverPathFailed = false; }, 5000);
                 } else {
-                    // Legacy event for endpoint result; keep raw type
                     post('COR3_WS_ENDPOINT_RESULT', { success: !payload.error, data: payload.data });
                 }
             }
@@ -481,8 +470,8 @@
             }
         }
 
-        // BFS returning depth + parent map. Parents let consumers (Phase 2
-        // reachability planner, popup Network Map UI) reconstruct the
+        // BFS returning depth + parent map. Parents let consumers
+        // (reachability planner, popup Network Map UI) reconstruct the
         // HOME → server path one hop at a time without re-doing the BFS.
         function bfsFrom(rootId, adj) {
             const depths = {};
@@ -562,12 +551,12 @@
             // Timestamp so UI can show last-refresh time (helps confirm the
             // Refresh button actually fired even when topology didn't change).
             updatedAt: Date.now(),
-            // Full undirected edge list. Why we ship the raw edges instead of
-            // letting consumers rebuild them: parentName only captures the
-            // BFS *tree* — every server gets one incoming edge. Cor3.gg's
-            // post-May-2026 map has multi-parent servers (a node reachable
-            // via two different upstream hops). Without the raw list, the
-            // popup can only render the spanning tree.
+            // Full undirected edge list. Why we ship the raw edges instead
+            // of letting consumers rebuild them: parentName only captures
+            // the BFS *tree* — every server gets one incoming edge. The
+            // map has multi-parent servers (a node reachable via two
+            // different upstream hops). Without the raw list, the popup
+            // can only render the spanning tree.
             connections: namedConnections,
             // Per-market BFS depths: { [marketId]: { [serverName]: depth } }.
             // Auto-jobs priority sort consumes this so jobs running on the
@@ -624,9 +613,6 @@
     // wsSend + room management
     // ──────────────────────────────────────────────────────────────────────
     function humanDelay() { return 400 + Math.floor(Math.random() * 500); }
-    // Local delay primitive — also used by the room-join chain further
-    // below (originally declared there). Hoisted up here so the paced
-    // wsSend can reference it without a TDZ surprise.
     const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
     // ─── Outbound rate limiter ────────────────────────────────────────
@@ -695,10 +681,9 @@
         return true;
     }
 
-    // ─── Binary frame helpers (May-2026 msgpack protocol) ─────────────
-    // All RPC / room-management goes through these. wsSend at the bottom
-    // accepts either a string (legacy / engine.io control) or an
-    // ArrayBuffer (the actual Socket.IO frames we now emit).
+    // ─── Binary frame helpers (msgpack protocol) ──────────────────────
+    // All RPC / room-management goes through these. wsSend accepts a
+    // string (engine.io control) or an ArrayBuffer (Socket.IO frames).
     function wsSendRpc(name, action, data, opts) {
         const payload = {
             event: { name, action },
@@ -753,8 +738,7 @@
     }
 
     // ──────────────────────────────────────────────────────────────────────
-    // Outbound helpers — preserved as window.__cor3* for legacy job-manager.js,
-    // legacy content.js, decrypt/daily-hack solvers.
+    // Outbound helpers — exposed on window.__cor3* for isolated-world callers.
     // ──────────────────────────────────────────────────────────────────────
     root.__cor3PendingMercConfigures = [];
     root.__cor3CachedMercIds = null;
@@ -871,13 +855,9 @@
 
     // market.job.complete behaves like job.take / job.dismiss: currentEndpoint
     // must match the market's home server. Sending it from HOME against a
-    // DARK/SRM job comes back as {error:"market-not-reachable"} — exactly the
-    // post-flow rejection cascade seen in the 2026-05-22 auto-jobs debug dump,
-    // where IP Injection and Data Download both finished their work, then the
-    // complete RPC was rejected because the endpoint was still HOME after the
-    // SAI dance. HOME-market jobs send directly; remote markets tail-queue
-    // behind inflightRemoteFetch with a set.endpoint → complete → revert dance,
-    // mirroring __cor3DismissJob.
+    // DARK/SRM job comes back as {error:"market-not-reachable"}. HOME-market
+    // jobs send directly; remote markets tail-queue behind inflightRemoteFetch
+    // with a set.endpoint → complete → revert dance, mirroring __cor3DismissJob.
     root.__cor3CompleteJob = function (jobId, marketId) {
         const sendComplete = () => wsSendRpc('market', 'job.complete', { marketId, jobId });
         const cfg = MARKET_BY_ID[marketId];
@@ -1043,8 +1023,8 @@
     }
 
     // Decode an outbound event payload to { name, action, data } regardless
-    // of wire format (legacy text "42[...]" or current msgpack binary).
-    // Returns null if not a recognisable event frame. Cor3.gg's own outbound
+    // of wire format (text "42[...]" or msgpack binary).
+    // Returns null if not a recognisable event frame. cor3.gg's own outbound
     // (e.g. when the user opens Market or clicks a Network Map server) goes
     // through the same shape, so capturing here keeps us in sync with the
     // user's manual actions.
@@ -1111,15 +1091,13 @@
     };
 
     // Ensure currentEndpoint is HOME before something endpoint-sensitive
-    // runs (server-connect's first click on a HOME-network server tile, in
-    // particular). Tail-queues onto BOTH the accept chain and the remote-
-    // market-fetch chain so any in-flight set.endpoint(remote)→get.jobs→
-    // revert dance finishes before we touch the endpoint. Skipping the
-    // remote-fetch chain was the root cause of a 2026-05-10 incident:
-    // accept-batch-done fired a remote market refresh that overlapped the
-    // first flow's connect(), cor3.gg saw an endpoint mid-flap, and the
-    // Connect button bounced back ("rejected") within ~600 ms — far too
-    // fast for a real path-rejection.
+    // runs (server-connect's first click on a HOME-network server tile,
+    // in particular). Tail-queues onto BOTH the accept chain and the
+    // remote-market-fetch chain so any in-flight
+    // set.endpoint(remote)→get.jobs→revert dance finishes before we touch
+    // the endpoint — otherwise an accept-batch-done that fires a remote
+    // market refresh can overlap the first flow's connect(), the server
+    // sees an endpoint mid-flap, and the Connect button bounces back.
     //
     // Returns a promise that resolves once endpoint is HOME (or 5 s
     // elapsed, whichever first — best-effort).
@@ -1164,8 +1142,7 @@
             // server-connect's click on RM7-E1SCP needs HOME endpoint to
             // resolve a path; if we set.endpoint(DARK_SERVER) underneath
             // it the click "succeeds" cosmetically but SAI never opens
-            // (verified by a session log: Log Deletion bugged for 2h
-            // after a 16-s timeout because the dance ran during connect).
+            // and the job bugs out.
             // Cap the wait at 60 s — long enough for a normal flow to
             // finish, short enough to not leak the dance forever if
             // someone forgets to clear the lock.
@@ -1221,7 +1198,7 @@
         if (initialFetchDone) return;
         initialFetchDone = true;
         console.log('[COR3] Running initial data fetch');
-        post('COR3_FETCH_DAILY_OPS', null); // legacy daily-ops fetch trigger
+        post('COR3_FETCH_DAILY_OPS', null);
         root.__cor3RequestNetworkMap();      // build the depth graph (no UI side effects)
         root.__cor3RequestMarket();
         // Dark and SRM both go through inflightRemoteFetch which serialises
@@ -1284,8 +1261,7 @@
     }, 60000);
 
     // ──────────────────────────────────────────────────────────────────────
-    // Listen for game-control postMessages from isolated content script
-    // (legacy content.js + future modules use these to drive WS sends).
+    // Listen for game-control postMessages from isolated-world modules.
     // ──────────────────────────────────────────────────────────────────────
     const handlers = {
         [MSG.GAME.REQUEST_EXPEDITIONS]: () => root.__cor3RequestExpeditions(),
@@ -1339,5 +1315,5 @@
         Bus.window.on(type, fn);
     }
 
-    console.log('[COR3] WebSocket interceptor installed (modular)');
+    console.log('[COR3] WebSocket interceptor installed');
 })();

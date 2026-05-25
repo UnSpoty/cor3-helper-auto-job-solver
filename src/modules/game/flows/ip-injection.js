@@ -1,4 +1,3 @@
-// src/modules/game/flows/ip-injection.js
 // Job type: ip_injection. Adds a list of IPs into the SAI Transit tab.
 
 (function () {
@@ -8,18 +7,16 @@
     const flows = root.COR3.game.flows;
     const MSG = C.MSG;
 
-    // ── debug instrumentation (May 2026) ──────────────────────────────────
-    // Community-reported bug: the game server occasionally drops "generated"
-    // IPs from a target server, but the server-side completion check still
-    // expects them — so even after injecting every IP from the job payload
-    // we can't submit. To diagnose the two bugged jobs in the wild, we log:
+    // ── debug instrumentation ─────────────────────────────────────────────
+    // The game server occasionally drops "generated" IPs from a target
+    // server while the server-side completion check still expects them.
+    // To diagnose, we log:
     //   - target IPs from the job
     //   - White List snapshot BEFORE add (already-present / missing / extra)
     //   - per-IP add result (ok / duplicate-error / not-confirmed)
     //   - White List snapshot AFTER add (still-missing / extra)
-    // Behaviour of the flow is unchanged — sendDone still fires; the
-    // orchestrator will buggify as today, but the log will show which IPs
-    // the server has vs. which it expects.
+    // Flow behaviour is unchanged — sendDone still fires; the log shows
+    // which IPs the server has vs. which it expects.
 
     const IP_RE = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
 

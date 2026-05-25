@@ -1,13 +1,10 @@
-// src/modules/solvers/decrypt.js
 // Auto-solver for the cor3.gg "decrypt" config-hack minigame.
 // Watch loop polls for [data-sentry-component="ConfigHackApplication"];
 // when present, runs a Knuth-style minimax over the parameter combinations
 // using "Mismatched N" feedback from the puzzle log.
 //
-// May 2026 rewrite: the puzzle UI replaced the legacy text input with
-// arrow-key-driven ParameterCells. ↑ ↓ cycle a cell's value, ← → switch
-// focused cell, Enter submits. The minimax algorithm itself is preserved
-// verbatim from the legacy solver — only the submit + parse layer changed.
+// Submit layer: the puzzle UI uses arrow-key-driven ParameterCells. ↑ ↓
+// cycle a cell's value, ← → switch focused cell, click SendButton submits.
 // Lives in MAIN world. Logger forwards via Bus.
 
 (function () {

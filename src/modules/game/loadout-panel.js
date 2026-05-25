@@ -48,7 +48,6 @@
     const PANEL_ID  = 'cor3-loadout-panel-body';
     const DOCK_SEL  = 'div.go2090060298';
     // Local-storage key cor3.gg uses for the client-side POWER toggle.
-    // See plans/loadout-recon.md → "POWER toggle — НЕ WS".
     const LS_POWER_KEY = 'loadout-powered';
     // Our own setting: auto-power-off when opening the panel and
     // auto-restore on close. Defaults to ON.

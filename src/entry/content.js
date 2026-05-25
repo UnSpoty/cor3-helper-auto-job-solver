@@ -1,4 +1,3 @@
-// src/entry/content.js
 // Isolated-world entry point. Loaded by manifest content_scripts after
 // constants/store/logger/module/settings/registry/bus/errors/dom AND after
 // every src/modules/data/*.js (each one auto-registers on load).
@@ -6,8 +5,6 @@
 //   1. Boot the Registry — runs init() for every module, then start() for
 //      every module flagged enabled in settings (default: all enabled).
 //   2. Re-boot when settings change so master switches take effect live.
-// Legacy content.js continues to load AFTER this — both run in parallel
-// during the migration; storage writes are idempotent.
 
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;

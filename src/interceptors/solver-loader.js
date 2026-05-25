@@ -1,7 +1,6 @@
-// src/interceptors/solver-loader.js
-// Helper used by isolated-world modules (Phase 3+) to inject MAIN-world
-// scripts via <script src="chrome-extension://…"> tags.
-// Lives in MAIN world too so it can also self-load helpers if needed.
+// Helper used by isolated-world modules to inject MAIN-world scripts via
+// <script src="chrome-extension://…"> tags.
+// Lives in MAIN world too so it can self-load helpers if needed.
 // Registers into globalThis.COR3.solverLoader.
 
 (function () {

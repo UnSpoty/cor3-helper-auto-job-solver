@@ -21,7 +21,7 @@ modules (auto-jobs, auto-send-merc).
 |---|---|---|---|
 | `WS.EXPEDITIONS` | `COR3_WS_EXPEDITIONS` | `{ expeditions: Expedition[] }` | full expedition list. Empty array used to clear pending decisions on launch. |
 | `WS.DECISIONS` | `COR3_WS_DECISIONS` | `{ decisions: Decision[] }` | derived from `expeditions[].messages[].decisionOptions`. |
-| `WS.MARKET` | `COR3_WS_MARKET` | `{ market: { marketId, jobs: Job[], recentJobs: Job[], nextJobsResetAt } }` | home market only (id `019d3ea4-…-8f7c85841134`). Built from the response to `market.get.jobs` (the May 2026 split — see below). |
+| `WS.MARKET` | `COR3_WS_MARKET` | `{ market: { marketId, jobs: Job[], recentJobs: Job[], nextJobsResetAt } }` | home market only (id `019d3ea4-…-8f7c85841134`). Built from the response to `market.get.jobs`. |
 | `WS.DARK_MARKET` | `COR3_WS_DARK_MARKET` | `{ market: same shape }` | dark market (id `019d3ea4-…-908ba9194aa0`). |
 | `WS.DARK_MARKET_UNREACHABLE` | `COR3_WS_DARK_MARKET_UNREACHABLE` | `{ error, serverId }` | emitted when `network-map.set.endpoint` returns `no-path-to-server`. Sets `darkMarketAvailable=false`; also sets `window.__serverPathFailed = Date.now()` for connect-step fast-fail. |
 | `WS.STASH` | `COR3_WS_STASH` | `{ stash: { items, currentUsage, maxCapacity } }` | inventory snapshot. |
@@ -36,7 +36,7 @@ modules (auto-jobs, auto-send-merc).
 | `WS.EXPEDITION_LAUNCH_ERROR` | `COR3_WS_EXPEDITION_LAUNCH_ERROR` | `{ error: 'Maximum 1 active expedition allowed', retryAfter: 120000 }` | auto-send schedules a relaunch via `WS.EXPEDITION_RETRY_LAUNCH`. |
 | `WS.EXPEDITION_RETRY_LAUNCH` | `COR3_WS_EXPEDITION_RETRY_LAUNCH` | `{ retryData: requestId }` | fired by the WS interceptor 2 min after a launch error; auto-send-merc relays it as `COR3_RELAUNCH_EXPEDITION`. |
 | `WS.INSUFFICIENT_CREDITS` | `COR3_WS_INSUFFICIENT_CREDITS` | `{ error: 'insufficient-credits' }` | auto-send disables itself with `disabledReason: 'insufficient_credits'`. |
-| `WS.LOG` | `COR3_WS_LOG` | `{ direction: 'sent'\|'received', message: string }` | **deprecated** — was the legacy WS debug log; not currently consumed (Logger replaces it). Emitted by interceptor for back-compat; safe to remove later. |
+| `WS.LOG` | `COR3_WS_LOG` | `{ direction: 'sent'\|'received', message: string }` | **deprecated** — superseded by Logger; not currently consumed. Safe to remove later. |
 
 ### Off-enum WS-related types still used
 
@@ -110,7 +110,7 @@ Direction: bidirectional. `START_*` and `STOP_*` are isolated → MAIN; `DAILY_H
 | `SOLVER.START_DECRYPT` | `COR3_START_DECRYPT_SOLVER` | `null` | starts the watcher in `solver-decrypt` (config-hack minigame). Idempotent. |
 | `SOLVER.STOP_DECRYPT` | `COR3_STOP_DECRYPT_SOLVER` | `null` | sets `window.__solverAbort=true`. |
 | `SOLVER.START_DAILY_OPS` | `COR3_START_DAILY_OPS` | `null` | one-shot trigger for `solver-daily-ops` (MAIN). Posted by `automation/daily-ops.js` when the popup sends `solveDailyOps`. The solver navigates Game Center → Daily Ops → Start, detects puzzle type (signal vs log), and submits. |
-| `SOLVER.DAILY_OPS_LOG` | `COR3_DAILY_OPS_LOG` | `{ message }` | progress + result lines from `solver-daily-ops` (`starting…`, `signal puzzle`, `solved: 2534627653 (binary)`, `no server feedback (WS hiccup?)`, …). `automation/daily-ops.js` mirrors them into `STORAGE_LOCAL.DAILY_HACK_LOG` (legacy key name kept for storage compat) so the Overview card can show the last line; success messages also retrigger a REST refetch so the streak/claimed badge flips without a Refresh click. |
+| `SOLVER.DAILY_OPS_LOG` | `COR3_DAILY_OPS_LOG` | `{ message }` | progress + result lines from `solver-daily-ops`. Mirrored into `STORAGE_LOCAL.DAILY_HACK_LOG` (storage key name preserved) so the Overview card can show the last line; success messages also retrigger a REST refetch so the streak/claimed badge flips without a Refresh click. |
 | `SOLVER.START_ICE_WALL` | `COR3_START_ICE_WALL` | `null` | starts the watcher in `solver-ice-wall` (Porter-lite r4 minigame opened from SAI). |
 | `SOLVER.STOP_ICE_WALL` | `COR3_STOP_ICE_WALL` | `null` | sets `window.__iceWallAbort=true`. |
 
@@ -154,7 +154,7 @@ or both.
 - `COR3_JOB_MANAGER_READY` — MAIN → isolated, signals that flow modules booted; auto-jobs uses this to drain queue / resume mid-state.
 - `COR3_REQ_DUMP` — debug: F12 `__cor3Dump()` posts this from MAIN; isolated content used to dump state but the new architecture has no handler yet — adding one is a TODO.
 - `COR3_FETCH_DAILY_OPS` — MAIN → isolated, fired by interceptor on WS open; daily-ops module fetches `svc-corie.cor3.gg/api/user-daily-claim`.
-- `COR3_LOCK_UI` / `COR3_UNLOCK_UI` — legacy aliases for AUTOJOBS_ACTIVE_CHANGED; flows-core listens for back-compat.
+- `COR3_LOCK_UI` / `COR3_UNLOCK_UI` — aliases for AUTOJOBS_ACTIVE_CHANGED; flows-core listens.
 - `COR3_LOG_REMOTE` — MAIN → isolated, log-bridge envelope. `{ moduleId, entry: {ts, level, msg, ctx} }`. Logger ingests it.
 - `COR3_ACCEPT_JOB_SEND_FAILED` — MAIN → isolated, fired when `wsSend` returned false during accept. Auto-jobs drops the slot.
 
@@ -168,14 +168,14 @@ or both.
 |---|---|---|---|
 | `expeditionsData` | `Expedition[]` | `data/expeditions.js` | + `expeditionsDataUpdatedAt: number`. |
 | `expeditionDecisions` | `Decision[]` | `data/decisions.js` | full replace on every WS push (server sends empty array on launch). |
-| `marketData` | `{marketId, jobs, recentJobs, nextJobsResetAt}` | `data/market.js` | + `marketDataUpdatedAt`. **Flat shape** — the legacy `data.market.{...}` wrapper is gone since cor3.gg split the API into `get.options` (metadata) and `get.jobs` (board); we only fetch `get.jobs`. |
+| `marketData` | `{marketId, jobs, recentJobs, nextJobsResetAt}` | `data/market.js` | + `marketDataUpdatedAt`. Flat shape — we fetch only `get.jobs` (not `get.options`). |
 | `darkMarketData` | same | `data/dark-market.js` | + `darkMarketDataUpdatedAt`. |
 | `darkMarketAvailable` | `boolean` | `data/dark-market.js` | flips false on `WS.DARK_MARKET_UNREACHABLE`. |
 | `stashData` | `{items, currentUsage, maxCapacity}` | `data/stash.js` | + `stashDataUpdatedAt`. |
 | `mercenariesData` | `Merc[] \| {mercenaries: Merc[]}` | `data/mercenaries.js` | + `mercenariesUpdatedAt`. |
 | `mercConfigData` | `{[mercId]: {totalCost, riskScore, ...}}` | `data/merc-config.js` | merged per-merc; + `mercConfigUpdatedAt`. |
 | `expeditionConfigData` | `{locations: [...]}` | `data/expedition-config.js` | + `expeditionConfigUpdatedAt`. |
-| `dailyOpsData` | `{nextTaskTime, currentStreak, hasClaimedToday, difficulty, streakBonus, currentGameId}` | `automation/daily-ops.js` | + `dailyOpsUpdatedAt`. Field name is `currentStreak`, not `streak` — the legacy UI bug ("streak 0" forever) was reading the wrong key. |
+| `dailyOpsData` | `{nextTaskTime, currentStreak, hasClaimedToday, difficulty, streakBonus, currentGameId}` | `automation/daily-ops.js` | + `dailyOpsUpdatedAt`. Field name is `currentStreak`, not `streak`. |
 | `dailyOpsError` | `'token_expired' \| null` | `automation/daily-ops.js` | + `dailyOpsErrorUpdatedAt`. |
 | `dailyRewardsData` | `Reward[]` | `data/auth.js` (via `MSG.AUTH.DAILY_REWARDS`) | streak bonus calc. |
 
@@ -206,7 +206,7 @@ or both.
 |---|---|---|
 | `autoJobsState` | `{status, jobId, marketId, jobName, jobType, serverName, ips, fileCondition, fileNames, logSeqs, updatedAt}` | `auto-jobs.js` |
 | `autoJobsQueue` | resolved-job descriptors | `auto-jobs.js` |
-| `autoJobsLog` | `[{ts, msg, level}]` 100-entry ring | `auto-jobs.js` (legacy log; centralized Logger is canonical) |
+| `autoJobsLog` | `[{ts, msg, level}]` 100-entry ring | `auto-jobs.js` (centralized Logger is canonical) |
 | `buggedJobIds` | `{[jobId]: {ts, name}}` 2 h TTL | `auto-jobs.js` |
 | `autoJobsPendingConfirm` | confirm payload from solver, with `ts` | `auto-jobs.js` (debug mode) |
 | `autoJobsConfirmResult` | `{requestTs, approved}` | popup writes it |
@@ -215,7 +215,7 @@ or both.
 
 | Key | Shape | Owner |
 |---|---|---|
-| `dailyHackLog` | string | `automation/daily-ops.js` (relays `SOLVER.DAILY_OPS_LOG`). Legacy key name; keeping the field stable so previously-stored values aren't orphaned. |
+| `dailyHackLog` | string | `automation/daily-ops.js` (relays `SOLVER.DAILY_OPS_LOG`). Key name preserved for storage compatibility. |
 | `dailyHackLogUpdatedAt` | number | same |
 
 ### Logger / errors
@@ -231,7 +231,7 @@ or both.
 
 | Key | Shape | Default | Owner |
 |---|---|---|---|
-| `selectedTheme` | string | `'default'` | (legacy; new UI uses single theme) |
+| `selectedTheme` | string | `'default'` | (unused; UI ships a single theme) |
 | `alarms` | `Alarm[]` | `[]` | popup `alarms` section + `automation/timers.js` |
 | `autoJobsSettings` | `{enabled, debugMode, markets:{home,dark}, enabledJobTypes}` | `{enabled:false, debugMode:false, markets:{home:true,dark:true}, enabledJobTypes:{}}` | `auto-jobs.js` |
 | `serverPriorities` | `{[serverName]: number}` | `{}` | `auto-jobs.js` (used by queue sort; UI for editing not built yet) |
@@ -244,8 +244,8 @@ or both.
 | `disableSystemMessages` | bool | `false` | `appearance/system-messages.js` |
 | `disableBackground` | bool | `false` | `appearance/background.js` |
 | `disableNetworkFog` | bool | `false` | `appearance/network-fog.js` |
-| `disableMapFxEnabled` | bool | `false` | `appearance/map-fx.js` (note: legacy key with `Enabled` suffix) |
-| `pinnedTimers` | (legacy, unused in new UI) | `[]` | — |
+| `disableMapFxEnabled` | bool | `false` | `appearance/map-fx.js` (key has an `Enabled` suffix for historical reasons) |
+| `pinnedTimers` | (unused) | `[]` | — |
 | `modules` | `{[moduleId]: {enabled, logsEnabled}}` | `{}` | Module Manager UI + `core/settings.js` |
 
 ---
@@ -269,7 +269,7 @@ START_*_FLOW message.
 | `FLOW.DECRYPT_EXTRACT` | `decrypt_extract` | `JOB.START_DECRYPT_EXTRACT` | `{serverName, fileCondition}` |
 
 > **Note:** the `JOB_TYPE_KEYWORDS` table in `auto-jobs.js` includes
-> `data_upload` (legacy keyword that maps to file-upload flow). Adding a
+> `data_upload` as an alias that maps to the file-upload flow. Adding a
 > new flow needs entries in three places: `JOB_TYPE_KEYWORDS`,
 > `resolveJobParams` switch, and `FLOW_DISPATCH` table.
 
@@ -298,7 +298,7 @@ Used by Module Manager UI for grouping. Each module declares one in its
 |---|---|---|
 | `LIMITS.LOG_RING_PER_MODULE` | `200` | Logger ring buffer size per module |
 | `LIMITS.ERRORS_RING` | `200` | `cor3_errors` size cap |
-| `LIMITS.AUTOJOBS_LOG_RING` | `100` | legacy `autoJobsLog` size cap |
+| `LIMITS.AUTOJOBS_LOG_RING` | `100` | `autoJobsLog` size cap |
 | `LIMITS.BUGGED_JOB_TTL_MS` | `2 * 3600 * 1000` (2 h) | bugged-job blacklist TTL |
 | `LIMITS.AUTOJOBS_STATE_TTL_MS` | `5 * 60 * 1000` (5 min) | restore mid-state on reload only if recent |
 

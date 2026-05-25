@@ -79,14 +79,11 @@ chrome.storage.local.set({ autoJobsState: { status: 'idle', updatedAt: Date.now(
 ### F12 dump helper
 
 `window.__cor3Dump()` (defined by the WS interceptor) posts
-`COR3_REQ_DUMP` to the isolated world. **In the new architecture there is
-currently no isolated-world handler for this** — it's a known gap from
-the rewrite. Either:
+`COR3_REQ_DUMP` to the isolated world. **There is currently no
+isolated-world handler for this**. Either:
 
 - Read storage directly with the probes above, or
 - Add a handler to `auto-jobs.js` (single setTimeout dump of all in-memory state)
-
-Tracked in [`plans/todo.md`](../plans/todo.md).
 
 ## Reading logs
 
@@ -114,8 +111,7 @@ Object.fromEntries(
 
 ### "cor3.gg tab freezes solid the moment the extension loads — F12 won't even open"
 
-Resolved May 2026, but documenting the failure mode in case anything similar
-ever shows up again.
+Failure mode worth documenting in case anything similar shows up again.
 
 **Symptom:** with the extension enabled, the cor3.gg tab hangs at first
 paint. DevTools (`F12` / Ctrl+Shift+I) never opens because the renderer
@@ -240,8 +236,8 @@ window.postMessage({ type: 'COR3_FETCH_DAILY_OPS' }, '*');
 ```
 
 The card reads `daily.currentStreak` (the field name returned by the
-server). If you see "streak 0" but the in-game streak is non-zero, you're
-on a build older than the May 2026 fix that switched away from `daily.streak`.
+server). If you see "streak 0" but the in-game streak is non-zero, the
+build is reading the wrong key (`daily.streak`).
 
 ### "Solve button does nothing / hangs / submits but no reward"
 

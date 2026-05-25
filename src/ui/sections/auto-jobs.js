@@ -1,7 +1,6 @@
-// src/ui/sections/auto-jobs.js — master toggle, status, queue, activity log.
+// Auto-Jobs section — master toggle, status, queue, activity log.
 // Activity log is rendered via uiComponents.logViewer filtered to
-// module='auto-jobs' (the same component the Logs tab uses); the legacy
-// per-module AUTOJOBS_LOG ring is gone.
+// module='auto-jobs' (same component the Logs tab uses).
 
 (function () {
     const root = window;
@@ -68,15 +67,15 @@
         ];
     }
 
-    // Phase 4 header: state pill + description + next-hint, plus action
-    // buttons (Start/Stop, Reset, Download Log). Reads STATE_LABELS from
-    // the orchestrator helper (loaded into popup.html in Phase 4).
+    // Header: state pill + description + next-hint, plus action buttons
+    // (Start/Stop, Reset, Download Log). Reads STATE_LABELS from the
+    // orchestrator helper.
     function renderHeader(host, settings, state, solverFlags, queue) {
         host.innerHTML = '';
 
-        // Phase 5: HALTED banner. Renders ABOVE the regular header card so
-        // it's the first thing the user sees when the orchestrator threw
-        // in the towel. The "Reset" button below will clear it.
+        // HALTED banner — renders ABOVE the regular header card so it's
+        // the first thing the user sees when the orchestrator threw in
+        // the towel. The "Reset" button below will clear it.
         if (state.status === 'halted') {
             const banner = el('div', 'card aj-halted-banner');
             const reason = state.haltReason || t('autojobs.unknownReason');
@@ -377,8 +376,8 @@
         const clear = el('button', 'btn btn-danger small mt-sm', t('autojobs.clearAll'));
         clear.addEventListener('click', async () => {
             const tab = await getCor3Tab();
-            // Backend kept the legacy 'clearBuggedJobs' channel name —
-            // it now wipes rejectedJobs instead.
+            // Channel name is 'clearBuggedJobs' for historical reasons —
+            // it wipes rejectedJobs.
             if (tab) chrome.tabs.sendMessage(tab.id, { action: 'clearBuggedJobs' }).catch(() => {});
         });
         card.appendChild(clear);
@@ -777,7 +776,7 @@
         host.appendChild(wrap);
     }
 
-    // Phase 4: state-history timeline. Reads STORAGE_LOCAL.AJ_STATE_HISTORY
+    // State-history timeline. Reads STORAGE_LOCAL.AJ_STATE_HISTORY
     // (orchestrator persists last STATE_HISTORY_RING transitions). Collapsed
     // by default — most users don't need it but it's invaluable when
     // debugging "stuck" reports.

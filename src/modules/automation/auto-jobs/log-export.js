@@ -1,9 +1,5 @@
-// src/modules/automation/auto-jobs/log-export.js
 // "Download Log" debug-bundle builder. Produces a single human-readable .txt
 // blob covering the auto-jobs subsystem so users can attach it to bug reports.
-//
-// Phase 1: implementation is complete enough to call from a future UI button.
-// Phase 4 will wire the button in src/ui/sections/auto-jobs.js.
 //
 // API:
 //   const text = await logExport.buildDebugBundle()    — returns the .txt body
@@ -16,9 +12,9 @@
 //   WebVersion / SystemVersion
 //   Settings (redacted)
 //   NM_GRAPH summary
-//   Reachability snapshot (when AJ_REACHABILITY is populated, Phase 2+)
+//   Reachability snapshot (when AJ_REACHABILITY is populated)
 //   Current state + queue
-//   Bugged jobs (Phase 1) / Permanently rejected jobs (Phase 3+)
+//   Bugged jobs / Permanently rejected jobs
 //   Logs from auto-jobs, server-connect, sai-navigator, flows-core, flow-*
 
 (function () {
@@ -55,7 +51,7 @@
     }
 
     function fmtReachability(r) {
-        if (!r || typeof r !== 'object') return '(not yet computed — Phase 2+ feature)';
+        if (!r || typeof r !== 'object') return '(not yet computed)';
         const lines = [];
         if (r.markets) {
             for (const [k, m] of Object.entries(r.markets)) {
@@ -88,7 +84,7 @@
     }
 
     function fmtRejected(r) {
-        if (!r || typeof r !== 'object') return '  (none — Phase 3+ feature)';
+        if (!r || typeof r !== 'object') return '  (none)';
         const ents = Object.entries(r);
         if (!ents.length) return '  (none)';
         return ents.map(([id, e]) => {
@@ -137,7 +133,7 @@
         lines.push('Queue:');
         lines.push(fmtQueue(local[sl.AUTOJOBS_QUEUE]));
         lines.push('');
-        lines.push('Bugged jobs (legacy TTL):');
+        lines.push('Bugged jobs (TTL):');
         lines.push(fmtBugged(local[sl.BUGGED_JOBS]));
         lines.push('');
         lines.push('Permanently rejected jobs:');

@@ -129,7 +129,7 @@ directly, but can post messages to it via `window.postMessage`.
 | `[data-sentry-component="ConfigHackApplication"]` | the decrypt minigame app (use this as the watch root) |
 | `[data-sentry-component="ParameterCells"]` | the decrypt minigame's parameter row (4 cell buttons + Send) |
 | `[data-sentry-element="SendButtonStyled"]` | the decrypt minigame's Send button (mousedown+mouseup+click submits) |
-| `[data-sentry-element="LogContentStyled"]` | log panel inside ConfigHackApplication; legacy selector kept the `[data-sentry-source-file="config-hack-application.tsx"]` qualifier — the qualifier is gone in May 2026 |
+| `[data-sentry-element="LogContentStyled"]` | log panel inside ConfigHackApplication |
 | `.pulse-timeline` / `.pulse-group` / `.pulse-bar` | Signal Hack puzzle DOM |
 | `.log-entries` (or variants) / `.log-entry` | System Log Integrity puzzle |
 | `.confirm-button` / `.error-type-button` / `.fix-error-button` / `.error-analysis-block` | log-integrity solver UI |
@@ -148,8 +148,7 @@ directly, but can post messages to it via `window.postMessage`.
 - Submits guesses; reads `Mismatched <n>` from the log
 - Uses minimax with memoization; cached solver state for the standard
   4-field layout
-- May 2026 UI rewrite: the cor3.gg puzzle replaced its text input with
-  arrow-key-driven `ParameterCells`. Our solver:
+- Submit layer: the puzzle uses arrow-key-driven `ParameterCells`. Solver:
   - **Focuses a cell** by dispatching `mousedown + mouseup + click` on its
     button (React onMouseDown is the focus handler — `.click()` alone
     doesn't fire it)

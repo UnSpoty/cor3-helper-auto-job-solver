@@ -1,10 +1,8 @@
-// src/modules/game/flows/log-deletion.js
 // Job type: log_deletion. Matches log rows by NAME first; uses logSeqs only
 // to disambiguate when several rows share a name. See log-download.js for
 // why seq-first regressed (server-absolute seq ≠ visible DOM position when
 // the list is virtualised).
-// Note: legacy content.js packs logName as `fileCondition` field on the
-// START message — we follow that contract.
+// Note: logName is packed as the `fileCondition` field on the START message.
 
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;

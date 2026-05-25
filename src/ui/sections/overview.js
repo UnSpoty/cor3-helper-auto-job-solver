@@ -134,10 +134,9 @@
         } else {
             dailyCard.appendChild(el('div', 'muted sm', t('overview.noDaily')));
         }
-        // Action row: Solve (one-shot) + Refresh on the same line. The old
-        // "Auto daily-hack" toggle was removed — the puzzle is now nested
-        // inside the Game Center window, so a watch loop can't react to it
-        // without first navigating; a single "Solve" click does the whole
+        // Action row: Solve (one-shot) + Refresh on the same line. The
+        // puzzle is nested inside the Game Center window so it can't be
+        // auto-watched without navigating first; Solve does the whole
         // open → start → decode → submit chain.
         const dailyActions = el('div', 'row gap-sm mt-sm');
         const solveBtn = el('button', 'btn small', t('common.solve'));

@@ -1,22 +1,19 @@
-// src/shared/ws-frames.js
 // Socket.IO v4 frame parser/encoder, used by the WS interceptor and any
 // module that needs to decode raw WS payloads.
 // Registers into globalThis.COR3.wsFrames.
 //
-// May 2026 protocol shift: cor3.gg replaced the default JSON+text parser
-// with a MessagePack+binary one. Engine.io still emits its own text
-// control frames ("0{...}", "2", "3") but every Socket.IO-level message
-// is now an ArrayBuffer carrying msgpack-encoded { type, data, nsp }.
-// We keep parseFrame/encodeEvent for legacy text fallback (handshake,
-// ping/pong, dev debugging) and add the binary counterparts that the
-// new interceptor uses.
+// cor3.gg uses a MessagePack+binary parser: every Socket.IO-level message
+// is an ArrayBuffer carrying msgpack-encoded { type, data, nsp }. Engine.io
+// still emits text control frames ("0{...}", "2", "3"). parseFrame/
+// encodeEvent handle the text fallback; parseBinaryFrame/encodeEventBinary
+// handle the binary path used in production.
 //
-// Wire-shape reference (post-May-2026):
+// Wire-shape reference:
 //   inbound EVENT   { type:2, data:[<roomName>, <payload>], nsp:"/" }
 //   inbound CONNECT { type:0, data:{sid, pid, nsp}, nsp:"/" }
 //   outbound EVENT  { type:2, data:[<roomOrEvent>, <payload>], nsp:"/" }
 //   outbound CONN   { type:0, data:{token:"Bearer ..."}, nsp:"/" }
-//   ping/pong/open  still plain text — engine.io level
+//   ping/pong/open  plain text — engine.io level
 
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
@@ -216,9 +213,9 @@
     }
 
     // ──────────────────────────────────────────────────────────────────────
-    // Legacy text parser (engine.io 4 / socket.io 4 over JSON text). Used
-    // only for cor3.gg's residual text frames (engine.io open / ping / pong)
-    // and as a unit-test convenience.
+    // Text parser (engine.io 4 / socket.io 4 over JSON text). Used for
+    // residual text frames (engine.io open / ping / pong) and as a
+    // unit-test convenience.
     // ──────────────────────────────────────────────────────────────────────
     function parseFrame(raw) {
         if (typeof raw !== 'string' || raw.length === 0) return null;
@@ -257,7 +254,7 @@
     }
 
     // ──────────────────────────────────────────────────────────────────────
-    // Binary frame parser/encoder (the May-2026 protocol).
+    // Binary frame parser/encoder (the production protocol).
     // ──────────────────────────────────────────────────────────────────────
 
     /**
@@ -353,11 +350,11 @@
     }
 
     root.COR3.wsFrames = {
-        // Text (legacy + engine.io control)
+        // Text (engine.io control)
         parseFrame, encodeEvent, isEventFrame,
-        // Binary (current cor3.gg protocol)
+        // Binary (cor3.gg protocol)
         parseBinaryFrame, encodeEventBinary, encodeConnectBinary, isBinaryFrame,
-        // Low-level codec — exposed for tests / future modules
+        // Low-level codec
         mpEncode, mpDecode,
     };
 })();

@@ -1,4 +1,3 @@
-// src/core/bus.js
 // Cross-context message bus. Two transport surfaces:
 //   • Bus.window  — window.postMessage (MAIN ↔ isolated content world)
 //   • Bus.runtime — chrome.runtime.sendMessage (isolated ↔ popup ↔ SW)
@@ -76,7 +75,7 @@
         rtInstalled = true;
         chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             if (!msg) return false;
-            // Accept both shapes: Bus-style { type, payload } and legacy { action, ...flat }
+            // Accept both shapes: Bus-style { type, payload } and { action, ...flat }
             const key = (typeof msg.type === 'string') ? msg.type
                       : (typeof msg.action === 'string') ? msg.action : null;
             if (!key) return false;

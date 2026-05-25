@@ -11,10 +11,6 @@ Every feature is a `COR3.Module` registered with `COR3.Registry`. Five
 execution contexts share a global `window.COR3.*` namespace via classic
 IIFE-loaded scripts. No build step.
 
-The legacy monolith (`content.js`, `popup.js`, `job-manager.js`, etc.)
-was retired in May 2026; if you find references to those files anywhere,
-they're stale.
-
 ## Documentation map
 
 Read these in order when ramping up:
@@ -27,7 +23,6 @@ Read these in order when ramping up:
 | [docs/pipelines.md](docs/pipelines.md) | Diagrams of auto-jobs state machine, auto-send-merc, auto-choose-decision, NM→SC→SAI startup, daily-ops fetch, alarms, auto-refresh, Logger |
 | [docs/debugging.md](docs/debugging.md) | Live state probes, chrome-devtools-mcp runbook, common issues, smoke-test script |
 | [docs/glossary.md](docs/glossary.md) | Game terms (K/D, SAI, Network Map, etc.), DOM selector reference, Socket.IO frame primer |
-| [plans/todo.md](plans/todo.md) | Cross-session checklist; what was done in the rewrite, what's next |
 
 ## Project layout
 
@@ -43,8 +38,6 @@ cor3-helper/
 │   ├── pipelines.md      ← flow diagrams for each pipeline
 │   ├── debugging.md      ← runbook + common issues
 │   └── glossary.md       ← game terms + DOM selectors
-├── plans/
-│   └── todo.md
 └── src/
     ├── core/             Bus, Store, Logger, Module, Registry, Settings
     ├── shared/           platform, constants, dom, ws-frames, errors
@@ -69,7 +62,7 @@ cor3-helper/
 | Tweak auto-jobs scheduling | `src/modules/automation/auto-jobs.js` (the big one) |
 | Add a new job type | docs/module-spec.md → "Job flow"; touch `auto-jobs.js`'s `JOB_TYPE_KEYWORDS`, `FLOW_DISPATCH`, `resolveJobParams`; new file in `src/modules/game/flows/` |
 | Adjust the SAI navigation pipeline | `src/modules/game/server-connect.js` (login flow), `src/modules/game/sai-navigator.js` (tab switching, helpers) |
-| Tune the decrypt minimax | `src/modules/solvers/decrypt.js` (algorithm verbatim from legacy) |
+| Tune the decrypt minimax | `src/modules/solvers/decrypt.js` |
 | Add a new popup section | new file in `src/ui/sections/`, `<script>` tag in `src/ui/popup.html`, entry in `TABS` array in `src/ui/shell.js` |
 | Add a new chrome.storage.sync user-pref | enum in `STORAGE_SYNC.*`, UI control in `src/ui/sections/overview.js` (or `expeditions.js` if expedition-related), listener in the consuming module |
 | Toggle an appearance feature | `src/modules/appearance/<feature>.js` (CSS injection, MutationObserver patterns) |
@@ -103,76 +96,40 @@ find src -name '*.js' -exec node --check {} \;
 6. **Beware sync-recursion through `Bus.setTrace`.** The Logger trace fires
    synchronously from every `Bus.window.post` / `Bus.runtime.send`. If you
    add anything that calls `Bus.window.post` from inside a tracer or a
-   `Logger.subscribe` handler, you will burn the renderer's stack — the
-   May 2026 page-freeze incident (see
-   [debugging.md → cor3.gg tab freezes solid](docs/debugging.md#cor3gg-tab-freezes-solid-the-moment-the-extension-loads--f12-wont-even-open))
-   was exactly this. Logger now gates its tracer on `HAS_STORAGE`; preserve
-   the gate.
+   `Logger.subscribe` handler, you will burn the renderer's stack and
+   freeze the page (F12 won't even open). Logger gates its tracer on
+   `HAS_STORAGE`; preserve the gate.
 
-## Decisions baked into this codebase
+## Behaviour notes
 
-**Dropped (not migrated):**
-- 6-theme system → single cor3-style theme
-- Custom decision modifier sliders → `riskThreshold` (0..10) + fixed formula
-- Version-mismatch GitHub banner
-- Archived expeditions UI tab (WS event still relayed; storage key still written)
-- Standalone WS message debug log → centralized Logger
-
-**Preserved with care:**
 - Auto-jobs full state machine (idle/accepting/solving/completing) with
   3 watchdogs, K/D blacklist (parsed from timer text + 5 min buffer),
-  bugged-job 2 h TTL, server priorities, debug confirmation gate
-- All 9 job flow types: file_decryption, ip_injection, ip_cleanup,
+  bugged-job 2 h TTL, server priorities, debug confirmation gate.
+- 9 job flow types: file_decryption, ip_injection, ip_cleanup,
   file_upload, log_deletion, log_download, file_elimination, data_download,
-  decrypt_extract
-- Decrypt minimax algorithm — verbatim port from legacy. May 2026: cor3.gg
-  swapped the text input for arrow-key-driven `ParameterCells`; the new
-  submit layer is click-on-cell + ArrowUp + click-SendButton (see
-  [docs/glossary.md](docs/glossary.md) → solver-decrypt).
-- Daily-hack pattern detection (System Log Integrity + Signal Hack) —
-  carried into the new `solver-daily-ops` (Game Center one-shot) which
-  added: full DOM navigation (open Game Center → open Daily Ops card →
-  Start), generic intro click, puzzle-type routing,
-  `setReactInputValue` + submit click, WS-readiness gates around Start
-  and Submit (`__cor3IsWsReady` / `__cor3WaitForWs`), and a
-  post-submit `awaitSubmitFeedback()` that scans for verified/reward/fail
-  text within 5 s. The standalone-page `solver-daily-hack` was deleted —
-  cor3.gg moved the puzzle into Game Center, and the legacy toggle had
-  no UI route to turn it on anymore.
-- ICE WALL Break solver — SAI's Porter-lite r4 minigame. Cells are
-  parsed in grid coords (col*31.5, row*54). Matcher works on any
-  target-preview shape (used to be a fixed 3-row sub-triangle of 9
-  cells, now arbitrary). MutationObserver-driven loop with 80ms
-  debounce; commits when (a) some candidate has full match, (b) exactly
-  one candidate from positive matching, or (c) elimination matcher
-  narrows to a unique survivor. Click target = LOWEST cell (max row)
-  of the matched shape, tie-broken by closest-to-median col — for the
-  legacy 9-cell case this still resolves to "bottom-row centre".
-  Robustness: if a click doesn't advance the counter within 4s, the
-  anchor is added to an `excludeSet` and the matcher re-runs; up to 20
-  retries per round before giving up. Overlay outlines every cell of
-  the predicted shape and brightens the click cell.
-- Auto-send-merc with cheapest-AVAILABLE selection + stash-full re-enable
-- Multi-alarm system (alarms tick every second, audio via Web Audio API)
-- Pop-out window mode (`?mode=popout`)
-
-## Known limitations / next-session priorities
-
-See [plans/todo.md](plans/todo.md) for the full list. High-impact:
-
-1. **Cross-world Module Manager state sync.** Master switches in the UI
-   only affect the isolated/SW/popup contexts. MAIN-world Registry doesn't
-   subscribe to `chrome.storage.sync.modules` (no `chrome.*` access). Fix
-   = `Settings.onChange` listener in `src/entry/content.js` that posts
-   `Bus.window` envelopes; corresponding `Bus.window.on` in
-   `src/entry/content-early.js` calls `Registry.setModuleState`.
-2. **`__cor3Dump()` has no isolated-world handler.** F12 helper still
-   posts `COR3_REQ_DUMP` but nobody listens. Add a handler in
-   `auto-jobs.js` or a dedicated debug module.
-3. **Per-job-type UI toggles.** `autoJobsSettings.enabledJobTypes` is
-   honored but no UI controls. Add to Auto-Jobs section.
-4. **`debugTriggerJobType`** legacy debug feature: not migrated. Pre-trigger
-   one job of a given type from the popup for testing.
+  decrypt_extract.
+- Decrypt solver: minimax algorithm against `ParameterCells` (arrow-key
+  driven). Submit layer is click-on-cell + ArrowUp + click-SendButton
+  (see [docs/glossary.md](docs/glossary.md) → solver-decrypt).
+- `solver-daily-ops` (Game Center one-shot): full DOM navigation (open
+  Game Center → open Daily Ops card → Start), generic intro click,
+  puzzle-type routing, `setReactInputValue` + submit click, WS-readiness
+  gates around Start and Submit (`__cor3IsWsReady` / `__cor3WaitForWs`),
+  and a post-submit `awaitSubmitFeedback()` scanning verified/reward/fail
+  text within 5 s.
+- ICE WALL Break solver — SAI's Porter-lite r4 minigame. Cells parsed in
+  grid coords (col*31.5, row*54). Matcher works on any target-preview
+  shape. MutationObserver-driven loop with 80ms debounce; commits when
+  (a) some candidate has full match, (b) exactly one candidate from
+  positive matching, or (c) elimination matcher narrows to a unique
+  survivor. Click target = LOWEST cell (max row) of the matched shape,
+  tie-broken by closest-to-median col. If a click doesn't advance the
+  counter within 4s, the anchor is added to an `excludeSet` and the
+  matcher re-runs; up to 20 retries per round. Overlay outlines every
+  cell of the predicted shape and brightens the click cell.
+- Auto-send-merc with cheapest-AVAILABLE selection + stash-full re-enable.
+- Multi-alarm system (alarms tick every second, audio via Web Audio API).
+- Pop-out window mode (`?mode=popout`).
 
 ## Module ID reference
 
@@ -193,8 +150,7 @@ Quick list of every registered module ID and its world:
   — `loadout/equip.software`, `unequip.software`, `equip.hardware`,
   all with options.compress=true). Pre-flight floor-check on install +
   snapshot-diff watchdog + in-panel toast notifications surface
-  resource conflicts and silent server rejections. See
-  `plans/loadout-recon.md` for full WS recon notes.
+  resource conflicts and silent server rejections.
 - `flow-file-decryption`, `flow-ip-injection`, `flow-ip-cleanup`,
   `flow-file-upload`, `flow-log-deletion`, `flow-log-download`,
   `flow-file-elimination`, `flow-data-download`, `flow-decrypt-extract`

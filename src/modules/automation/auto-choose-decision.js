@@ -1,8 +1,6 @@
-// src/modules/automation/auto-choose-decision.js
 // When `autoChooseEnabled` is true and there's a pending expedition decision
 // with < 60s remaining, auto-pick the option whose score is highest.
-// Score formula uses a single user-tunable `riskThreshold` (0..10) instead of
-// the legacy custom loot/risk modifier sliders.
+// Score formula uses a single user-tunable `riskThreshold` (0..10).
 //
 // Score(opt) = lootModifier - (riskModifier * riskWeight)
 //   where riskWeight = (10 - riskThreshold) / 5  (so threshold=0 → strong

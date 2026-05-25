@@ -1,4 +1,3 @@
-// src/modules/game/flows/_shared.js
 // Shared infrastructure for all 9 job flow modules.
 //   • single-flow guard (only one flow runs at a time)
 //   • startFlow helper — wraps a flow body with abort/lock plumbing
@@ -19,22 +18,21 @@
     function setWatching(v) { watchingJob = !!v; }
 
     /**
-     * Unified flow result. Phase-3 contract (single envelope, no legacy bridge).
+     * Unified flow result.
      *
-     *   { success: true,  didWork: true  }                  → orchestrator sends COR3_COMPLETE_JOB
-     *   { success: true,  didWork: false, reason: 'X' }     → PERMANENT reject. There was nothing to do
-     *                                                          (log not in list, no Logs section on D4RK,
-     *                                                          file not on server). No completion sent.
-     *                                                          Job stays rejected until it disappears
-     *                                                          from markets, or user clicks "Clear".
-     *   { success: false, reason: 'crash|timeout|…' }       → RUNTIME failure. Orchestrator retries the
-     *                                                          job once after a short delay; the second
-     *                                                          failure becomes a permanent reject with
-     *                                                          the runtime details exposed in UI.
+     *   { success: true,  didWork: true  }                → orchestrator sends COR3_COMPLETE_JOB
+     *   { success: true,  didWork: false, reason: 'X' }   → PERMANENT reject. There was nothing to do
+     *                                                        (log not in list, no Logs section on D4RK,
+     *                                                        file not on server). No completion sent.
+     *                                                        Job stays rejected until it disappears
+     *                                                        from markets, or user clicks "Clear".
+     *   { success: false, reason: 'crash|timeout|…' }     → RUNTIME failure. Orchestrator retries the
+     *                                                        job once after a short delay; the second
+     *                                                        failure becomes a permanent reject with
+     *                                                        the runtime details exposed in UI.
      *
-     * sendResult is the SINGLE message a flow ever posts back. The legacy
-     * MINIGAME_DONE / MINIGAME_TIMEOUT envelopes were dropped in Phase 3 —
-     * the auto-jobs orchestrator now reads MINIGAME_RESULT exclusively.
+     * sendResult is the SINGLE message a flow ever posts back; the orchestrator
+     * consumes MINIGAME_RESULT exclusively.
      */
     function sendResult(jobId, marketId, result = {}) {
         const env = { jobId, marketId };
@@ -113,18 +111,16 @@
             root.__connectStartedAt = root.__connectStartedAt || 0;
             root.__serverPathFailed = root.__serverPathFailed || 0;
 
-            // Legacy compat — content.js may still send the old lock messages.
             this.track(Bus.window.on('COR3_LOCK_UI', () => {
                 root.__pipelineLocked = true;
-                this.debug('UI locked (legacy)');
+                this.debug('UI locked');
             }));
             this.track(Bus.window.on('COR3_UNLOCK_UI', () => {
                 root.__pipelineLocked = false;
-                this.debug('UI unlocked (legacy)');
+                this.debug('UI unlocked');
             }));
 
             this.info('flows-core ready');
-            // Tell isolated content.js the flow manager is alive (legacy parity)
             Bus.window.post('COR3_JOB_MANAGER_READY', null);
         }
     }

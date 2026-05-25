@@ -1,11 +1,10 @@
-// src/entry/content-early.js
 // MAIN-world entry point. Loaded by manifest content_scripts AFTER all the
 // shared/core/interceptor/game-module/solver files. Boots the Registry so
 // game flow modules and solver modules start listening for their Bus types.
 //
 // MAIN-world Registry has no chrome.storage access — Settings.load() returns
 // {} and every module starts with its `defaultEnabled` value (default: true).
-// Cross-world module-state sync is deferred to Phase 5 (UI rebuild).
+// Cross-world module-state sync is not yet wired.
 
 (function () {
     const root = window;

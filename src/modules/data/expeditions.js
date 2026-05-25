@@ -1,7 +1,4 @@
-// src/modules/data/expeditions.js
 // Owns: expeditionsData + expeditionsDataUpdatedAt.
-// Just stores the most recent expedition list. The auto-send-merc trigger
-// (checkAutoSendOnExpeditionData) stays in legacy content.js until Phase 4.
 
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;

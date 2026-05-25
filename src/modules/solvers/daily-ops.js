@@ -1,4 +1,3 @@
-// src/modules/solvers/daily-ops.js
 // MAIN-world one-shot solver for the Game Center "Daily Ops" minigames.
 // Triggered by COR3_START_DAILY_OPS window envelope (popup → isolated → MAIN).
 //
@@ -7,8 +6,7 @@
 // Currently routes to:
 //   • Signal Decode  — .pulse-timeline / .encoding-option / .code-input
 //   • System Log Integrity — .log-entries / .error-analysis-block /
-//     .error-type-button (logic carried over verbatim from the legacy
-//     daily-hack solver, where it was already working)
+//     .error-type-button
 //
 // Locale-neutral: matches data-component-name attributes and CSS classes,
 // not user-facing strings. Brand keywords like "daily" / "morse" / "binary"

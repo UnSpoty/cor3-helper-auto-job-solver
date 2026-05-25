@@ -1,13 +1,6 @@
-// src/modules/automation/auto-jobs/reachability.js
 // Pre-flight reachability evaluation for the auto-jobs orchestrator.
-//
-// Phase 2 (log-only): publishes the snapshot to STORAGE_LOCAL.AJ_REACHABILITY
-// so the UI map and planner can read it. No behavioural enforcement —
-// auto-jobs.js still uses its existing findCandidates filter. The planner
-// surfaces verdicts to the activity log only.
-//
-// Phase 3 will turn this snapshot into the gating signal for
-// STATE_CHECK_JOB_CONDITIONS and STATE_DLM_FIX_*.
+// Publishes the snapshot to STORAGE_LOCAL.AJ_REACHABILITY so the UI map
+// and planner can read it.
 //
 // Relies on:
 //   - STORAGE_LOCAL.NM_GRAPH (carries depth + parentName + isInMaintenance
@@ -54,11 +47,9 @@
         return graph.servers.find((s) => s.marketId === data.marketId) || null;
     }
 
-    // Walk a path and collect blockers. Phase 2 uses NM_GRAPH's isInMaintenance
-    // flag (sourced from the WS payload) — no timer text is available without
-    // a DOM probe, but we *know* the server is in K/D. Phase 3 can extend
-    // this with the timer-text parsing already living in network-map.js
-    // (checkServerKD) by routing a request through Bus to MAIN.
+    // Walk a path and collect blockers. Uses NM_GRAPH's isInMaintenance
+    // flag (sourced from the WS payload) — no timer text is available
+    // without a DOM probe, but we *know* the server is in K/D.
     function collectBlockers(graph, path) {
         if (!Array.isArray(path) || path.length === 0) return [];
         const byName = new Map(graph.servers.map((s) => [s.name, s]));
@@ -90,7 +81,7 @@
             marketServerName: target.name,
             blockers,
             path,
-            // Phase 2 placeholder — no per-node hack-tool inference yet.
+            // Placeholder — no per-node hack-tool inference yet.
             hackToolNeeded: false,
         };
     }
@@ -113,7 +104,7 @@
             serverName,
             kdOnSelf,
             kdOnPath,
-            hackToolNeeded: false, // Phase 3
+            hackToolNeeded: false,
             path,
         };
     }

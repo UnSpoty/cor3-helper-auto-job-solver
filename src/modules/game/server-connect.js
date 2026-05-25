@@ -1,4 +1,3 @@
-// src/modules/game/server-connect.js
 // Owns: full Connect→Login→ActiveAccess pipeline on a target server.
 // Depends on: network-map (uses SEL constants + helpers).
 // Exposes: COR3.game.serverConnect.connect(serverName) — returns true on success.
@@ -16,17 +15,13 @@
     const SEL = {
         LOGIN_PANEL: '[data-sentry-element="SaiBottomPanelStyled"][data-sentry-source-file="sai-login.tsx"]',
         ACTIVE_ACCESS: '[data-sentry-component="SaiActiveAccess"]',
-        // The SaiActiveAccess panel used to mark each access row's chevron
-        // with data-sentry-component="ArrowRightIcon"; the May 2026 cor3.gg
-        // refactor dropped the component label and now renders a plain inline
-        // SVG. The list itself still has stable identifiers though.
+        // Each access row's chevron is a plain inline SVG (no
+        // data-sentry-component); the list itself has stable identifiers.
         ACCESS_LIST: '[data-sentry-element="SaiPanelListStyled"]',
         SAI_APP: '[data-sentry-component="ServerAdministrationInterfaceApplication"]',
         SAI_TITLE: '[data-sentry-element="SaiHeaderTitleStyled"]',
-        // Connect / Login buttons — generic Button components now, but the
-        // game ships them with stable onboarding ids (data-onboarding-300-id).
-        // Replaces the previous data-sentry-component="ConnectIcon"/"LoginIcon"
-        // selectors that broke with the same refactor.
+        // Connect / Login buttons — generic Button components. Selected by
+        // stable onboarding ids (data-onboarding-300-id).
         CONNECT_BTN_NEW: '[data-onboarding-300-id="ServerInfoPanelConnectButton"]',
         LOGIN_BTN_NEW:   '[data-onboarding-300-id="ServerInfoPanelLoginButton"]',
         // Empty Active Access path: the login panel renders SaiNoTools
@@ -56,22 +51,19 @@
     }
 
     // Wrapper around __cor3EnsureHomeEndpoint that adds a settle delay
-    // when the endpoint actually flipped from a non-HOME server. Reason:
-    // even after cor3.gg WS-confirms set.endpoint(HOME), the server-side
-    // session machinery seems to hold a brief "just disconnected from X"
-    // reservation. The very next Connect click (within ~600 ms of the
-    // flip) bounces back as "rejected" even though path-to-target is
-    // reachable. A 1 s settle wait clears it; verified on 2026-05-10
-    // sessions where back-to-back jobs on different remote servers were
-    // failing 1-out-of-2 with this exact bounce-back pattern.
+    // when the endpoint actually flipped from a non-HOME server. Even
+    // after the server WS-confirms set.endpoint(HOME), the session
+    // machinery holds a brief "just disconnected from X" reservation —
+    // the very next Connect click (within ~600 ms of the flip) bounces
+    // back as "rejected" even though path-to-target is reachable. A 1 s
+    // settle wait clears it.
     //
-    // No-op fast path when endpoint was already HOME (zero cost on the
-    // common case where ensureHome doesn't actually flip anything).
-    // Diagnostic snapshot captured when a Connect attempt is rejected by the
-    // game. Goal: when a user reports "Connect btn reappeared (rejected)"
-    // 3× in a row → HALT, the debug bundle should already contain enough
-    // state to tell us *why* the game refused (K/D, side-panel error text,
-    // item visual flags, blockers on path). Cheap — single tick, no waits.
+    // No-op fast path when endpoint was already HOME.
+    // Diagnostic snapshot captured when a Connect attempt is rejected.
+    // When a user reports "Connect btn reappeared (rejected)" 3× in a row
+    // → HALT, the debug bundle should contain enough state to tell us
+    // *why* the game refused (K/D, side-panel error text, item visual
+    // flags, blockers on path). Cheap — single tick, no waits.
     function captureRejectSnapshot(serverName, item) {
         const snap = {};
         try {
@@ -267,13 +259,12 @@
         await dom.sleep(400);
         dbg('step 3 — clicked server icon');
 
-        // Stability check: NM re-renders mid-transition can briefly show the
-        // previous server's name, or stay on the new name for a single tick
-        // before bouncing back. We require TWO consecutive polls to read the
-        // target name before declaring the panel ready. This kills the race
-        // captured in 2026-05-14 logs where step 3 reported "panel name
-        // updated" but a snap taken ~500ms later showed a different server
-        // (e.g. RM7-E1L2CT when target was RM7-E1L5).
+        // Stability check: NM re-renders mid-transition can briefly show
+        // the previous server's name, or stay on the new name for a single
+        // tick before bouncing back. We require TWO consecutive polls to
+        // read the target name before declaring the panel ready —
+        // otherwise the snap can flip back ~500ms later to a different
+        // server (e.g. RM7-E1L2CT when target was RM7-E1L5).
         let panelReady = false;
         let consecutiveMatches = 0;
         let lastSeenName = '(none)';
@@ -616,8 +607,8 @@
         }
 
         async start() {
-            // Mirror legacy behavior: track no-path-to-server timestamps for
-            // the connect step's fast-fail detection.
+            // Track no-path-to-server timestamps for the connect step's
+            // fast-fail detection.
             this.track(Bus.window.on(MSG.WS.DARK_MARKET_UNREACHABLE, () => {
                 root.__serverPathFailed = Date.now();
                 this.warn('WS reported no path to server');

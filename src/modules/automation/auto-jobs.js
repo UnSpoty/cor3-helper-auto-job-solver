@@ -1,13 +1,11 @@
-// src/modules/automation/auto-jobs.js
 // Auto-jobs orchestrator. State machine: idle → accepting → solving → completing.
-// Persists state, queue, and bugged-job blacklist across reloads.
+// Persists state, queue, and rejected-job map across reloads.
 // Schedules market scans, dispatches START_*_FLOW commands to MAIN flows,
 // runs watchdogs against stuck states.
 //
 // Owned storage:
 //   • chrome.storage.local: autoJobsState, autoJobsQueue, autoJobsLog,
-//                           buggedJobIds, autoJobsPendingConfirm, autoJobsConfirmResult,
-//                           networkMapServers
+//                           ajRejectedJobs, buggedJobIds, networkMapServers
 //   • chrome.storage.sync:  autoJobsSettings, serverPriorities
 
 (function () {
@@ -16,8 +14,7 @@
     const MSG = C.MSG;
 
     // ─── Constants ────────────────────────────────────────────────────────
-    // Phase 3 deleted the magic-number bugged-job TTLs (2 h hard, 15 min soft,
-    // 30 min complete-rejected). Replacements:
+    // Reject mechanics:
     //   • rejectedJobs map (no TTL — auto-cleared when the job vanishes from
     //     markets, or via UI "Clear" button) for structural rejects.
     //   • Per-job retry-once counter for runtime failures; the second
@@ -43,7 +40,7 @@
     const MARKET_REFRESH_INTERVAL_MS = 30 * 1000;
     const TICK_INTERVAL_MS = 5000;
     const KD_BUFFER_MS = (C.LIMITS && C.LIMITS.KD_BUFFER_MS) || 5 * 60 * 1000;
-    // Retry policy (May 2026 simplification):
+    // Retry policy:
     //   • Try a job up to MAX_FLOW_ATTEMPTS times. Every failure increments
     //     `attempts` on the queue entry.
     //   • Once attempts >= MAX_FLOW_ATTEMPTS, the job is marked bugged
@@ -113,8 +110,6 @@
     // ─── State (in-memory) ───────────────────────────────────────────────
     // Settings shape lives entirely in chrome.storage.sync.autoJobsSettings.
     // markets.{home,dark,srm} — which markets to scan and accept from.
-    // debugMode was removed in the May 2026 audit (manual gating belongs in
-    // job-types whitelist, not a global pause/confirm — too easy to forget on).
     let settings = { enabled: false, markets: { home: true, dark: true, srm: true }, enabledJobTypes: {}, autoDismissFailed: true };
     let serverPriorities = {};
     // Map serverName → depth (BFS hops from HOME). Filled when WS network-map.
@@ -131,7 +126,7 @@
     const nmDepthsByMarket = new Map();
     let state = { ...IDLE_STATE };
     let queue = [];
-    let rejectedJobs = {};                // Phase 3: { [jobId]: { reason, since, descriptor } }
+    let rejectedJobs = {};                // { [jobId]: { reason, since, descriptor } }
     const kdSkipServers = new Map();
     const sentAcceptIds = new Map();
     const completedJobIds = new Map();
@@ -168,7 +163,7 @@
     let modRef = null;             // back-ref so helpers can log
     let lastEnabledApplied = false; // edge-detection state for handleEnabledChange
 
-    // ─── Phase 5 orchestrator state ──────────────────────────────────────
+    // ─── Orchestrator state ──────────────────────────────────────────────
     // Recovery counter: number of consecutive orchestration-level failures
     // (watchdogs, server unreachable without K/D cause, complete-rejected
     // permanent rejects). Resets to 0 on a successful operation. When the
@@ -218,11 +213,11 @@
         saveCompletedLog();
     }
 
-    // Phase 4: emit a state-transition event whenever the runtime status
-    // changes. The orchestrator helper (root.COR3.autoJobs.states) owns the
-    // canonical name mapping + the in-memory ring buffer + storage persistence
-    // so the popup timeline gets it for free. Pass the legacy `state.status`
-    // strings — orchestrator.mapLegacyToCanonical normalises them.
+    // Emit a state-transition event whenever the runtime status changes.
+    // The orchestrator helper (root.COR3.autoJobs.states) owns the canonical
+    // name mapping + the in-memory ring buffer + storage persistence so the
+    // popup timeline gets it for free. Pass coarse `state.status` strings —
+    // mapLegacyToCanonical normalises them.
     let lastEmittedStatus = null;
     function emitTransition(toStatus, reason) {
         const states = root.COR3.autoJobs && root.COR3.autoJobs.states;
@@ -236,8 +231,7 @@
 
     // User-facing log line. Goes through Logger so the popup's Auto-Jobs tab
     // can render it via uiComponents.logViewer (filtered to module='auto-jobs')
-    // and the Logs tab picks it up alongside other modules' logs. The legacy
-    // STORAGE_LOCAL.AUTOJOBS_LOG ring is gone — single source of truth.
+    // and the Logs tab picks it up alongside other modules' logs.
     function pushUserLog(msg, level = 'info') {
         if (modRef) modRef.log(level, msg);
     }
@@ -455,14 +449,13 @@
         return (h * 60 + min) * 60 * 1000 + KD_BUFFER_MS;
     }
 
-    // ─── Phase 5: state-machine helpers ──────────────────────────────────
+    // ─── State-machine helpers ───────────────────────────────────────────
     //
-    // These are the canonical ways to mutate state.status going forward.
-    // Direct `state.status = …` writes still work (and are still used in a
-    // few hot paths inside acceptCandidatesBatch / executeNextFromQueue
-    // for legacy continuity), but anything that's a *failure-mode*
-    // transition should route through enterRecovering / enterHalted so
-    // the recovery counter does its job.
+    // These are the canonical ways to mutate state.status. Direct
+    // `state.status = …` writes still work (and are used in a few hot
+    // paths inside acceptCandidatesBatch / executeNextFromQueue), but
+    // anything that's a *failure-mode* transition should route through
+    // enterRecovering / enterHalted so the recovery counter does its job.
 
     function clearJobFromState() {
         state.jobId = null; state.marketId = null; state.jobName = null;
@@ -809,10 +802,10 @@
                 const type = detectJobType(job);
                 if (!type) continue;
                 if (settings.enabledJobTypes && settings.enabledJobTypes[type] === false) continue;
-                // sentAcceptIds entries can be either a timestamp (legacy
-                // shape) or { ts, attempts } (post-audit shape). Treat any
-                // visible-but-still-recorded job as in-flight; after
-                // SILENT_ACCEPT_MAX_RETRIES re-emits, give up and reject.
+                // sentAcceptIds entries can be either a timestamp or
+                // { ts, attempts }. Treat any visible-but-still-recorded
+                // job as in-flight; after SILENT_ACCEPT_MAX_RETRIES re-
+                // emits, give up and reject.
                 const sent = sentAcceptIds.get(job.id);
                 if (sent) {
                     const sentTs = typeof sent === 'number' ? sent : sent.ts;
@@ -911,7 +904,7 @@
         // priority so we drain leaf servers before stacking K/D timers on
         // the hubs they depend on. The per-market table comes from
         // NM_GRAPH.depthsByMarket; falls back to the HOME-rooted nmDepths
-        // if the market isn't in the table (legacy NM_GRAPH without
+        // if the market isn't in the table (older NM_GRAPH without
         // depthsByMarket, or a marketId we don't have a gateway for).
         const perMarket = job.marketId ? nmDepthsByMarket.get(job.marketId) : null;
         const dm = perMarket && perMarket.get(job.serverName);
@@ -1009,10 +1002,7 @@
             if (settings.markets[m.key] === false) continue;
             if (m.availKey && result[m.availKey] === false) continue;
             const data = result[m.dataKey];
-            // Storage shape is flat now: { marketId, jobs, recentJobs, … }.
-            // Old code read data.market.id (legacy single-payload shape) and
-            // silently dropped every Resume — the bug stayed invisible
-            // because findCandidates already had the new path.
+            // Storage shape: { marketId, jobs, recentJobs, … }.
             if (data?.marketId) collectTaken(data, data.marketId, taken);
         }
 
@@ -1044,9 +1034,9 @@
     // ─── Tick ────────────────────────────────────────────────────────────
     async function tick() {
         if (!settings.enabled) return;
-        // Phase 5: skip work entirely when the orchestrator is in a busy
-        // / boot / recovery / halted state. Each of these has its own
-        // timing — we don't want the tick loop racing with them.
+        // Skip work entirely when the orchestrator is in a busy / boot
+        // / recovery / halted state. Each has its own timing — we don't
+        // want the tick loop racing with them.
         if (state.status === 'halted' ||
             state.status === 'starting' ||
             state.status === 'recovering' ||
@@ -1120,9 +1110,9 @@
         }
         if (!isIdleLike) return;
         if (Date.now() - lastMarketRefreshAt > MARKET_REFRESH_INTERVAL_MS) {
-            // Phase 5: surface the refresh as a transient state transition
-            // for the UI timeline. The pill itself stays idle — this is a
-            // brief overlay event, not a busy state.
+            // Surface the refresh as a transient state transition for the
+            // UI timeline. The pill itself stays idle — this is a brief
+            // overlay event, not a busy state.
             const states = root.COR3.autoJobs && root.COR3.autoJobs.states;
             if (states && states.recordTransition) {
                 states.recordTransition(state.status, 'timer_expired_time_to_upd', 'idle-poll refresh');
@@ -1140,20 +1130,18 @@
         }
         const candidates = await findCandidates();
 
-        // Phase 3: planner is now ENFORCED. findCandidates already skips
-        // rejected/sent/buggedJobTypes, but the planner adds a stricter
+        // Planner is enforced. findCandidates already skips
+        // rejected/sent/buggedJobTypes; the planner adds a stricter
         // pre-flight: server-cap (no Logs section), in-graph K/D, path-K/D.
-        // What used to be a "log-only" verdict is now the gate for the
-        // accept-batch. If the planner blows up, fall back to the legacy
-        // candidate list so a planner bug doesn't stop the queue cold.
+        // If the planner blows up, fall back to the candidate list so a
+        // planner bug doesn't stop the queue cold.
         let toAccept = candidates;
         try {
             const planner = root.COR3.autoJobs && root.COR3.autoJobs.planner;
             if (planner && candidates.length > 0) {
-                // Phase 5: surface the planner pass in the timeline. Like
-                // timer_expired_time_to_upd, this is a transient overlay
-                // — the pill stays at whatever it was, but the user can
-                // see we evaluated.
+                // Surface the planner pass in the timeline as a transient
+                // overlay — the pill stays at whatever it was, but the
+                // user can see we evaluated.
                 const states = root.COR3.autoJobs && root.COR3.autoJobs.states;
                 if (states && states.recordTransition) {
                     states.recordTransition(state.status, 'check_job_conditions', `${candidates.length} candidate(s)`);
@@ -1171,7 +1159,7 @@
                 }
             }
         } catch (err) {
-            if (modRef) modRef.warn('planner failed — falling back to legacy candidates', { error: String(err && err.message || err) });
+            if (modRef) modRef.warn('planner failed — falling back to raw candidates', { error: String(err && err.message || err) });
             toAccept = candidates;
         }
 
@@ -1260,7 +1248,7 @@
                 C.STORAGE_LOCAL.AUTOJOBS_QUEUE,
                 C.STORAGE_LOCAL.AJ_REJECTED_JOBS,
                 C.STORAGE_LOCAL.AJ_COMPLETED_JOBS_LOG,
-                C.STORAGE_LOCAL.BUGGED_JOBS,           // legacy — read once to flush
+                C.STORAGE_LOCAL.BUGGED_JOBS,           // read once to flush
             ]);
             if (Array.isArray(local[C.STORAGE_LOCAL.AJ_COMPLETED_JOBS_LOG])) {
                 completedJobsLog = local[C.STORAGE_LOCAL.AJ_COMPLETED_JOBS_LOG];
@@ -1275,7 +1263,7 @@
             if (local[C.STORAGE_LOCAL.AUTOJOBS_STATE] && local[C.STORAGE_LOCAL.AUTOJOBS_STATE].status !== 'idle') {
                 const ls = local[C.STORAGE_LOCAL.AUTOJOBS_STATE];
                 const age = Date.now() - (ls.updatedAt || 0);
-                // Phase 5: ephemeral states (boot pipeline, recovery, halt,
+                // Ephemeral states (boot pipeline, recovery, halt,
                 // success-display) shouldn't survive a reload — they only
                 // make sense in the running session that put them there.
                 // Drop back to idle on restore for any of these.
@@ -1293,16 +1281,15 @@
                     Store.local.setOne(C.STORAGE_LOCAL.AUTOJOBS_STATE, { status: 'idle', updatedAt: Date.now() });
                 }
             }
-            // Phase 3: load the new rejected-jobs map. The legacy
-            // BUGGED_JOBS storage is no longer authoritative; if the user
-            // is upgrading from a pre-Phase-3 build we wipe it so old TTL
-            // entries don't keep ghost-skipping jobs after the upgrade.
+            // Load the rejected-jobs map. BUGGED_JOBS is no longer
+            // authoritative; wipe it so stale TTL entries don't keep
+            // ghost-skipping jobs.
             rejectedJobs = (local[C.STORAGE_LOCAL.AJ_REJECTED_JOBS] && typeof local[C.STORAGE_LOCAL.AJ_REJECTED_JOBS] === 'object')
                 ? { ...local[C.STORAGE_LOCAL.AJ_REJECTED_JOBS] }
                 : {};
             if (local[C.STORAGE_LOCAL.BUGGED_JOBS]) {
                 Store.local.remove([C.STORAGE_LOCAL.BUGGED_JOBS]);
-                this.info('cleared legacy bugged-jobs storage on upgrade to Phase 3');
+                this.info('cleared stale bugged-jobs storage');
             }
             if (Array.isArray(local[C.STORAGE_LOCAL.AUTOJOBS_QUEUE])) {
                 queue = local[C.STORAGE_LOCAL.AUTOJOBS_QUEUE].filter((j) => !isJobRejected(j.jobId));
@@ -1350,10 +1337,10 @@
             // no longer in any visible market list.
             const onMarketArrival = async () => {
                 if (!settings.enabled) return;
-                // Phase 3: drop rejectedJobs entries whose jobIds aren't
-                // visible anywhere — cor3.gg either let someone else take
-                // the job, or its lifetime ran out. Either way, the reject
-                // is no longer informative.
+                // Drop rejectedJobs entries whose jobIds aren't visible
+                // anywhere — cor3.gg either let someone else take the job,
+                // or its lifetime ran out. Either way, the reject is no
+                // longer informative.
                 // Single fetch of all three market storage entries serves
                 // both rejected-job cleanup and FAILED-job auto-dismiss.
                 try {
@@ -1380,8 +1367,7 @@
             this.track(Bus.window.on(C.MSG.WS.JOB_ACCEPTED, (env) => this.onJobAccepted(env)));
             this.track(Bus.window.on('COR3_ACCEPT_JOB_SEND_FAILED', (env) => this.onAcceptSendFailed(env)));
             this.track(Bus.window.on(C.MSG.WS.JOB_COMPLETED, (env) => this.onJobCompleted(env)));
-            // Phase 3: MINIGAME_RESULT is the single envelope flows post.
-            // Legacy MINIGAME_DONE / MINIGAME_TIMEOUT listeners are gone.
+            // MINIGAME_RESULT is the single envelope flows post.
             this.track(Bus.window.on(C.MSG.JOB.MINIGAME_RESULT, (env) => this.onMinigameResult(env)));
             this.track(Bus.window.on(C.MSG.JOB.KD_DETECTED, (env) => this.onKdDetected(env)));
             this.track(Bus.window.on(C.MSG.JOB.SERVER_UNREACHABLE, (env) => this.onServerUnreachable(env)));
@@ -1413,24 +1399,19 @@
                 return { success: true };
             }));
             this.track(Bus.runtime.on('rescanNetworkMap', () => {
-                // Prefer the WS data path: no UI side-effects (doesn't open NM
-                // panel for the user, doesn't hijack focus). The legacy DOM
-                // scrape (REQUEST_NM_SERVERS) still works as a fallback for
-                // older builds, but we don't trigger it from the popup anymore.
+                // WS data path — no UI side-effects (doesn't open NM panel
+                // for the user, doesn't hijack focus).
                 Bus.window.post(C.MSG.GAME.REQUEST_NM_MAP, null);
                 return { success: true };
             }));
-            // The legacy "Clear Failed" button in the popup was wired to
-            // 'clearBuggedJobs'. Phase 3 keeps the same runtime channel name
-            // (so the existing UI keeps working pre-Phase-4 redesign) but
-            // routes it to the new rejectedJobs map. Phase 4 will rename
-            // the channel to 'clearRejectedJobs' alongside the UI overhaul.
+            // 'clearBuggedJobs' channel name is kept for backwards
+            // compatibility with the popup; routes to the rejectedJobs map.
             this.track(Bus.runtime.on('clearBuggedJobs', () => {
                 rejectedJobs = {}; saveRejected();
                 return { success: true };
             }));
-            // Phase 4/5: hard reset from the popup. Clears the queue, kills
-            // the current flow, drops back to idle. If we were HALTED (3×
+            // Hard reset from the popup. Clears the queue, kills the
+            // current flow, drops back to idle. If we were HALTED (3×
             // recovery counter exceeded → tick loop stopped), the reset
             // also restarts the tick interval so the user doesn't have to
             // toggle the module off-and-on to get going again.
@@ -1455,7 +1436,7 @@
                 this.warn('user-triggered reset — queue cleared, state forced to idle');
                 return { success: true };
             }));
-            // Optional: clear a single rejected entry. Phase 4 UI will use this.
+            // Optional: clear a single rejected entry.
             this.track(Bus.runtime.on('clearRejectedJob', (payload) => {
                 const id = payload && payload.jobId;
                 if (id && rejectedJobs[id]) {
@@ -1488,7 +1469,7 @@
             lastEnabledApplied = settings.enabled;
 
             if (settings.enabled) {
-                // Phase 5: full boot pipeline — STARTING preroll →
+                // Full boot pipeline — STARTING preroll →
                 // DRAWING_LOCAL_MAP (if no graph yet) → DLM_CHECK_SERVERS_
                 // ACCESSABILITY → idle. The tick interval is started
                 // *inside* bootSequence after the pre-flight finishes.
@@ -1562,13 +1543,12 @@
                 // enough to overlap and get rejected by cor3.gg. Remote
                 // markets refresh on idle-poll (every 30 s) and at toggle-on,
                 // so skipping them here only delays a remote refresh by at
-                // most one poll cycle. 2026-05-10 race fix.
+                // most one poll cycle.
                 setTimeout(() => requestMarketRefresh('accept-batch-done', { skipRemote: true }), 500);
-                // Phase 5+: 3s instead of 1s gives the REVERT_ENDPOINT_TO_HOME
-                // post above time to actually flip the WS endpoint before
-                // we kick off the first flow. Was the root cause of the
-                // first-job-of-a-cycle failing connect() when the last
-                // accept landed on DARK/SRM.
+                // 3s gives the REVERT_ENDPOINT_TO_HOME post above time to
+                // actually flip the WS endpoint before we kick off the
+                // first flow. Otherwise the first job of a cycle that
+                // landed on DARK/SRM fails its connect().
                 setTimeout(executeNextFromQueue, POST_ACCEPT_BATCH_DELAY_MS);
             }
         }
@@ -1589,9 +1569,8 @@
                 // skipRemote=true here for the same race reason as the
                 // success path above — remote refreshes overlap connect().
                 setTimeout(() => requestMarketRefresh('accept-batch-done', { skipRemote: true }), 500);
-                // Phase 5+: 3s settle delay (see acceptCandidatesBatch closure
-                // above) — same reasoning, post-revert WS endpoint flip needs
-                // to land before the first flow's connect() runs.
+                // 3s settle delay — post-revert WS endpoint flip needs to
+                // land before the first flow's connect() runs.
                 setTimeout(executeNextFromQueue, POST_ACCEPT_BATCH_DELAY_MS);
             }
         }
@@ -1600,9 +1579,9 @@
             if (state.status !== 'completing') return;
             const completedJobId = state.jobId;
             const descriptor = state.jobName || state.jobType || 'Unknown';
-            // Debug (May 2026): dump the full server response so we can see
-            // whether the server hints at *which* IPs are missing on
-            // IP-Injection bugged jobs. Cheap, only fires per completion.
+            // Dump the full server response so we can see whether the
+            // server hints at *which* IPs are missing on IP-Injection
+            // bugged jobs. Cheap, only fires per completion.
             try {
                 pushUserLog(
                     'Complete WS response: ' + JSON.stringify({ data: env.data, error: env.error }),
@@ -1675,20 +1654,19 @@
             completingStartedAt = 0;
             // A clean completion resets the rolling failure counter.
             resetRecoveryCounter();
-            // Phase 5: when the queue empties after a successful completion,
-            // sit in ALL_JOBS_DONE for a few seconds so the user sees the
-            // success state in the UI pill before we drop back to idle.
+            // When the queue empties after a successful completion, sit in
+            // ALL_JOBS_DONE for a few seconds so the user sees the success
+            // state in the UI pill before we drop back to idle.
             if (queue.length === 0) {
                 enterAllJobsDone('cycle complete');
             } else {
                 setStatus('idle', 'job complete');
             }
-            // Phase 5+: refresh ONLY home market here. Remote (DARK/SRM)
-            // refreshes do a set.endpoint preflight that races the next
-            // SAI job's connect() and gets the login rejected by cor3.gg.
-            // Remote markets get fresh data via the regular idle-poll
-            // (every 30s) and accept-batch-done — neither overlaps with
-            // an active flow.
+            // Refresh ONLY home market here. Remote (DARK/SRM) refreshes do
+            // a set.endpoint preflight that races the next SAI job's
+            // connect() and gets the login rejected by cor3.gg. Remote
+            // markets get fresh data via the regular idle-poll (every 30s)
+            // and accept-batch-done — neither overlaps with an active flow.
             setTimeout(() => requestMarketRefresh('job-completed', { skipRemote: true }), 2000);
             // Commit 3 — pt 9: also pull a fresh Network Map after any
             // non-decrypt completion. The plan is "do one job → look at the
@@ -1703,8 +1681,7 @@
             if (queue.length > 0) setTimeout(executeNextFromQueue, 3000);
         }
 
-        // Phase 3: single entry-point for all flow results. Replaces the
-        // legacy onMinigameDone / onMinigameTimeout pair. Branches:
+        // Single entry-point for all flow results. Branches:
         //   { success:true, didWork:true  } → flow did the work, we send COMPLETE_JOB.
         //   { success:true, didWork:false } → STRUCTURAL reject. UI shows the
         //                                     reason; queue moves on; no COMPLETE.
@@ -1805,7 +1782,7 @@
                 return;
             }
 
-            // Phase 3: branch on cause.
+            // Branch on cause.
             //   K/D-caused: drop the job from queue (it'll come back via
             //   markets refresh once the K/D blacklist on the path expires).
             //   No permanent reject — the user shouldn't lose the job for
@@ -1848,8 +1825,8 @@
         // Canonical topology arriving from WS network-map.get.map.
         // Replaces nmDepths in memory + persists the full graph to storage
         // so the popup can render depth badges without re-querying. Also
-        // mirrors server names into NM_SERVERS for legacy callers (timer
-        // labels, places that still expect a flat name array).
+        // mirrors server names into NM_SERVERS for callers expecting a
+        // flat name array (timer labels etc.).
         async onNmGraph(env) {
             if (!env || !Array.isArray(env.servers)) return;
             nmDepths.clear();
@@ -1880,10 +1857,9 @@
             });
             this.debug(`nm graph updated: ${env.servers.length} servers, max depth ${Math.max(0, ...env.servers.map((s) => s.depth || 0))}`);
 
-            // Phase 2 log-only reachability: refresh the per-market snapshot
-            // every time the graph changes. Planner consumes this on next
-            // candidates pass; the local Network Map UI (Phase 4) will
-            // render off the same snapshot.
+            // Refresh the per-market reachability snapshot every time the
+            // graph changes. Planner consumes this on its next candidates
+            // pass; the popup Network Map UI renders off the same snapshot.
             try {
                 const r = root.COR3.autoJobs && root.COR3.autoJobs.reachability;
                 if (r && typeof r.computeAndPersist === 'function') {
@@ -1903,7 +1879,7 @@
         onJobManagerReady() {
             jobManagerReady = true;
             this.info('job-manager ready');
-            // Clean up legacy Debug-mode confirm slots if any older build wrote them
+            // Clean up confirm slots if any older build wrote them.
             Store.local.remove(['autoJobsPendingConfirm', 'autoJobsConfirmResult']);
             if (state.status === 'idle' && queue.length > 0) setTimeout(executeNextFromQueue, 1000);
             if (state.status === 'solving' && state.jobId) {

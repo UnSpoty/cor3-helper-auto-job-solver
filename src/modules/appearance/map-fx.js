@@ -1,14 +1,12 @@
-// src/modules/appearance/map-fx.js
 // Disables visual FX on the network map: SVG glow filters, glitch/wave videos,
-// CRT scanlines, distortion keyframes. Toggled via storage key disableMapFx.
-// Note: this uses its own sync key (disableMapFxEnabled) — it pre-existed in
-// the legacy code. Constants list it as a one-off.
+// CRT scanlines, distortion keyframes. Toggled via storage key
+// disableMapFxEnabled. Sync key is one-off (not enumerated in constants).
 
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
     const { Module, Store, Registry, constants: C } = root.COR3;
 
-    const SYNC_KEY = 'disableMapFxEnabled'; // legacy key — kept for back-compat
+    const SYNC_KEY = 'disableMapFxEnabled';
     const STYLE_ID = 'cor3-helper-mapfx-disable';
 
     function applyMapFx(disable) {

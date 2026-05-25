@@ -409,19 +409,17 @@ fetchRewards(token):
 ```
 
 The popup Overview tab subscribes to `dailyOpsData` and `dailyRewardsData`
-storage changes; UI updates instantly. Field name is **`currentStreak`** —
-the legacy code read `daily.streak` and got `undefined`, which is why the
-card sat on "streak 0" forever before May 2026.
+storage changes; UI updates instantly. Field name is **`currentStreak`**
+(not `daily.streak`).
 
 ---
 
 ## 5a. Daily Ops solve (one-shot)
 
-Triggered by the **Solve** button on the Overview Daily Ops card. Replaces
-the legacy "Auto daily-hack" toggle: the puzzle now lives inside the Game
-Center window, so a passive watcher can't react to it without first
-navigating — a single click does the whole open → start → decode → submit
-chain.
+Triggered by the **Solve** button on the Overview Daily Ops card. The
+puzzle lives inside the Game Center window, so a passive watcher can't
+react to it without first navigating — a single click does the whole
+open → start → decode → submit chain.
 
 ```
 popup.overview "Solve" click
@@ -539,8 +537,8 @@ proceeds best-effort with a UI-log warning so the user knows why the
 solve didn't register.
 
 **Solver log:** `SOLVER.DAILY_OPS_LOG` envelopes are mirrored into
-`STORAGE_LOCAL.DAILY_HACK_LOG` (legacy key — reused so the Overview card
-shows the last solver line); `solved:` prefixed messages additionally
+`STORAGE_LOCAL.DAILY_HACK_LOG` (key name preserved) so the Overview card
+shows the last solver line; `solved:` prefixed messages additionally
 reschedule a `fetchOps()` 1.5 s later so the card flips from "pending" to
 "claimed" without the user pressing Refresh.
 
@@ -577,9 +575,7 @@ call `chrome.tabs.sendMessage` with `testAlarm` / `stopAlarm` types.
 
 ## 6a. Market job-board fetch
 
-cor3.gg split the market API in May 2026. The legacy single
-`market.get.options` request used to return `{ market, jobs, recentJobs,
-nextJobsResetAt }` in one response. The new server splits responsibilities:
+cor3.gg's market API splits responsibilities across three actions:
 
 | Action | What it returns | Used by us? |
 |---|---|---|
@@ -606,9 +602,8 @@ __cor3RequestDarkMarket():
     // marketId regardless of current endpoint. Verified by inspecting
     // cor3.gg's own client when the user opens D4RK manually: it sends
     // only join-room + get.{options,lots,jobs}, no set.endpoint at all.
-    // The legacy preflight added 1500ms of delay and could falsely trip
-    // darkMarketAvailable=false via no-path-to-server when the user
-    // hadn't manually connected to D4RK first.
+    // An older preflight added 1500ms of delay and could falsely trip
+    // darkMarketAvailable=false via no-path-to-server.
 
 sendGetJobs(marketId):
     pendingMarketJobsRequests.push({ marketId, sentAt })
@@ -644,8 +639,7 @@ chrome.storage.local.marketData = {
 }
 ```
 
-The legacy `marketData.market.id` path is gone. `auto-jobs.js` now reads
-`marketData.marketId` directly.
+`auto-jobs.js` reads `marketData.marketId` directly.
 
 UUIDs (static per cor3.gg deployment, captured by inspecting the WS
 frames the site sends when the user opens Market via Network Map):
@@ -653,8 +647,7 @@ frames the site sends when the user opens Market via Network Map):
 ```
 HOME_MARKET_ID = '019d3ea4-85bd-7389-904d-8f7c85841134'
 DARK_MARKET_ID = '019d3ea4-85bd-7389-904d-908ba9194aa0'
-DARK_SERVER_ID = '019d29c5-4b37-79bf-b23e-304d8ea03c15'   // legacy — kept
-                                                          // for the
+DARK_SERVER_ID = '019d29c5-4b37-79bf-b23e-304d8ea03c15'   // kept for the
                                                           // set.endpoint
                                                           // unreachable
                                                           // listener

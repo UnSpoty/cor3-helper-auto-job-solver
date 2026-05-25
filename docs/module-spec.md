@@ -126,14 +126,14 @@ const unsub = Bus.window.on(C.MSG.WS.MARKET, (env) => { /* env = the posted payl
 const reply = await Bus.runtime.send('toggleAutoJobs', { settings });
 const unsub = Bus.runtime.on('toggleAutoJobs', async (payload, sender) => {
     /* payload = the posted payload, OR the whole {action, ...flat} message
-       for legacy popup envelopes */
+       for popup envelopes */
     return { success: true };
 });
 ```
 
 `Bus.runtime.on` принимает оба envelope-формата:
 - `{ type, payload }` (Bus-style)
-- `{ action, ...flat }` (legacy popup style; payload = whole msg)
+- `{ action, ...flat }` (popup style; payload = whole msg)
 
 **Никаких inline-строк в коде модулей** — все типы в
 [`src/shared/constants.js`](../src/shared/constants.js).

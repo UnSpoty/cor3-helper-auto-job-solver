@@ -1,7 +1,6 @@
-// src/modules/game/flows/decrypt-extract.js
 // Job type: decrypt_extract. Downloads file from server (unless already in
-// Downloads), opens it in Downloads to launch the config-hack minigame, waits
-// for solver to close it.
+// Downloads), opens it in Downloads to launch the minigame, waits for solver
+// to close it.
 
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
@@ -10,10 +9,9 @@
     const flows = root.COR3.game.flows;
     const MSG = C.MSG;
 
-    // Same dual-minigame story as file-decryption.js — cor3.gg ships
-    // either the legacy config-hack puzzle or the new ICE WALL Break
-    // depending on the file. Either solver runs autonomously in MAIN
-    // world; we only need to detect appearance + wait for close.
+    // Either config-hack or ICE WALL Break depending on the file. The
+    // matching solver runs autonomously in MAIN world; we only need to
+    // detect appearance + wait for close.
     const MINIGAME_SELS = [
         '[data-sentry-element="LogContentStyled"][data-sentry-source-file="config-hack-application.tsx"]',
         '[data-sentry-component="IceWallBreakApplication"]',
@@ -62,7 +60,7 @@
 
             // Arm watcher BEFORE clicking download so the new file is
             // identifiable by diff. clickRowDownload uses position-based
-            // lookup (DownloadIcon data-sentry-component is gone post-refactor).
+            // lookup (DownloadIcon has no data-sentry-component).
             await SAI.downloadsWatcher.arm(10_000);
             if (!SAI.clickRowDownload(row)) {
                 mod.warn('download button not found');
@@ -91,7 +89,7 @@
             await dom.sleep(250);
         }
         if (!appeared) {
-            mod.warn('minigame did not appear within 90s (checked both config-hack and ICE WALL Break)');
+            mod.warn('minigame did not appear within 90s (config-hack or ICE WALL Break)');
             flows.sendTimeout(jobId, marketId);
             flows.setWatching(false);
             return;

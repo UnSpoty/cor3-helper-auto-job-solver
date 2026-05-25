@@ -1,4 +1,3 @@
-// src/modules/game/flows/file-upload.js
 // Job type: file_upload. Opens SAI Files → Add → file picker → Downloads
 // folder → selects target file → clicks Upload.
 
@@ -53,9 +52,8 @@
             await dom.sleep(300);
         }
         if (!downloadsItem) {
-            // 4.5 s of polling and Downloads folder never rendered. This is
-            // a runtime issue, not a structural one — keep legacy behaviour
-            // (transient timeout) so we retry on the next cycle.
+            // 4.5 s of polling and Downloads folder never rendered. Runtime
+            // issue, not structural — transient timeout so we retry next cycle.
             mod.warn('Downloads folder not found in file picker');
             const closeBtn = document.querySelector(FILE_PICKER_CLOSE_SEL);
             if (closeBtn) closeBtn.click();

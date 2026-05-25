@@ -1,6 +1,4 @@
-// src/modules/data/market.js
 // Owns: marketData + marketDataUpdatedAt (HOME market only).
-// Auto-jobs scanner reactions stay in legacy content.js until Phase 4.
 
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
@@ -26,8 +24,7 @@
                     [C.STORAGE_LOCAL.MARKET]: env.market,
                     [C.STORAGE_LOCAL.MARKET_AT]: Date.now(),
                 });
-                // env.market is now the flat shape from get.jobs:
-                // { marketId, jobs, recentJobs, nextJobsResetAt }
+                // env.market shape: { marketId, jobs, recentJobs, nextJobsResetAt }
                 const jobCount = Array.isArray(env.market?.jobs) ? env.market.jobs.length : 0;
                 this.debug('market frame', { jobs: jobCount });
             }));

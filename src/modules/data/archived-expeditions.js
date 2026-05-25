@@ -1,10 +1,7 @@
-// src/modules/data/archived-expeditions.js
 // Owns: archivedExpeditionsData + archivedExpeditionsUpdatedAt.
 // Stores the most recent paginated fetch from expeditions:get.archived.
-// Re-introduced May 2026: the interceptor was already relaying the WS
-// event, but no module was subscribed (so the popup couldn't render
-// past expeditions). The Expeditions UI tab now shows this list under
-// "Recent runs" with cost/loot/status — see src/ui/sections/expeditions.js.
+// Rendered by the Expeditions UI tab under "Recent runs" —
+// see src/ui/sections/expeditions.js.
 
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;

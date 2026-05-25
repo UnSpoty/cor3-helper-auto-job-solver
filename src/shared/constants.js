@@ -1,4 +1,3 @@
-// src/shared/constants.js
 // Single source of truth for cross-context envelope types and storage keys.
 // Loaded as a classic script in every context (MAIN, isolated, popup, SW).
 // Registers into globalThis.COR3.constants.
@@ -85,9 +84,7 @@
         SOLVER: {
             START_DECRYPT: 'COR3_START_DECRYPT_SOLVER',
             STOP_DECRYPT: 'COR3_STOP_DECRYPT_SOLVER',
-            // Daily Ops one-shot solver (Game Center module). Replaces the
-            // legacy daily-hack toggle, which solved the same puzzles when
-            // they lived on a standalone page (deleted May 2026).
+            // Daily Ops one-shot solver (Game Center module).
             START_DAILY_OPS: 'COR3_START_DAILY_OPS',
             DAILY_OPS_LOG: 'COR3_DAILY_OPS_LOG',
             // Ice Wall solver — SAI's Porter-lite r4 minigame. Toggle-driven
@@ -129,13 +126,11 @@
             //   No completion sent. UI shows the reason next to the job.
             // success=false               → runtime crash/timeout — retry once,
             //   then permanent reject with runtime details.
-            // sendDone/sendTimeout in flows/_shared.js are thin wrappers over
-            // sendResult; flows can adopt the new contract incrementally.
             MINIGAME_RESULT: 'COR3_JOB_MINIGAME_RESULT',
             KD_DETECTED: 'COR3_JOB_KD_DETECTED',
             SERVER_UNREACHABLE: 'COR3_SERVER_UNREACHABLE',
-            // Commit 3 (pt 7): readiness probe result. Posted by
-            // server-connect when it observes access state on a server.
+            // Readiness probe result. Posted by server-connect when it
+            // observes access state on a server.
             // Shape: { serverName, canAccess: bool, hasHackTools: bool, reason }
             // Consumed by auto-jobs to persist AJ_SERVER_READINESS so the
             // planner can pre-reject the server (and everything behind it)
@@ -158,8 +153,6 @@
         EXPEDITIONS: 'expeditionsData',
         EXPEDITIONS_AT: 'expeditionsDataUpdatedAt',
         // Archived expeditions: paginated history pulled via expeditions:get.archived.
-        // Re-enabled May 2026 — data was always being relayed but no module was
-        // subscribed; UI now renders the most recent runs with their loot/cost.
         ARCHIVED_EXPEDITIONS: 'archivedExpeditionsData',
         ARCHIVED_EXPEDITIONS_AT: 'archivedExpeditionsUpdatedAt',
         DECISIONS: 'expeditionDecisions',
@@ -196,32 +189,32 @@
         LAUNCH_ERROR: 'expeditionLaunchError',
 
         // Network Map runtime
-        NM_SERVERS: 'networkMapServers',  // legacy: name array (DOM-scraped)
-        NM_GRAPH:   'networkMapGraph',    // canonical: { home, currentEndpointId, servers:[{id,name,depth,faction,…}] }
-                                          //              from network-map.get.map WS response (BFS-depth)
+        NM_SERVERS: 'networkMapServers',  // name array (DOM-scraped)
+        NM_GRAPH:   'networkMapGraph',    // { home, currentEndpointId, servers:[{id,name,depth,faction,…}] }
+                                          //   from network-map.get.map WS response (BFS-depth)
 
         // Auto-jobs runtime
         AUTOJOBS_STATE: 'autoJobsState',
         AUTOJOBS_QUEUE: 'autoJobsQueue',
-        BUGGED_JOBS: 'buggedJobIds',  // legacy TTL-based; replaced by AJ_REJECTED_JOBS in Phase 3
-        // Phase 2/3: per-cycle reachability snapshot
+        BUGGED_JOBS: 'buggedJobIds',  // superseded by AJ_REJECTED_JOBS
+        // Per-cycle reachability snapshot.
         // Shape: { computedAt, markets: { home: {reachable, blockers, path}, dark, srm }, servers: {...} }
         AJ_REACHABILITY: 'ajReachability',
-        // Commit 3 (pt 7): per-server readiness probe. Shape:
+        // Per-server readiness probe. Shape:
         //   { [serverName]: { canAccess, hasHackTools, checkedAt, reason? } }
         // canAccess===false means the server is unusable until a fresh probe
         // contradicts it (e.g. no Active Access AND no Hack Tools, or a
         // hack-tool path that failed every retry). Planner consults this and
         // treats canAccess===false on the path as a hard reject — transitive
-        // blocking per pt 8. TTL handled in-code (default 15 min — long
-        // enough to avoid re-probing every cycle, short enough to recover
-        // if the user manually fixed access in-game).
+        // blocking. TTL handled in-code (default 15 min — long enough to
+        // avoid re-probing every cycle, short enough to recover if the user
+        // manually fixed access in-game).
         AJ_SERVER_READINESS: 'ajServerReadiness',
-        // Phase 3: permanent rejects for *this cycle*. No TTL — auto-cleared
-        // when the job vanishes from markets, or via UI "Clear" button.
+        // Permanent rejects for *this cycle*. No TTL — auto-cleared when the
+        // job vanishes from markets, or via UI "Clear" button.
         // Shape: { [jobId]: { reason, since, descriptor } }
         AJ_REJECTED_JOBS: 'ajRejectedJobs',
-        // Phase 4: ring buffer of the last N state transitions (LIMITS.STATE_HISTORY_RING).
+        // Ring buffer of the last N state transitions (LIMITS.STATE_HISTORY_RING).
         // Shape: [{ ts, from, to, reason? }, …]. Persisted so the popup can render the
         // timeline without an open subscription to MSG.JOB.STATE_TRANSITIONED (popup is
         // a separate context from the orchestrator).
@@ -243,11 +236,11 @@
         // hard-coded default in the renderer.
         UI_COLLAPSE: 'uiCollapse',
 
-        // Centralized logger ring buffer (new, replaces cor3_ws_messages)
+        // Centralized logger ring buffer.
         // Shape: { [moduleId]: [{ ts, level, msg, ctx }, ...] }
         LOGS: 'cor3_logs',
 
-        // Centralized error capture (kept for back-compat)
+        // Centralized error capture.
         ERRORS: 'cor3_errors',
     };
 
@@ -287,7 +280,7 @@
         // Pinned timers
         PINNED_TIMERS: 'pinnedTimers',
 
-        // NEW: per-module enable/log state
+        // Per-module enable/log state.
         // Shape: { [moduleId]: { enabled: boolean, logsEnabled: boolean } }
         MODULES: 'modules',
     };
@@ -334,10 +327,10 @@
     // Tunables
     // ──────────────────────────────────────────────────────────────────────
     const LIMITS = {
-        LOG_RING_PER_MODULE: 200,    // entries kept per module in cor3_logs
-        ERRORS_RING: 200,             // entries in cor3_errors
-        BUGGED_JOB_TTL_MS: 2 * 60 * 60 * 1000,  // 2h — legacy, removed in Phase 3
-        AUTOJOBS_STATE_TTL_MS: 5 * 60 * 1000,   // 5min
+        LOG_RING_PER_MODULE: 200,
+        ERRORS_RING: 200,
+        BUGGED_JOB_TTL_MS: 2 * 60 * 60 * 1000,
+        AUTOJOBS_STATE_TTL_MS: 5 * 60 * 1000,
         // Buffer added to a server's K/D MaintenanceTimer before we attempt to
         // reach it again. Covers timer-text rounding + WS staleness.
         KD_BUFFER_MS: 5 * 60 * 1000,
@@ -345,19 +338,15 @@
         // transitions, flow start, heavy SAI clicks). Per-call override
         // available via cooldown.gate(label, { override: ms }).
         ACTION_COOLDOWN_MS: 3000,
-        // Auto-jobs state-history ring buffer (UI timeline). Bumped from
-        // 20 → 50 so the timeline is useful when diagnosing multi-step
-        // sequences (accept → SAI → flow → complete is already 4 rows per job).
         STATE_HISTORY_RING: 50,
-        // Auto-jobs completed-jobs ring buffer (incremental persistence)
         COMPLETED_LOG_RING: 50,
     };
 
     // D4RK servers that don't have a Logs section at all. Planner rejects
-    // log_download / log_deletion against these up-front; UI shows the same
-    // chip. Keep this list in sync with what the game actually exposes —
-    // there's no lazy-learning fallback any more (the old probe was racy and
-    // permanently poisoned legitimate servers on a single timing miss).
+    // log_download / log_deletion against these up-front. Keep in sync with
+    // what the game actually exposes — there's no lazy-learning fallback
+    // (the old probe was racy and permanently poisoned legitimate servers
+    // on a single timing miss).
     const NO_LOGS_SERVERS = ['D4RK RM7CE', 'D4RK 2IV2', 'D4RK RM7MI'];
 
     root.COR3.constants = { MSG, STORAGE_LOCAL, STORAGE_SYNC, FLOW, LOG_LEVEL, CATEGORY, LIMITS, NO_LOGS_SERVERS };

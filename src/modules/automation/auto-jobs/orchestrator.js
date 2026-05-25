@@ -1,37 +1,23 @@
-// src/modules/automation/auto-jobs/orchestrator.js
 // Auto-jobs state machine orchestrator.
 //
-// Phase 1: this file owns the **canonical** STATES enum and STATE_LABELS
-// metadata (title, description, what-state-comes-next). Both are consumed
-// by the UI section right now (Phase 4 will wire them in fully) and by the
-// orchestrator core when it lands in Phase 2/3. Keeping the constants here
-// — instead of duplicating them in src/ui/sections/auto-jobs.js — gives a
-// single source of truth.
+// Owns the canonical STATES enum and STATE_LABELS metadata (title,
+// description, next-state hint). Consumed by the UI section and by the
+// orchestrator core. Keeping the constants here — instead of duplicating
+// them in src/ui/sections/auto-jobs.js — gives a single source of truth.
 //
-// Phase 1 also provides `mapLegacyToCanonical(legacyStatus)` so the existing
-// 4-state runtime in auto-jobs.js (idle/accepting/solving/completing) can
-// be projected onto the canonical state names without behaviour change.
-// This is what lets the UI render "DLM_CHECK_SERVERS_ACCESSABILITY" etc.
-// even before the orchestrator core is wired.
+// `mapLegacyToCanonical(status, ctx)` projects the runtime's coarse
+// status ('idle'/'accepting'/'solving'/'completing') onto canonical
+// state names for the UI pill and timeline.
 //
-// Phase 2 will introduce `enterState(name, ctx)`, transition table, watch-
-// dogs per state, and a runtime that consumes planner/reachability/executor.
-//
-// API (current — Phase 1):
+// API:
 //   STATES                     — frozen enum, name → name (string).
 //   STATE_LABELS               — { [name]: { title, description, nextHint? } }
 //   ORDER                      — visual ordering for timeline rendering
-//   mapLegacyToCanonical(s)    — 'idle'|'accepting'|'solving'|'completing'
-//                                 → canonical state name
+//   mapLegacyToCanonical(s, ctx) — coarse status → canonical state name
 //   recordTransition(from, to, reason?) — appends to in-memory ring buffer
 //                                          and posts MSG.JOB.STATE_TRANSITIONED
 //   getHistory()               — last STATE_HISTORY_RING transitions
-//
-// API (planned — Phase 2/3):
-//   start() / stop()
-//   enterState(name, ctx)
-//   getState() / getNext()
-//   onResult(env)              — handles MINIGAME_RESULT (success/didWork/reason)
+//   enterState / getState / getNext — currently no-op stubs.
 
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
@@ -76,8 +62,7 @@
     });
 
     // Maps `job.jobType` (snake_case identifiers used in FLOW_DISPATCH) to
-    // the matching FLOW_<NAME> state. Phase 2/3 uses this in OPEN_SAI to
-    // pick the next state. Kept here so flows / executor can stay decoupled.
+    // the matching FLOW_<NAME> state.
     const FLOW_STATE_BY_TYPE = Object.freeze({
         file_decryption:  STATES.FLOW_FILE_DECRYPTION,
         ip_injection:     STATES.FLOW_IP_INJECTION,
@@ -94,9 +79,7 @@
     // `title` is short enough for the state pill (≤24 chars). `description`
     // is one sentence shown under the pill. `nextHint` is the most common
     // next-state name if the flow goes well — used to render the "→ next:"
-    // hint in the UI without the orchestrator having to publish it every
-    // time. The actual transition table in Phase 2 may diverge per context;
-    // when it does the orchestrator can override nextHint via the
+    // hint in the UI. The orchestrator can override nextHint via the
     // STATE_TRANSITIONED envelope.
     const STATE_LABELS = Object.freeze({
         [STATES.IDLE]: {
@@ -215,11 +198,9 @@
         STATES.HALTED,
     ]);
 
-    // ─── Legacy bridge ────────────────────────────────────────────────────
-    // Phase 1: project the existing 4-state runtime onto canonical names so
-    // the UI can render them. Once Phase 2 lands, the legacy values stop
-    // being written and this function only matters for state read from
-    // older storage during the upgrade.
+    // ─── Coarse-status bridge ─────────────────────────────────────────────
+    // Project the runtime's 4-state status onto canonical names so the UI
+    // can render them.
     function mapLegacyToCanonical(legacy, ctx) {
         switch (legacy) {
             case 'idle':       return STATES.IDLE;
@@ -228,17 +209,18 @@
                 // If the caller passes the current jobType (ctx.jobType),
                 // resolve to the specific FLOW_* state — that's the only
                 // place we know which flow is actually running. Falls back
-                // to OPEN_SAI for jobs whose type doesn't map (e.g. legacy
-                // entries) or when no ctx is supplied.
+                // to OPEN_SAI for jobs whose type doesn't map or when no
+                // ctx is supplied.
                 const jt = ctx && ctx.jobType;
                 if (jt && FLOW_STATE_BY_TYPE[jt]) return FLOW_STATE_BY_TYPE[jt];
                 return STATES.OPEN_SAI;
             }
             case 'completing': return STATES.COMPLETING_JOB;
             default:
-                // Phase 5: orchestrator now writes canonical state names directly
-                // (starting, drawing_local_map, recovering, halted, all_jobs_done,
-                // paused). Identity-map them so the UI pill renders correctly.
+                // Orchestrator also writes canonical state names directly
+                // (starting, drawing_local_map, recovering, halted,
+                // all_jobs_done, paused). Identity-map them so the UI pill
+                // renders correctly.
                 if (typeof legacy === 'string') {
                     for (const v of Object.values(STATES)) {
                         if (v === legacy) return legacy;
@@ -249,10 +231,10 @@
     }
 
     // ─── Transition history (UI timeline) ─────────────────────────────────
-    // Phase 4: also persists to STORAGE_LOCAL.AJ_STATE_HISTORY so the popup
-    // (a separate context) can render the timeline without subscribing to
-    // window-level Bus traffic. The in-memory ring stays primary and is
-    // hydrated from storage on first read so cross-reload visibility works.
+    // Persists to STORAGE_LOCAL.AJ_STATE_HISTORY so the popup (a separate
+    // context) can render the timeline without subscribing to window-level
+    // Bus traffic. The in-memory ring stays primary and is hydrated from
+    // storage on first read so cross-reload visibility works.
     const HISTORY_LIMIT = (C.LIMITS && C.LIMITS.STATE_HISTORY_RING) || 20;
     const history = [];
     let historyHydrated = false;
@@ -282,23 +264,14 @@
         return history.slice();
     }
 
-    // ─── Phase 2/3 placeholders ──────────────────────────────────────────
-    function enterState(_name, _ctx) {
-        // TODO(Phase 2): implement transition table + watchdog scheduling.
-    }
-
-    function getState() {
-        // TODO(Phase 2): return the current canonical state. Until then,
-        // the legacy-state listener in auto-jobs.js owns the runtime state.
-        return null;
-    }
-
-    function getNext() {
-        // TODO(Phase 2): the orchestrator can publish a real next-state
-        // hint based on its transition table. Until then, callers should
-        // fall back to STATE_LABELS[current].nextHint.
-        return null;
-    }
+    // ─── Placeholders ────────────────────────────────────────────────────
+    // The orchestrator core (transition table + per-state watchdogs) is
+    // not yet implemented; the runtime state machine in auto-jobs.js owns
+    // the actual transitions. Callers fall back to
+    // STATE_LABELS[current].nextHint when getNext() returns null.
+    function enterState(_name, _ctx) {}
+    function getState() { return null; }
+    function getNext()  { return null; }
 
     root.COR3.autoJobs = root.COR3.autoJobs || {};
     root.COR3.autoJobs.states = {
@@ -310,8 +283,6 @@
         recordTransition,
         getHistory,
         hydrateHistory,
-        // Phase 2/3 surface — currently no-op stubs so callers can be
-        // written once and graduate without renames.
         enterState,
         getState,
         getNext,

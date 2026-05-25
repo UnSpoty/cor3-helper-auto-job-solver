@@ -38,9 +38,9 @@
         while (!root.__jobManagerAbort) {
             const row = SAI.findFileRowByName(sai, fileName);
             if (!row) break;
-            // Files-tab rows lost their TrashIcon data-sentry-component in
-            // the May 2026 cor3.gg refactor; clickRowRemove finds the
-            // delete button by its position in the action area instead.
+            // Files-tab rows have no TrashIcon data-sentry-component;
+            // clickRowRemove finds the delete button by its position in
+            // the action area instead.
             mod.info(`deleting file #${deletedCount + 1}: ${fileName}`);
             if (!SAI.clickRowRemove(row)) {
                 mod.warn('delete button not found');

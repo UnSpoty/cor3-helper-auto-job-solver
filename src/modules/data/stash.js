@@ -1,7 +1,4 @@
-// src/modules/data/stash.js
-// Owns: stashData (and a non-canonical stashDataUpdatedAt). The
-// auto-send-merc "stash full → re-enable when space frees" check stays in
-// legacy content.js until Phase 4.
+// Owns: stashData (and a non-canonical stashDataUpdatedAt).
 
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;

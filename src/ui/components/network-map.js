@@ -1,7 +1,5 @@
-// src/ui/components/network-map.js
 // Local Network Map renderer for the popup.
 //
-// Phase 4 + post-feedback rewrite:
 //   - Tree layout (Reingold-Tilford-lite — recursive subtree-sizing so siblings
 //     never overlap and parents centre over their children).
 //   - Card-style nodes mirroring the in-game look: rounded rectangle with a
@@ -131,12 +129,10 @@
             if (p.col > maxCol) maxCol = p.col;
         }
 
-        // Defensive fallback: any server we somehow failed to place (could
-        // happen with a legacy NM_GRAPH that pre-dates the parentName field
-        // in ws-interceptor, or with malformed payloads where a node's
-        // parentName references a server that isn't in the servers[] list).
-        // Drop all unplaced nodes onto a single "orphan" row underneath the
-        // tree so the user sees them instead of silently losing data.
+        // Defensive fallback: any server we somehow failed to place (e.g.
+        // a node whose parentName references a server that isn't in
+        // servers[]). Drop unplaced nodes onto an "orphan" row underneath
+        // the tree so the user sees them instead of silently losing data.
         const unplaced = [];
         for (const s of (graph.servers || [])) {
             if (!positions.has(s.name)) unplaced.push(s);

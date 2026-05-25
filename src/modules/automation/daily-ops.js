@@ -83,7 +83,7 @@
                 return { success: true };
             }));
 
-            // Relay solver log lines into the legacy daily-hack log key so the
+            // Relay solver log lines into the daily-hack log key so the
             // popup's existing log viewer keeps working.
             this.track(Bus.window.on(C.MSG.SOLVER.DAILY_OPS_LOG, (env) => {
                 if (!env || !env.message) return;

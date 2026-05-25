@@ -1,10 +1,5 @@
-// src/modules/automation/auto-jobs/action-cooldown.js
 // 3-second action pacing primitive for the auto-jobs orchestrator and flows.
-//
-// Phase 1: helper is published on root.COR3.autoJobs.cooldown but NOT yet
-// integrated into auto-jobs.js or flows. Phase 2/3 will wire `gate(...)`
-// into orchestrator state transitions and into key flow steps (open SAI,
-// navigate section, submit) so the page has time to settle.
+// Currently exposed but not yet wired into auto-jobs.js or the flows.
 //
 // Why a global gate (not per-flow): cor3.gg's WS frames sometimes arrive a
 // beat after the DOM updates, and back-to-back actions inside the same

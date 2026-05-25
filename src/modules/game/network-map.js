@@ -130,9 +130,8 @@
         const deadline = Date.now() + timeoutMs;
 
         if (serverName) {
-            // Try the new onboarding-id selector first, fall back to the legacy
-            // data-sentry-component for older builds. See server-connect.js for
-            // the full reasoning behind the May 2026 cor3.gg refactor.
+            // Prefer the onboarding-id selector; fall back to the older
+            // data-sentry-component for builds that still ship it.
             const queryConnect = () =>
                 document.querySelector('[data-onboarding-300-id="ServerInfoPanelConnectButton"]') ||
                 document.querySelector(SEL.CONNECT_BTN);

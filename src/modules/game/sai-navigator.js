@@ -140,11 +140,9 @@
         if (sai.querySelector(sectionSel)) return true;
         // The SAI app element appears in the DOM before React mounts its
         // tab strip — a same-tick querySelectorAll(SEL.TAB) on a freshly-
-        // opened SAI returns []. Bailing on that returns a false-negative
-        // "no Logs section" verdict, which used to poison AJ_SERVER_CAPS
-        // permanently (now removed in favour of C.NO_LOGS_SERVERS). Even
-        // with the hardcoded list, the bogus verdict still aborts the
-        // current attempt — poll for tabs first.
+        // opened SAI returns []. Bailing on that yields a false-negative
+        // "no Logs section" verdict that aborts the current attempt —
+        // poll for tabs first.
         let tabs = [];
         for (let i = 0; i < 15 && !root.__jobManagerAbort; i++) {
             tabs = [...sai.querySelectorAll(SEL.TAB)];
@@ -255,12 +253,10 @@
     }
 
     // ─── Row finders (Logs / Files tabs) ──────────────────────────────────
-    // The May 2026 cor3.gg refactor stripped data-sentry-component attrs from
-    // the FileIcon SVG inside SaiFiles rows, so the icon-driven finder no
-    // longer works there. We now walk the ScrollArea container directly:
-    // each top-level child div IS a row, no matter which tab. This also
-    // works for SaiLogs (where LogIcon DOES still exist), which lets us
-    // collapse the two finders into one structural helper.
+    // SaiFiles rows have no data-sentry-component on the FileIcon SVG, so an
+    // icon-driven finder doesn't work there. Walk the ScrollArea container
+    // directly: each top-level child div IS a row, no matter which tab. Same
+    // helper handles SaiLogs (where LogIcon still exists).
     function rowsInSection(sai, sectionSel) {
         const section = sai.querySelector(sectionSel);
         if (!section) return [];
@@ -310,10 +306,9 @@
     }
 
     // Each Logs / Files row ends in an action area with a fixed pair of
-    // buttons: [download, delete]. The legacy code clicked these by hunting
-    // for DownloadIcon / TrashIcon data-sentry-components inside the row;
-    // those attrs survive on Logs but were stripped from Files. Position-
-    // based lookup is stable across both tabs.
+    // buttons: [download, delete]. Files rows have no
+    // DownloadIcon/TrashIcon data-sentry-components, so we use position-
+    // based lookup — stable across both tabs.
     //
     // Returns null if the row has no action area (e.g. user scrolled past
     // the visible window — virtualised list).

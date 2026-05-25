@@ -1,7 +1,6 @@
-// src/modules/solvers/ice-wall.js
 // Auto-solver for the SAI "Porter-lite r4" / ICE WALL Break minigame.
 //
-// Mechanic (verified live on RM7-E1SCP, 2026-05-11 after May-2026 refactor):
+// Mechanic:
 //   • Board = 10-row triangle of 100 small triangles (cells point up or
 //     down; 19-cell-wide bottom row, 1-cell apex). Cells use
 //     `transform="translate(X, Y)"` with optional `scale(1, -1)` for
@@ -90,14 +89,13 @@
     const STRONG_PARTIAL_RATIO = 0.40;
     const MIN_PARTIAL_RATIO = 0.33;
     const MIN_REVEALED_FOR_COMMIT = 2;
-    // May 2026: cor3.gg ships variable-size target shapes (3 / 6 / 9 cells
-    // observed). A fixed MIN_REVEALED_FOR_COMMIT=2 was too aggressive on
-    // 6-cell targets — 2/6 = 33% revealed and the mid-partial branch
-    // (realMatch >= midTh=2) would fire on the first plausible anchor.
-    // Result: solver committed with only 2 glyphs against a 6-glyph
-    // target and got it wrong. The 40%-of-total floor below means a
-    // 6-cell target needs 3 reveals before any commit, a 9-cell target
-    // needs 4, etc. The classic 3-cell case still passes at 2/3.
+    // Target shapes are variable-size (3 / 6 / 9 cells observed). A fixed
+    // MIN_REVEALED_FOR_COMMIT=2 is too aggressive on 6-cell targets —
+    // 2/6 = 33% revealed and the mid-partial branch (realMatch >= midTh=2)
+    // would fire on the first plausible anchor and commit wrong. The
+    // 40%-of-total floor below means a 6-cell target needs 3 reveals
+    // before any commit, a 9-cell target needs 4, etc. The classic 3-cell
+    // case still passes at 2/3.
     const MIN_REVEALED_RATIO = 0.40;
     const STABLE_COMMIT_MS = 3000;
 
@@ -621,9 +619,8 @@
      * pointer events; sending just `click` doesn't trigger the React
      * handler reliably. We fire pointerdown → pointerup → click as a
      * triplet, all at the geometric centre of the cell's bounding
-     * triangle. Bounding triangle has pointer-events:auto in the new
-     * DOM, but if it ever has pointer-events:none we'd need to fall
-     * back to the parent <g>. Verified live 2026-05-11.
+     * triangle. Bounding triangle has pointer-events:auto; if it ever
+     * gets pointer-events:none we'd fall back to the parent <g>.
      */
     async function attemptClick(glyphGroup, mod) {
         const tri = glyphGroup.querySelector(SEL.TRIANGLE);
@@ -641,7 +638,7 @@
             }));
         };
         // PointerEvent first (what React 17+ listens to via onPointerDown),
-        // then MouseEvent click as a fallback for any legacy handler.
+        // then MouseEvent click as a fallback.
         try {
             fire('pointerdown', PointerEvent, { pointerType: 'mouse', isPrimary: true });
             fire('pointerup', PointerEvent, { pointerType: 'mouse', isPrimary: true });

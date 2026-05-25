@@ -1,15 +1,6 @@
-// src/modules/automation/auto-jobs/planner.js
-// Per-job verdict for STATE_CHECK_JOB_CONDITIONS.
-//
-// Phase 2 (log-only): planner is run *alongside* auto-jobs.js findCandidates
-// to produce verdicts that surface in the activity log. The actual filter
-// decision is still made by the existing per-job server/K/D checks. This
-// gives us confidence the new logic agrees with the legacy path before
-// flipping the gate in Phase 3.
-//
-// Phase 3: planner verdicts become enforced — the orchestrator's
-// CHECK_JOB_CONDITIONS state will use this output verbatim to decide
-// what enters TAKE_ALL_VALID_JOBS.
+// Per-job verdict for STATE_CHECK_JOB_CONDITIONS. Verdicts are enforced —
+// the orchestrator's CHECK_JOB_CONDITIONS state uses this output verbatim
+// to decide what enters TAKE_ALL_VALID_JOBS.
 //
 // Verdict reasons (kebab-case, stable for log grepping):
 //   accept
@@ -17,14 +8,11 @@
 //   reject:server-skip              — user manually skipped this server (priorities='skip')
 //   reject:server-kd                — server itself is in K/D (NM_GRAPH.isInMaintenance)
 //   reject:path-kd                  — at least one transit node is in K/D
-//   reject:no-logs-section          — log_* job targeting a server hardcoded
-//                                     in C.NO_LOGS_SERVERS (D4RK ones without
-//                                     a Logs tab in-game). Used to be lazy-
-//                                     learned into AJ_SERVER_CAPS but that
-//                                     was racy and false-positives stuck
-//                                     forever — see commit history.
-//   reject:already-rejected         — job already in AJ_REJECTED_JOBS map (Phase 3)
-//   reject:bugged                   — job in legacy buggedJobs map and TTL still active
+//   reject:no-logs-section          — log_* job targeting a server hardcoded in
+//                                     C.NO_LOGS_SERVERS (D4RK ones without a
+//                                     Logs tab in-game)
+//   reject:already-rejected         — job already in AJ_REJECTED_JOBS map
+//   reject:bugged                   — job in buggedJobs map and TTL still active
 //   reject:unknown-type             — job type doesn't map to any flow
 //   reject:no-access                — AJ_SERVER_READINESS marks server canAccess=false
 //   reject:path-no-access           — at least one transit node has canAccess=false
@@ -69,15 +57,11 @@
             return { accept: false, reason: 'reject:unknown-type', severity: 'warn' };
         }
 
-        // Already permanently rejected this cycle (Phase 3+ — Phase 2 ctx.rejected
-        // is empty so this branch is a no-op until enforcement turns on).
+        // Already permanently rejected this cycle.
         if (ctx && ctx.rejected && ctx.rejected[job.id]) {
             return { accept: false, reason: 'reject:already-rejected', severity: 'info' };
         }
 
-        // Legacy bugged-jobs map is still authoritative in Phase 2; Phase 3
-        // removes it. Until then, mirror the old skip behaviour so verdicts
-        // line up with what auto-jobs actually does.
         if (ctx && ctx.bugged && ctx.bugged[job.id]) {
             if (isFiniteBuggedActive(ctx.bugged[job.id], ctx.now)) {
                 return { accept: false, reason: 'reject:bugged', severity: 'info' };
@@ -111,12 +95,12 @@
                 }
             }
 
-            // Commit 3 (pt 7/8): readiness gate. AJ_SERVER_READINESS is
-            // populated by server-connect's preflight detection — when a
-            // server has neither Active Access nor Hack Tools, we mark it
+            // Readiness gate. AJ_SERVER_READINESS is populated by
+            // server-connect's preflight detection — when a server has
+            // neither Active Access nor Hack Tools, we mark it
             // canAccess=false and stop trying jobs against it. Includes a
-            // transitive path check so a server BEHIND an unreachable node
-            // is rejected up front instead of failing at connect time.
+            // transitive path check so a server BEHIND an unreachable
+            // node is rejected up front instead of failing at connect time.
             if (ctx && ctx.readinessFor) {
                 const r = ctx.readinessFor(serverName);
                 if (r && r.canAccess === false) {
@@ -141,9 +125,8 @@
 
     /**
      * Run the verdicts across a candidate list. Returns the same shape used
-     * by auto-jobs.js findCandidates plus a `rejected` array. Phase 2 the
-     * caller only logs `rejected`; Phase 3 the caller drops them from the
-     * accept-batch.
+     * by auto-jobs.js findCandidates plus a `rejected` array; the caller
+     * drops `rejected` from the accept-batch.
      */
     function filterCandidates(candidates, ctx) {
         const accepted = [];
@@ -187,7 +170,7 @@
             }
             return false;
         }
-        // pt 7: readiness lookup with TTL. Anything older than READINESS_TTL_MS
+        // Readiness lookup with TTL. Anything older than READINESS_TTL_MS
         // is treated as unknown — we'd rather try and fail than block on
         // stale data. canAccess: undefined → unknown (allow); === true → ok;
         // === false within TTL → block.
@@ -199,7 +182,7 @@
             if (r.checkedAt && (now - r.checkedAt) > READINESS_TTL_MS) return null;
             return r;
         }
-        // pt 8: same parentName walk as pathHasKD but checks readiness on
+        // Same parentName walk as pathHasKD but checks readiness on
         // every transit node. A node we marked canAccess=false acts as a
         // hard chain blocker just like K/D — every server behind it is
         // implicitly unusable.

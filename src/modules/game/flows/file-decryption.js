@@ -1,4 +1,3 @@
-// src/modules/game/flows/file-decryption.js
 // Job type: file_decryption.
 // Opens Downloads folder, finds target file by exact name or extension,
 // double-clicks it to launch the config-hack minigame, waits for the solver
@@ -11,9 +10,8 @@
     const flows = root.COR3.game.flows;
     const MSG = C.MSG;
 
-    // May 2026: cor3.gg ships TWO different minigames for file decryption
-    // depending on the file. We treat either as "minigame appeared":
-    //   • Legacy config-hack — Porter-style minimax, solved by solver-decrypt.
+    // Two possible minigames per file:
+    //   • config-hack — Porter-style minimax, solved by solver-decrypt.
     //   • ICE WALL Break — pattern matching, solved by solver-ice-wall.
     // Whichever opens, the corresponding solver picks it up. Flow only
     // cares about (a) seeing one of them, and (b) waiting for both to be
@@ -88,7 +86,7 @@
             await dom.sleep(250);
         }
         if (!appeared) {
-            mod.warn('Minigame did not appear within 90s (checked both config-hack and ICE WALL Break)');
+            mod.warn('Minigame did not appear within 90s (config-hack or ICE WALL Break)');
             flows.sendTimeout(jobId, marketId);
             flows.setWatching(false);
             return;

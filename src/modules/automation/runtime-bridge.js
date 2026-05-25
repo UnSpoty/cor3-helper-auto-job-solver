@@ -1,7 +1,7 @@
-// src/modules/automation/runtime-bridge.js
-// Bridge: chrome.runtime.sendMessage (popup/SW → isolated world) → window.postMessage (isolated → MAIN).
-// Replaces the legacy chrome.runtime.onMessage block that was inside content.js.
-// Most actions just forward a typed Bus.window envelope to the MAIN-world WS interceptor.
+// Bridge: chrome.runtime.sendMessage (popup/SW → isolated world)
+// → window.postMessage (isolated → MAIN).
+// Most actions forward a typed Bus.window envelope to the MAIN-world WS
+// interceptor.
 
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;

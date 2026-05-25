@@ -1,7 +1,5 @@
-// src/shared/errors.js
 // Centralized error capture. Pushes errors into chrome.storage.local.cor3_errors
-// (back-compat with legacy errors.js) AND into the Logger if available.
-// Registers into globalThis.COR3.errors.
+// and into the Logger if available. Registers into globalThis.COR3.errors.
 
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
@@ -85,22 +83,18 @@
 
     root.COR3.errors = { logError, getErrors, clearErrors, guard };
 
-    // Back-compat global aliases (matches the old errors.js API). Allows the
-    // legacy code in content.js / popup.js to keep working during the migration.
+    // Global aliases for use from the F12 console.
     if (typeof root.cor3LogError !== 'function') root.cor3LogError = logError;
     if (typeof root.cor3GetErrors !== 'function') root.cor3GetErrors = getErrors;
     if (typeof root.cor3ClearErrors !== 'function') root.cor3ClearErrors = clearErrors;
 
-    // ws-messages.js shim — the dedicated WS debug log was dropped per Phase 1
-    // decisions (replaced by the centralized Logger). Legacy content.js still
-    // calls cor3LogWsMessage(); we stub it to a no-op so nothing crashes.
     if (typeof root.cor3LogWsMessage !== 'function') {
-        root.cor3LogWsMessage = function () { /* dropped */ };
+        root.cor3LogWsMessage = function () {};
     }
     if (typeof root.cor3GetWsMessages !== 'function') {
         root.cor3GetWsMessages = async function () { return []; };
     }
     if (typeof root.cor3ClearWsMessages !== 'function') {
-        root.cor3ClearWsMessages = async function () { /* dropped */ };
+        root.cor3ClearWsMessages = async function () {};
     }
 })();

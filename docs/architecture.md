@@ -176,7 +176,7 @@ Two transports, **same envelope shape** `{ type, payload }`:
 | MAIN ↔ isolated content | `window.postMessage` | `Bus.window.post(type, payload)` / `.on(type, handler)` |
 | Isolated ↔ popup ↔ SW | `chrome.runtime` | `Bus.runtime.send(type, payload)` / `.on(type, handler)` |
 
-`Bus.runtime.on` accepts both `{type, payload}` (Bus-style) and legacy
+`Bus.runtime.on` accepts both `{type, payload}` (Bus-style) and
 `{action, ...flat}` envelopes — the popup uses the latter via
 `chrome.tabs.sendMessage(tab.id, {action: 'foo', ...})` because messages
 must target a specific tab to reach the content script.
@@ -205,7 +205,7 @@ End result: every log line, regardless of which world emitted it, lands in
 `chrome.storage.local.cor3_logs[moduleId]` and is visible in the popup's
 Logs tab.
 
-### Bus tracer recursion (resolved May 2026)
+### Bus tracer recursion
 
 Logger also installs `Bus.setTrace(...)` to record every cross-world Bus
 event under the synthetic module id `bus`. Critically, this registration is
@@ -264,6 +264,5 @@ Bus.window.on('COR3_MODULE_STATE_CHANGE', ({id, state}) => {
 });
 ```
 
-This is tracked in [`plans/todo.md`](../plans/todo.md). Before doing it,
-verify with `chrome-devtools-mcp` that toggling the UI switch doesn't
-already cascade through some other code path you missed.
+Before doing it, verify with `chrome-devtools-mcp` that toggling the UI
+switch doesn't already cascade through some other code path you missed.

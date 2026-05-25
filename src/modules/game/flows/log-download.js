@@ -1,12 +1,7 @@
-// src/modules/game/flows/log-download.js
 // Job type: log_download. Matches log rows by NAME first; uses logSeqs only
-// to disambiguate when several rows share a name.
-//
-// We tried "seq-first" briefly (May 2026) after a duplicate-name complaint,
-// but a follow-up showed seq from the server doesn't always map to a
-// position in the visible DOM list (virtualised list / server-side absolute
-// seq) — so seq-first regressed the common case where only one row matches
-// the name. Name-first is the conservative baseline; seq is the tiebreaker.
+// to disambiguate when several rows share a name. Seq is server-absolute and
+// doesn't always map to a position in the visible (virtualised) DOM list, so
+// it can't be used as the primary key — name-first is the conservative path.
 
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
