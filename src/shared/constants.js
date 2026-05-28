@@ -268,10 +268,14 @@
         // `node` is one of AJV2.NODE.* — the flowchart node currently executing.
         AJV2_PIPELINE_STATE: 'ajv2PipelineState',
         // The job board the pipeline produced this cycle. Shape:
-        //   { cycle, computedAt, jobs: [{ id, name, type, serverName,
-        //     marketSlot, rewardCredits, eligible, skipReason }] }
-        // `eligible` is null until CHECK_JOBS_CONDITION runs, then bool;
-        // `skipReason` is the human-readable reason a job was marked SKIP.
+        //   { cycle, computedAt,
+        //     markets: [{ slot, reachable, refreshed, jobCount, reason }],
+        //     jobs: [{ id, name, type, serverName, marketSlot,
+        //              rewardCredits, eligible, skipReason }] }
+        // `markets` lets the UI group jobs per market (incl. reachable-but-
+        // empty / unreachable ones). `eligible` is null until
+        // CHECK_JOBS_CONDITION runs, then bool; `skipReason` is the
+        // human-readable reason a job was marked SKIP.
         AJV2_JOB_QUEUE: 'ajv2JobQueue',
         // Bugged-job registry the pipeline reads and (later) writes itself.
         // Shape: { [jobId]: { reason, since } }.

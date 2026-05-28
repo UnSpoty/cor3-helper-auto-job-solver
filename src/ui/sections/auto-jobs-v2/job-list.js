@@ -48,10 +48,10 @@
         }
         row.appendChild(head);
 
+        // Market is now the section header, so it's omitted from the row meta.
         const metaBits = [];
         if (job.type) metaBits.push(job.type);
         metaBits.push(job.serverName || 'no server');
-        metaBits.push(SLOT_LABEL[job.marketSlot] || job.marketSlot || '?');
         if (Number.isFinite(job.rewardCredits)) metaBits.push(job.rewardCredits + ' CR');
         row.appendChild(el('div', 'job-meta', metaBits.join(' · ')));
 
@@ -59,6 +59,31 @@
             row.appendChild(el('div', 'ajv2-skip-reason xs', 'SKIP: ' + job.skipReason));
         }
         return row;
+    }
+
+    // One market block: header (name + status + count) then its jobs.
+    function marketSection(market, jobs) {
+        const sec = el('div', 'ajv2-market' + (market.reachable === false ? ' is-unreachable' : ''));
+
+        const head = el('div', 'ajv2-market-head');
+        head.appendChild(el('span', 'ajv2-market-name', SLOT_LABEL[market.slot] || market.slot || '?'));
+        if (market.reachable === false) {
+            head.appendChild(el('span', 'pill warn', 'unreachable'));
+        } else if (market.refreshed === false) {
+            const stale = el('span', 'pill idle', 'stale');
+            stale.title = 'Refresh timed out — showing the last-known board';
+            head.appendChild(stale);
+        }
+        head.appendChild(el('span', 'muted xs ajv2-market-count', `${jobs.length} ${jobs.length === 1 ? 'job' : 'jobs'}`));
+        sec.appendChild(head);
+
+        if (!jobs.length) {
+            const why = market.reachable === false ? (market.reason || 'unreachable') : 'No jobs.';
+            sec.appendChild(el('div', 'muted xs ajv2-market-empty', why));
+        } else {
+            for (const job of jobs) sec.appendChild(jobRow(job));
+        }
+        return sec;
     }
 
     function attach(container) {
@@ -78,22 +103,36 @@
 
         function render(queue) {
             list.innerHTML = '';
-            const jobs = (queue && Array.isArray(queue.jobs)) ? queue.jobs : [];
 
-            if (!jobs.length) {
-                summary.textContent = queue ? `0 jobs · cycle ${queue.cycle || '—'}` : 'pipeline not run yet';
-                list.appendChild(el('div', 'muted xs ajv2-jobs-empty', queue ? 'No jobs on the board this cycle.' : 'Press START to run the pipeline.'));
+            if (!queue) {
+                summary.textContent = 'pipeline not run yet';
+                list.appendChild(el('div', 'muted xs ajv2-jobs-empty', 'Press START to run the pipeline.'));
                 return;
             }
 
+            const jobs = Array.isArray(queue.jobs) ? queue.jobs : [];
             const evaluated = jobs.filter((j) => j.eligible != null).length;
             const eligible = jobs.filter((j) => j.eligible === true).length;
             const skipped = jobs.filter((j) => j.eligible === false).length;
-            summary.textContent = evaluated
-                ? `${jobs.length} jobs · ${eligible} eligible · ${skipped} skip · cycle ${queue.cycle || '—'}`
-                : `${jobs.length} jobs · pending · cycle ${queue.cycle || '—'}`;
+            const cyc = `cycle ${queue.cycle || '—'}`;
+            summary.textContent = !jobs.length
+                ? `0 jobs · ${cyc}`
+                : evaluated
+                    ? `${jobs.length} jobs · ${eligible} eligible · ${skipped} skip · ${cyc}`
+                    : `${jobs.length} jobs · pending · ${cyc}`;
 
-            for (const job of jobs) list.appendChild(jobRow(job));
+            // Group jobs by their market slot.
+            const bySlot = {};
+            for (const j of jobs) (bySlot[j.marketSlot] = bySlot[j.marketSlot] || []).push(j);
+
+            // Render one section per market. Prefer the pipeline's market
+            // summary (covers reachable-but-empty + unreachable markets in a
+            // stable order); fall back to the slots present in the jobs.
+            const markets = (Array.isArray(queue.markets) && queue.markets.length)
+                ? queue.markets
+                : Object.keys(bySlot).map((slot) => ({ slot, reachable: true, refreshed: true, jobCount: bySlot[slot].length }));
+
+            for (const m of markets) list.appendChild(marketSection(m, bySlot[m.slot] || []));
         }
 
         const unsub = Store.local.onChanged((changes) => {

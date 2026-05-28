@@ -66,6 +66,13 @@
         { from: NODE.DELAY_CYCLE,    to: NODE.GET_SERVERS,    kind: 'loop',  label: 'loop' },
     ];
 
+    // DELAY node → its total duration, so the map can run a local countdown
+    // while the orchestrator sleeps (no storage writes happen mid-delay).
+    const DELAY_MS = {
+        [NODE.DELAY_INITIAL]: C.AJV2.LOOP.INITIAL_DELAY_MS,
+        [NODE.DELAY_CYCLE]: C.AJV2.LOOP.CYCLE_DELAY_MS,
+    };
+
     function svgEl(name, attrs) {
         const e = document.createElementNS(SVG_NS, name);
         if (attrs) for (const k of Object.keys(attrs)) {
@@ -267,16 +274,29 @@
 
         // ── Nodes ────────────────────────────────────────────────────────
         const nodeEls = new Map();
+        const delayParts = new Map();  // delay node id -> { progressRect, labelEl, base, innerW }
         const nodesG = svgEl('g', { class: 'fm-nodes' });
         for (const n of NODES) {
             const g = svgEl('g', { class: `fm-node fm-node-${n.type}`, 'data-id': n.id, transform: `translate(${n.x}, ${n.y})` });
             g.appendChild(nodeShape(n));
+
+            // DELAY nodes carry a progress bar that fills as the timer runs.
+            const innerW = DELAY_W - 16;
+            let progressRect = null;
+            if (n.type === 'delay') {
+                progressRect = svgEl('rect', {
+                    class: 'fm-delay-progress',
+                    x: -innerW / 2, y: DELAY_H / 2 - 7, width: 0, height: 3, rx: 1.5, ry: 1.5,
+                });
+                g.appendChild(progressRect);
+            }
 
             // Multi-line label for the long module names: wrap on underscores
             // so the box can stay reasonably narrow.
             const { w } = nodeSize(n);
             const lines = wrapLabel(n.label, w);
             const startDy = -((lines.length - 1) * 5);
+            let labelEl = null;
             for (let i = 0; i < lines.length; i++) {
                 const tx = svgEl('text', {
                     class: 'fm-node-label',
@@ -285,6 +305,11 @@
                 });
                 tx.textContent = lines[i];
                 g.appendChild(tx);
+                if (i === 0) labelEl = tx;
+            }
+
+            if (n.type === 'delay') {
+                delayParts.set(n.id, { progressRect, labelEl, base: n.label, innerW });
             }
 
             const title = svgEl('title');
@@ -398,13 +423,45 @@
             }
         }
 
+        // DELAY countdown — runs locally between storage writes (the
+        // orchestrator is asleep during a delay, so it won't tick the state).
+        let delayTimer = null;
+        function resetDelay(part) {
+            if (part.progressRect) part.progressRect.setAttribute('width', 0);
+            if (part.labelEl) part.labelEl.textContent = part.base;
+        }
+        function stopDelayAnim() {
+            if (delayTimer) { clearInterval(delayTimer); delayTimer = null; }
+            for (const [, p] of delayParts) resetDelay(p);
+        }
+        function startDelayAnim(nodeId, startTs) {
+            const dur = DELAY_MS[nodeId];
+            const part = delayParts.get(nodeId);
+            if (!dur || !part) { stopDelayAnim(); return; }
+            if (delayTimer) clearInterval(delayTimer);
+            for (const [id, p] of delayParts) if (id !== nodeId) resetDelay(p);
+            const ts = Number(startTs) || Date.now();
+            const tick = () => {
+                const elapsed = Date.now() - ts;
+                const frac = Math.max(0, Math.min(1, elapsed / dur));
+                const remaining = Math.max(0, Math.ceil((dur - elapsed) / 1000));
+                if (part.progressRect) part.progressRect.setAttribute('width', (part.innerW * frac).toFixed(1));
+                if (part.labelEl) part.labelEl.textContent = `DELAY ${remaining}s`;
+            };
+            tick();
+            delayTimer = setInterval(tick, 150);
+        }
+
         function renderState(state) {
             if (!state || !state.running) {
+                stopDelayAnim();
                 setActive(null);
                 status.textContent = 'idle';
                 return;
             }
             setActive(state.node || null);
+            if (state.node && DELAY_MS[state.node]) startDelayAnim(state.node, state.updatedAt);
+            else stopDelayAnim();
             const n = state.node ? byId.get(state.node) : null;
             const label = n ? n.label : (state.node || '—');
             const cyc = state.cycle ? ` · cycle ${state.cycle}` : '';
@@ -422,6 +479,7 @@
         return {
             destroy() {
                 if (typeof localUnsub === 'function') localUnsub();
+                if (delayTimer) clearInterval(delayTimer);
                 if (resizeObs) resizeObs.disconnect();
                 if (resizeTimer) clearTimeout(resizeTimer);
                 canvasHost.removeEventListener('wheel', onWheel, { capture: true });

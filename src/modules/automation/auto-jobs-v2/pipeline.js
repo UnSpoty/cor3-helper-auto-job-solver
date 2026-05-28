@@ -299,6 +299,7 @@
             await ctx.store.local.setOne(SL.AJV2_JOB_QUEUE, {
                 cycle: packet.cycle,
                 computedAt: Date.now(),
+                markets: packet.markets,
                 jobs: queue.map(stripRaw),
             });
 
@@ -374,6 +375,7 @@
             await ctx.store.local.setOne(SL.AJV2_JOB_QUEUE, {
                 cycle: packet.cycle,
                 computedAt: Date.now(),
+                markets: packet.markets,
                 jobs: packet.queue.map(stripRaw),
             });
 
