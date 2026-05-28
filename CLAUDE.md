@@ -6,10 +6,48 @@ references live in `docs/`.
 ## TL;DR
 
 COR3 Helper is a Chrome MV3 (and Firefox-compatible) extension for the
-[cor3.gg](https://cor3.gg) game. Modular architecture, ~70 files in `src/`.
+[cor3.gg](https://cor3.gg) game. Modular architecture, ~85 files in `src/`.
 Every feature is a `COR3.Module` registered with `COR3.Registry`. Five
 execution contexts share a global `window.COR3.*` namespace via classic
 IIFE-loaded scripts. No build step.
+
+## Active work: Auto-Jobs v2
+
+A rewrite of the Auto-Jobs subsystem is in progress under the
+**"Auto-Jobs v2"** tab. Code lives in
+[src/ui/sections/auto-jobs-v2/](src/ui/sections/auto-jobs-v2/) and uses the
+isolated storage key `STORAGE_SYNC.AUTOJOBS_V2_SETTINGS`. The v2 namespaces
+are `COR3.autoJobsV2.*` and `COR3.uiComponentsV2.*`.
+
+**Hard rules when working on v2:**
+
+1. **Do NOT port logic from v1 Auto-Jobs.** v2 is a redesign of the
+   pipeline, not a refactor. Files under
+   [src/modules/automation/auto-jobs/](src/modules/automation/auto-jobs/)
+   and [src/ui/sections/auto-jobs.js](src/ui/sections/auto-jobs.js) are
+   reference material only — do not copy state machines, planners,
+   reachability code, queue handling, recovery, or job-flow dispatch
+   into the v2 directory. Write v2 logic from scratch based on the
+   explicit requirements in the conversation.
+2. **No fallbacks. No defensive defaults. No silent degradation.** If
+   v2 needs a piece of state, declare it as a hard requirement. Never
+   write `value || defaultValue`, `try { … } catch (_) {}` to mask
+   missing things, or `if (!x) return` to silently skip work. If a
+   precondition fails, throw or log loudly. v2's behaviour must be
+   exact and auditable — the reader of the code should see the one
+   path it takes, not a tree of "in case X is missing" branches.
+3. **v2 must not touch v1 storage or messages.** Never read or write
+   `AUTOJOBS_SETTINGS`, `AUTOJOBS_STATE`, `AUTOJOBS_QUEUE`,
+   `AJ_REJECTED_JOBS`, `AJ_REACHABILITY`, `AJ_SERVER_READINESS`,
+   `AJ_STATE_HISTORY`, `BUGGED_JOBS`, `SERVER_PRIORITIES`, or send
+   `toggleAutoJobs`/`autoJobsReset`/`clearBuggedJobs` from v2 code.
+   v2 owns its own keys and message actions (`toggleAutoJobsV2` etc.).
+   The only shared, read-only inputs are pure game state: `NM_GRAPH`
+   and the three market envelopes (`MARKET`/`DARK_MARKET`/`SRM_MARKET`).
+4. **Logger module id is `auto-jobs-v2`** (plus `flow-v2-*` for
+   future v2 flow modules). The v2 Activity Log and v2 Download Log
+   filter to these ids. Never log v2 events under the `auto-jobs` id —
+   that would leak into v1's Activity Log.
 
 ## Documentation map
 
@@ -40,16 +78,26 @@ cor3-helper/
 │   └── glossary.md       ← game terms + DOM selectors
 └── src/
     ├── core/             Bus, Store, Logger, Module, Registry, Settings
-    ├── shared/           platform, constants, dom, ws-frames, errors
+    ├── shared/           platform, constants, build-info, dom, ws-frames,
+    │                      errors, i18n, i18n-bridge
     ├── interceptors/     ws-interceptor, http-interceptor, solver-loader
     ├── modules/
-    │   ├── data/         9 modules — one per WS payload
-    │   ├── automation/   9 modules — timers, auto-jobs, auto-send-merc, …,
-    │   │                  auto-decrypt, auto-ice-wall, daily-ops, runtime-bridge
-    │   ├── game/         network-map, server-connect, sai-navigator, flows-core, 9 flows
-    │   ├── solvers/      decrypt, daily-ops, ice-wall
+    │   ├── data/         12 modules — one per WS payload (auth, expeditions,
+    │   │                  archived-expeditions, decisions, market, dark-market,
+    │   │                  srm-market, stash, loadout, mercenaries, merc-config,
+    │   │                  expedition-config)
+    │   ├── automation/   10 modules — timers, auto-refresh, auto-send-merc,
+    │   │                  auto-choose-decision, auto-decrypt, auto-ice-wall,
+    │   │                  auto-simple-decrypt, daily-ops, auto-jobs,
+    │   │                  runtime-bridge — plus auto-jobs/ subdir of helpers
+    │   │                  (action-cooldown, log-export, reachability, planner,
+    │   │                  executor, orchestrator — namespace COR3.autoJobs.*,
+    │   │                  not Registry-registered modules)
+    │   ├── game/         network-map, server-connect, sai-navigator,
+    │   │                  loadout-panel, flows/_shared (id 'flows-core'), 9 flows
+    │   ├── solvers/      decrypt, daily-ops, ice-wall, simple-decrypt
     │   └── appearance/   4 CSS/DOM toggles
-    ├── ui/               popup.html + popup.css + components/ + sections/
+    ├── ui/               popup.html + popup.css + shell.js + components/ + sections/
     └── entry/            content-early.js, content.js, background.js
 ```
 
@@ -154,14 +202,16 @@ Quick list of every registered module ID and its world:
 - `flow-file-decryption`, `flow-ip-injection`, `flow-ip-cleanup`,
   `flow-file-upload`, `flow-log-deletion`, `flow-log-download`,
   `flow-file-elimination`, `flow-data-download`, `flow-decrypt-extract`
-- `solver-decrypt`, `solver-daily-ops`, `solver-ice-wall`
+- `solver-decrypt`, `solver-daily-ops`, `solver-ice-wall`,
+  `solver-simple-decrypt`
 
 **Isolated content_scripts:**
-- `auth`, `expeditions`, `decisions`, `market`, `dark-market`, `stash`,
-  `loadout`, `mercenaries`, `merc-config`, `expedition-config` — data
+- `auth`, `expeditions`, `archived-expeditions`, `decisions`, `market`,
+  `dark-market`, `srm-market`, `stash`, `loadout`, `mercenaries`,
+  `merc-config`, `expedition-config` — data
 - `timers`, `auto-refresh`, `auto-send-merc`, `auto-choose-decision`,
-  `auto-decrypt`, `auto-ice-wall`, `daily-ops`, `auto-jobs`,
-  `runtime-bridge` — automation
+  `auto-decrypt`, `auto-ice-wall`, `auto-simple-decrypt`, `daily-ops`,
+  `auto-jobs`, `runtime-bridge` — automation
 - `appearance-system-messages`, `appearance-background`,
   `appearance-network-fog`, `appearance-map-fx` — appearance
 

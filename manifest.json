@@ -135,6 +135,8 @@
         "src/modules/automation/auto-jobs/executor.js",
         "src/modules/automation/auto-jobs/orchestrator.js",
         "src/modules/automation/auto-jobs.js",
+        "src/modules/automation/auto-jobs-v2/pipeline.js",
+        "src/modules/automation/auto-jobs-v2.js",
         "src/modules/automation/runtime-bridge.js",
         "src/modules/appearance/system-messages.js",
         "src/modules/appearance/background.js",

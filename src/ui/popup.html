@@ -29,6 +29,7 @@
             <section class="section" data-tab="overview"     id="section-overview"></section>
             <section class="section" data-tab="expeditions"  id="section-expeditions"></section>
             <section class="section" data-tab="autojobs"     id="section-autojobs"></section>
+            <section class="section" data-tab="autojobsV2"   id="section-autojobs-v2"></section>
             <section class="section" data-tab="modules"      id="section-modules"></section>
             <section class="section" data-tab="logs"         id="section-logs"></section>
         </main>
@@ -68,6 +69,17 @@
     <script src="sections/overview.js"></script>
     <script src="sections/expeditions.js"></script>
     <script src="sections/auto-jobs.js"></script>
+
+    <!-- Auto-Jobs v2 — isolated copy. log-export populates
+         COR3.autoJobsV2.logExport, network-map populates
+         COR3.uiComponentsV2.networkMap. Section consumes only those v2
+         namespaces, so toggling v2 cannot affect v1. -->
+    <script src="sections/auto-jobs-v2/log-export.js"></script>
+    <script src="sections/auto-jobs-v2/network-map.js"></script>
+    <script src="sections/auto-jobs-v2/job-list.js"></script>
+    <script src="sections/auto-jobs-v2/flow-map.js"></script>
+    <script src="sections/auto-jobs-v2/section.js"></script>
+
     <script src="sections/modules-panel.js"></script>
     <script src="sections/logs-panel.js"></script>
 

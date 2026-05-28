@@ -164,6 +164,16 @@
             // state pill, "next state" hint, and the state-history timeline.
             STATE_TRANSITIONED: 'COR3_AUTOJOBS_STATE_TRANSITIONED',
         },
+
+        // Auto-Jobs v2 control (popup → isolated content). Owned entirely by
+        // v2; never overlaps the v1 toggleAutoJobs action.
+        AUTOJOBS_V2: {
+            // chrome.tabs.sendMessage action the v2 popup fires alongside the
+            // AUTOJOBS_V2_SETTINGS sync write, so the orchestrator starts/stops
+            // its loop immediately even on Firefox (where sync.onChanged can
+            // be flaky across contexts). Payload: { settings: { enabled } }.
+            TOGGLE: 'toggleAutoJobsV2',
+        },
     };
 
     // ──────────────────────────────────────────────────────────────────────
@@ -251,6 +261,22 @@
         // newest-first.
         AJ_COMPLETED_JOBS_LOG: 'ajCompletedJobsLog',
 
+        // ── Auto-Jobs v2 runtime (own keys, never the AJ_* / AUTOJOBS_* set) ──
+        // Pipeline progress, driven by the v2 orchestrator and consumed by the
+        // popup Flow Map highlight. Shape:
+        //   { running, cycle, node, startedAt, updatedAt, error? }
+        // `node` is one of AJV2.NODE.* — the flowchart node currently executing.
+        AJV2_PIPELINE_STATE: 'ajv2PipelineState',
+        // The job board the pipeline produced this cycle. Shape:
+        //   { cycle, computedAt, jobs: [{ id, name, type, serverName,
+        //     marketSlot, rewardCredits, eligible, skipReason }] }
+        // `eligible` is null until CHECK_JOBS_CONDITION runs, then bool;
+        // `skipReason` is the human-readable reason a job was marked SKIP.
+        AJV2_JOB_QUEUE: 'ajv2JobQueue',
+        // Bugged-job registry the pipeline reads and (later) writes itself.
+        // Shape: { [jobId]: { reason, since } }.
+        AJV2_BUGGED_JOBS: 'ajv2BuggedJobs',
+
         // Solver runtime
         DAILY_HACK_LOG: 'dailyHackLog',
         DAILY_HACK_LOG_AT: 'dailyHackLogUpdatedAt',
@@ -283,6 +309,11 @@
         // Auto-jobs
         AUTOJOBS_SETTINGS: 'autoJobsSettings',
         SERVER_PRIORITIES: 'serverPriorities',
+
+        // Auto-jobs v2 — isolated settings (START/STOP, future config). The
+        // v2 UI tab reads/writes this key only; the v1 orchestrator never
+        // touches it, so toggling v2 cannot enable/disable the live runtime.
+        AUTOJOBS_V2_SETTINGS: 'autoJobsV2Settings',
 
         // Auto-send merc
         AUTO_SEND_MERC: 'autoSendMerc',
@@ -376,5 +407,41 @@
     // on a single timing miss).
     const NO_LOGS_SERVERS = ['D4RK RM7CE', 'D4RK 2IV2', 'D4RK RM7MI'];
 
-    root.COR3.constants = { MSG, STORAGE_LOCAL, STORAGE_SYNC, FLOW, LOG_LEVEL, CATEGORY, LIMITS, NO_LOGS_SERVERS };
+    // ──────────────────────────────────────────────────────────────────────
+    // Auto-Jobs v2 pipeline contract
+    // ──────────────────────────────────────────────────────────────────────
+    // Single source of truth shared by the isolated-world orchestrator (which
+    // executes the nodes) and the popup Flow Map (which draws + highlights
+    // them). Both reference these ids; the Flow Map keeps the (x,y) layout,
+    // the orchestrator keeps the execution sequence — neither hard-codes the
+    // string ids.
+    const AJV2 = {
+        // Envelope `type` stamped on the packet that flows stage→stage.
+        PACKET_TYPE: 'ajv2/packet',
+
+        // Flowchart node ids. Modules + decision diamonds + delay nodes.
+        NODE: {
+            START: 'start',
+            DELAY_INITIAL: 'delay-initial',
+            GET_SERVERS: 'get-servers',
+            CHECK_ACCESS: 'check-access',
+            UPDATE_MARKETS: 'update-markets',
+            JOB_QUEUE: 'job-queue',
+            QUEUE_EMPTY: 'queue-empty',     // decision: is the queue empty?
+            BUGGED_JOBS: 'bugged-jobs',
+            CHECK_CONDITION: 'check-condition',
+            DELAY_CYCLE: 'delay-cycle',
+        },
+
+        // Loop cadence (matches the START→DELAY:10s→…→DELAY:30s flowchart).
+        LOOP: {
+            INITIAL_DELAY_MS: 10 * 1000,
+            CYCLE_DELAY_MS: 30 * 1000,
+            // Max time UPDATE_MARKETS waits for a refreshed market envelope to
+            // land in storage before it logs loudly and moves on.
+            MARKET_REFRESH_TIMEOUT_MS: 6 * 1000,
+        },
+    };
+
+    root.COR3.constants = { MSG, STORAGE_LOCAL, STORAGE_SYNC, FLOW, LOG_LEVEL, CATEGORY, LIMITS, NO_LOGS_SERVERS, AJV2 };
 })();
