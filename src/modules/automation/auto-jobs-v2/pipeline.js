@@ -76,6 +76,7 @@
             buggedJobs: null,         // { [jobId]: { reason, since } }
 
             // ── filled by CHECK_JOBS_CONDITION ──
+            serverOverrides: null,    // AJV2_SERVER_OVERRIDES snapshot used this cycle
             evaluations: null,        // { [jobId]: { eligible, skipReason } }
             eligible: null,           // [jobId, …] (the final do-able list)
         };
@@ -333,15 +334,20 @@
     //   • server known to the map
     //   • server not on K/D cooldown
     //   • server accessible
-    // Conditions awaiting a config source (added later): job-type enabled,
-    // market enabled, per-server skip/priority. There is intentionally NO
-    // placeholder for these — we don't invent a condition without a source.
+    //   • user SKIP on the server   → AJV2_SERVER_OVERRIDES
+    //   • job type disabled on the server → AJV2_SERVER_OVERRIDES
+    // Conditions awaiting a config source (added later): global job-type
+    // enabled, market enabled. There is intentionally NO placeholder for
+    // those — we don't invent a condition without a source.
     const checkCondition = {
         id: AJV2.NODE.CHECK_CONDITION,
         async run(packet, ctx) {
             if (!packet.queue) throw new Error('CHECK_CONDITION: packet.queue missing (JOB_QUEUE must run first)');
             if (!packet.accessibility) throw new Error('CHECK_CONDITION: packet.accessibility missing (CHECK_ACCESS must run first)');
             if (!packet.buggedJobs) throw new Error('CHECK_CONDITION: packet.buggedJobs missing (BUGGED_JOBS must run first)');
+
+            const overrides = await ctx.store.local.getOne(SL.AJV2_SERVER_OVERRIDES, {});
+            packet.serverOverrides = overrides;
 
             const evaluations = {};
             const eligible = [];
@@ -359,6 +365,11 @@
                     else {
                         if (acc.onCooldown) reasons.push('server on K/D cooldown');
                         if (!acc.accessible) reasons.push('server not accessible');
+                    }
+                    const ov = overrides[job.serverName];
+                    if (ov && ov.skip) reasons.push('server skipped by user');
+                    if (ov && job.type && ov.disabledTypes && ov.disabledTypes[job.type]) {
+                        reasons.push(`job type "${job.type}" disabled on this server`);
                     }
                 }
 

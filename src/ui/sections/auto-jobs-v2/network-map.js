@@ -361,6 +361,28 @@
                 g.appendChild(bg);
             }
 
+            // User-override marker (top-left corner). Small so it doesn't
+            // crowd the card: a red ⊘ for a skipped server, or an amber count
+            // for a server with N job types disabled.
+            const ov = ctx.overrides && ctx.overrides[s.name];
+            const disabledCount = (ov && ov.disabledTypes)
+                ? Object.keys(ov.disabledTypes).filter((k) => ov.disabledTypes[k]).length : 0;
+            if (ov && ov.skip) {
+                g.classList.add('nm-skip');
+                const bg = svgEl('g', { class: 'nm-ov-badge', transform: 'translate(-3, -3)' });
+                bg.appendChild(svgEl('circle', { cx: 6, cy: 6, r: 6, class: 'nm-skip-bg' }));
+                bg.appendChild(svgEl('line', { x1: 2.6, y1: 2.6, x2: 9.4, y2: 9.4, class: 'nm-skip-slash' }));
+                g.appendChild(bg);
+            } else if (disabledCount > 0) {
+                g.classList.add('nm-has-disabled');
+                const bg = svgEl('g', { class: 'nm-ov-badge', transform: 'translate(-3, -3)' });
+                bg.appendChild(svgEl('circle', { cx: 6, cy: 6, r: 6, class: 'nm-dis-bg' }));
+                const t = svgEl('text', { x: 6, y: 8.6, 'text-anchor': 'middle', class: 'nm-dis-text' });
+                t.textContent = String(disabledCount);
+                bg.appendChild(t);
+                g.appendChild(bg);
+            }
+
             const title = svgEl('title');
             const parts = [s.name];
             if (s.serverTypeName)        parts.push(s.serverTypeName);
@@ -370,6 +392,8 @@
             if (isActiveEndpoint)        parts.push('← current endpoint');
             if (cls === 'kd')            parts.push('K/D — temporarily in maintenance');
             if (jobs > 0)                parts.push(`${jobs} job(s) available`);
+            if (ov && ov.skip)           parts.push('SKIPPED by user');
+            else if (disabledCount > 0)  parts.push(`${disabledCount} job type(s) disabled here`);
             title.textContent = parts.join('\n');
             g.appendChild(title);
 
@@ -489,6 +513,12 @@
         const cam = { x: 0, y: 0, zoom: 1, world: { worldW: 320, worldH: 160 } };
         const ZOOM_MIN = 0.15, ZOOM_MAX = 3;
 
+        // Context-menu state (left-click a server node).
+        const serversByName = new Map();
+        let homeName = null;
+        let v2Enabled = false;       // Open SAI / Open Market blocked while true
+        let menuEl = null, menuFor = null, menuX = 0, menuY = 0;
+
         function applyCamera() {
             const z = Number.isFinite(cam.zoom) && cam.zoom > 0 ? cam.zoom : 1;
             const x = Number.isFinite(cam.x) ? cam.x : 0;
@@ -521,30 +551,130 @@
             applyCamera();
         }
 
+        // ─── Context menu ──────────────────────────────────────────────────
+        const JOB_TYPES = Object.values(C.FLOW);
+
+        async function getCor3Tab() {
+            const tabs = await chrome.tabs.query({ url: ['https://cor3.gg/*', 'https://os.cor3.gg/*'] });
+            return (tabs && tabs[0]) || null;
+        }
+        async function sendGameAction(action, serverName) {
+            const tab = await getCor3Tab();
+            if (tab) chrome.tabs.sendMessage(tab.id, { action, serverName }).catch(() => {});
+        }
+        async function readOverrides() {
+            return (await Store.local.getOne(SL.AJV2_SERVER_OVERRIDES, {})) || {};
+        }
+        async function patchOverride(name, mutate) {
+            const all = await readOverrides();
+            const cur = all[name] || { skip: false, disabledTypes: {} };
+            mutate(cur);
+            const hasDisabled = cur.disabledTypes && Object.keys(cur.disabledTypes).some((k) => cur.disabledTypes[k]);
+            if (!cur.skip && !hasDisabled) delete all[name];
+            else all[name] = cur;
+            await Store.local.setOne(SL.AJV2_SERVER_OVERRIDES, all);
+        }
+
+        function onDocDown(e) { if (menuEl && !menuEl.contains(e.target)) closeMenu(); }
+        function onKeyDown(e) { if (e.key === 'Escape') closeMenu(); }
+        function closeMenu() {
+            if (menuEl) { menuEl.remove(); menuEl = null; }
+            menuFor = null;
+            document.removeEventListener('pointerdown', onDocDown, true);
+            document.removeEventListener('keydown', onKeyDown, true);
+        }
+
+        async function openMenu(serverName, clientX, clientY) {
+            closeMenu();
+            menuX = clientX; menuY = clientY;
+            const server = serversByName.get(serverName) || null;
+            const isHome = !!(server && (server.serverTypeName === 'Home' || server.name === homeName));
+            const isMarket = isHome || !!(server && server.marketId);
+            const ov = (await readOverrides())[serverName] || { skip: false, disabledTypes: {} };
+
+            const menu = htmlEl('div', 'nm-ctx-menu');
+            menu.appendChild(htmlEl('div', 'nm-ctx-title', serverName));
+
+            const gameBtn = (label, action, arg) => {
+                const b = htmlEl('button', 'nm-ctx-item', label);
+                b.disabled = v2Enabled;
+                if (v2Enabled) b.title = 'Disabled while Auto-Jobs v2 is running';
+                b.addEventListener('click', () => { if (v2Enabled) return; sendGameAction(action, arg); closeMenu(); });
+                menu.appendChild(b);
+            };
+            // HOME has no SAI terminal — only offer Open Market there.
+            if (!isHome) gameBtn('Open SAI', C.MSG.AUTOJOBS_V2.OPEN_SAI_ACTION, serverName);
+            if (isMarket) gameBtn('Open Market', C.MSG.AUTOJOBS_V2.OPEN_MARKET_ACTION, isHome ? null : serverName);
+
+            menu.appendChild(htmlEl('div', 'nm-ctx-divider'));
+
+            const toggle = (label, on, onClick) => {
+                const b = htmlEl('button', 'nm-ctx-item nm-ctx-toggle' + (on ? ' is-on' : ''), (on ? '☑ ' : '☐ ') + label);
+                b.addEventListener('click', async () => { await onClick(); openMenu(serverName, clientX, clientY); });
+                menu.appendChild(b);
+                return b;
+            };
+            toggle('SKIP this server', !!ov.skip, () => patchOverride(serverName, (c) => { c.skip = !c.skip; }));
+
+            menu.appendChild(htmlEl('div', 'nm-ctx-sub', 'Disable job types here:'));
+            const disabled = ov.disabledTypes || {};
+            for (const type of JOB_TYPES) {
+                toggle(type.replace(/_/g, ' '), !!disabled[type], () => patchOverride(serverName, (c) => {
+                    c.disabledTypes = c.disabledTypes || {};
+                    if (c.disabledTypes[type]) delete c.disabledTypes[type];
+                    else c.disabledTypes[type] = true;
+                })).classList.add('nm-ctx-type');
+            }
+
+            const hostRect = canvasHost.getBoundingClientRect();
+            menu.style.left = (clientX - hostRect.left + 4) + 'px';
+            menu.style.top = (clientY - hostRect.top + 4) + 'px';
+            canvasHost.appendChild(menu);
+            // Clamp inside the canvas.
+            const m = menu.getBoundingClientRect();
+            if (m.right > hostRect.right) menu.style.left = Math.max(2, hostRect.width - m.width - 4) + 'px';
+            if (m.bottom > hostRect.bottom) menu.style.top = Math.max(2, hostRect.height - m.height - 4) + 'px';
+
+            menuEl = menu;
+            menuFor = serverName;
+            setTimeout(() => {
+                document.addEventListener('pointerdown', onDocDown, true);
+                document.addEventListener('keydown', onKeyDown, true);
+            }, 0);
+        }
+
         let dragging = null;
         svg.addEventListener('pointerdown', (e) => {
             if (e.button !== 0) return;
             const targetTag = (e.target.tagName || '').toLowerCase();
             if (targetTag === 'a' || targetTag === 'button' || targetTag === 'input') return;
-            dragging = { startX: e.clientX, startY: e.clientY, camX: cam.x, camY: cam.y };
+            const nodeG = e.target.closest && e.target.closest('.nm-node');
+            dragging = {
+                startX: e.clientX, startY: e.clientY, camX: cam.x, camY: cam.y,
+                moved: false, clickName: nodeG ? nodeG.getAttribute('data-name') : null,
+            };
             try { svg.setPointerCapture(e.pointerId); } catch (_) {}
             svg.classList.add('nm-grabbing');
             e.preventDefault();
         });
         svg.addEventListener('pointermove', (e) => {
             if (!dragging) return;
+            if (Math.abs(e.clientX - dragging.startX) > 4 || Math.abs(e.clientY - dragging.startY) > 4) dragging.moved = true;
             cam.x = dragging.camX + (e.clientX - dragging.startX);
             cam.y = dragging.camY + (e.clientY - dragging.startY);
             applyCamera();
         });
-        function endDrag(e) {
+        function endDrag(e, isUp) {
             if (!dragging) return;
+            const { clickName, moved } = dragging;
             try { svg.releasePointerCapture(e.pointerId); } catch (_) {}
             dragging = null;
             svg.classList.remove('nm-grabbing');
+            // A click (no drag) on a server node opens its context menu.
+            if (isUp && !moved && clickName) openMenu(clickName, e.clientX, e.clientY);
         }
-        svg.addEventListener('pointerup', endDrag);
-        svg.addEventListener('pointercancel', endDrag);
+        svg.addEventListener('pointerup', (e) => endDrag(e, true));
+        svg.addEventListener('pointercancel', (e) => endDrag(e, false));
 
         function onWheel(e) {
             const rect = svg.getBoundingClientRect();
@@ -571,11 +701,12 @@
         let firstRender = true;
 
         async function refresh() {
-            const [graph, home, dark, srm] = await Promise.all([
+            const [graph, home, dark, srm, overrides] = await Promise.all([
                 Store.local.getOne(SL.NM_GRAPH, null),
                 Store.local.getOne(SL.MARKET, null),
                 Store.local.getOne(SL.DARK_MARKET, null),
                 Store.local.getOne(SL.SRM_MARKET, null),
+                Store.local.getOne(SL.AJV2_SERVER_OVERRIDES, {}),
             ]);
 
             const ctx = {
@@ -583,7 +714,16 @@
                 homeName: graph?.home || null,
                 currentEndpointName: graph?.currentEndpointName || null,
                 jobCounts: buildJobCounts([home, dark, srm]),
+                overrides: overrides || {},
             };
+
+            // Index servers for the context menu (name → server object, so the
+            // menu knows market-ness, home-ness, etc.).
+            serversByName.clear();
+            homeName = ctx.homeName;
+            for (const s of (graph && graph.servers) || []) {
+                if (s && s.name) serversByName.set(s.name, s);
+            }
 
             const dims = render(camera, ctx);
             cam.world = dims;
@@ -608,8 +748,20 @@
         }
 
         const localUnsub = Store.local.onChanged((c) => {
-            if (c[SL.NM_GRAPH] || c[SL.MARKET] || c[SL.DARK_MARKET] || c[SL.SRM_MARKET]) refresh();
+            if (c[SL.NM_GRAPH] || c[SL.MARKET] || c[SL.DARK_MARKET] || c[SL.SRM_MARKET] || c[SL.AJV2_SERVER_OVERRIDES]) refresh();
         });
+
+        // Track whether Auto-Jobs v2 is running — Open SAI / Open Market are
+        // blocked while it is. Re-render an open menu so its buttons reflect
+        // the new state immediately.
+        const SS = C.STORAGE_SYNC;
+        const syncUnsub = Store.sync.onChanged((c) => {
+            if (!c[SS.AUTOJOBS_V2_SETTINGS]) return;
+            const nv = c[SS.AUTOJOBS_V2_SETTINGS].newValue;
+            v2Enabled = !!(nv && nv.enabled);
+            if (menuEl && menuFor != null) openMenu(menuFor, menuX, menuY);
+        });
+        Store.sync.getOne(SS.AUTOJOBS_V2_SETTINGS, { enabled: false }).then((s) => { v2Enabled = !!(s && s.enabled); });
 
         let resizeTimer = null;
         const resizeObs = ('ResizeObserver' in window) ? new ResizeObserver(() => {
@@ -622,7 +774,9 @@
 
         return {
             destroy() {
+                closeMenu();
                 if (typeof localUnsub === 'function') localUnsub();
+                if (typeof syncUnsub === 'function') syncUnsub();
                 if (resizeObs) resizeObs.disconnect();
                 if (resizeTimer) clearTimeout(resizeTimer);
                 canvasHost.removeEventListener('wheel', onWheel, { capture: true });

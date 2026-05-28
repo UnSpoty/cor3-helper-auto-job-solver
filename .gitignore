@@ -38,3 +38,6 @@ inject-server.js
 # Ad-hoc reverse-engineering snapshots (wire-format dumps, debug exports).
 new-protocol-dump.json
 cor3-autojobs-debug-*.txt
+# Saved-page DOM dumps used to reverse the current cor3.gg markup.
+CORE GG.html
+CORE GG_files/

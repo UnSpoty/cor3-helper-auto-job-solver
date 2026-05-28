@@ -165,14 +165,27 @@
             STATE_TRANSITIONED: 'COR3_AUTOJOBS_STATE_TRANSITIONED',
         },
 
-        // Auto-Jobs v2 control (popup → isolated content). Owned entirely by
-        // v2; never overlaps the v1 toggleAutoJobs action.
+        // Auto-Jobs v2 control. Owned entirely by v2; never overlaps the v1
+        // toggleAutoJobs action.
         AUTOJOBS_V2: {
             // chrome.tabs.sendMessage action the v2 popup fires alongside the
             // AUTOJOBS_V2_SETTINGS sync write, so the orchestrator starts/stops
             // its loop immediately even on Firefox (where sync.onChanged can
             // be flaky across contexts). Payload: { settings: { enabled } }.
             TOGGLE: 'toggleAutoJobsV2',
+
+            // popup → isolated runtime actions (Network Map context menu).
+            // Payload: { serverName }. The orchestrator forwards these to the
+            // MAIN-world v2 bridge — but refuses while the loop is running, so
+            // a manual click can't flap the endpoint mid-cycle.
+            OPEN_SAI_ACTION: 'ajv2OpenSai',
+            OPEN_MARKET_ACTION: 'ajv2OpenMarket',
+
+            // isolated → MAIN window messages. Handled by the MAIN-world v2
+            // bridge, which calls the generic COR3.game helpers
+            // (serverConnect.connect / networkMap.openServerMarket).
+            OPEN_SAI: 'COR3_AJV2_OPEN_SAI',
+            OPEN_MARKET: 'COR3_AJV2_OPEN_MARKET',
         },
     };
 
@@ -280,6 +293,11 @@
         // Bugged-job registry the pipeline reads and (later) writes itself.
         // Shape: { [jobId]: { reason, since } }.
         AJV2_BUGGED_JOBS: 'ajv2BuggedJobs',
+        // Per-server user overrides set from the Network Map context menu.
+        // Shape: { [serverName]: { skip: bool, disabledTypes: { [jobType]: true } } }
+        // Read by CHECK_JOBS_CONDITION: a skipped server rejects all its jobs;
+        // a disabled type rejects that job type on that server only.
+        AJV2_SERVER_OVERRIDES: 'ajv2ServerOverrides',
 
         // Solver runtime
         DAILY_HACK_LOG: 'dailyHackLog',

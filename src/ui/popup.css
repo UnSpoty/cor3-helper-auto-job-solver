@@ -728,6 +728,55 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
     justify-content: space-between;
     align-items: center;
 }
+/* ─── Network Map context menu (left-click a server) ──────────────────── */
+.nm-ctx-menu {
+    position: absolute;
+    z-index: 20;
+    min-width: 168px;
+    max-height: 90%;
+    overflow-y: auto;
+    padding: 4px;
+    background: var(--os-color-bg-card);
+    border: 1px solid var(--os-color-primary-hex);
+    border-radius: 6px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+.nm-ctx-title {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--os-color-primary-hex);
+    padding: 4px 6px 5px;
+    border-bottom: 1px solid var(--os-color-border-secondary);
+    margin-bottom: 3px;
+    word-break: break-all;
+}
+.nm-ctx-item {
+    appearance: none;
+    text-align: left;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: var(--os-color-text);
+    font-size: 11px;
+    padding: 5px 7px;
+    cursor: pointer;
+}
+.nm-ctx-item:hover:not(:disabled) { background: var(--os-color-primary-surface); }
+.nm-ctx-item:disabled { opacity: 0.4; cursor: not-allowed; }
+.nm-ctx-item.nm-ctx-toggle.is-on { color: var(--os-color-primary-hex); font-weight: 600; }
+.nm-ctx-item.nm-ctx-type { font-size: 10px; padding: 4px 7px 4px 10px; text-transform: capitalize; }
+.nm-ctx-divider { height: 1px; background: var(--os-color-border-secondary); margin: 3px 0; }
+.nm-ctx-sub {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--os-color-text-tertiary);
+    padding: 4px 6px 2px;
+}
+
 .network-map-canvas {
     position: relative;
     margin-top: 6px;
@@ -900,6 +949,14 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
 /* NEW pill — small white tag for fresh servers (isNew flag). */
 .nm-new-bg      { fill: #fff; }
 .nm-new-text    { font-size: 6px; fill: #000; font-weight: 700; text-anchor: middle; letter-spacing: 0.3px; pointer-events: none; }
+
+/* User-override corner badge (set from the v2 context menu). */
+.nm-node.nm-skip { opacity: 0.5; }
+.nm-ov-badge     { pointer-events: none; }
+.nm-skip-bg      { fill: rgba(254, 73, 73, 0.92); stroke: rgba(255, 255, 255, 0.85); stroke-width: 0.5; }
+.nm-skip-slash   { stroke: #fff; stroke-width: 1.4; stroke-linecap: round; }
+.nm-dis-bg       { fill: rgba(255, 200, 87, 0.95); stroke: rgba(0, 0, 0, 0.35); stroke-width: 0.5; }
+.nm-dis-text     { font-size: 8px; font-weight: 700; fill: #1a1a1a; pointer-events: none; }
 
 /* State overlays. Most categorisation comes from inline serverColor;
    states layered on top express *operator* state (skipped, market off,

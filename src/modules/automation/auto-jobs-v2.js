@@ -51,6 +51,10 @@
                     ],
                     busTypes: [
                         C.MSG.AUTOJOBS_V2.TOGGLE,
+                        C.MSG.AUTOJOBS_V2.OPEN_SAI_ACTION,
+                        C.MSG.AUTOJOBS_V2.OPEN_MARKET_ACTION,
+                        C.MSG.AUTOJOBS_V2.OPEN_SAI,
+                        C.MSG.AUTOJOBS_V2.OPEN_MARKET,
                         C.MSG.GAME.REFRESH_MARKET,
                         C.MSG.GAME.REFRESH_DARK_MARKET,
                         C.MSG.GAME.REFRESH_SRM_MARKET,
@@ -78,12 +82,33 @@
                 this._applyEnabled(!!(payload && payload.settings && payload.settings.enabled));
             }));
 
+            // Network Map context-menu actions: forward to the MAIN-world v2
+            // bridge — but ONLY while the loop is stopped. The user must not
+            // interfere with a running pipeline (a manual connect would flap
+            // the endpoint mid-cycle).
+            this.track(Bus.runtime.on(C.MSG.AUTOJOBS_V2.OPEN_SAI_ACTION, (payload) => this._forwardGameAction(C.MSG.AUTOJOBS_V2.OPEN_SAI, 'Open SAI', payload)));
+            this.track(Bus.runtime.on(C.MSG.AUTOJOBS_V2.OPEN_MARKET_ACTION, (payload) => this._forwardGameAction(C.MSG.AUTOJOBS_V2.OPEN_MARKET, 'Open Market', payload)));
+
             const settings = await Store.sync.getOne(SS.AUTOJOBS_V2_SETTINGS, { enabled: false });
             this._applyEnabled(!!settings.enabled);
         }
 
         async stop() {
             this._stopLoop();
+        }
+
+        // Forward a Network Map context-menu game action to MAIN — refused
+        // while the loop runs (the UI also greys the buttons; this is the
+        // hard guarantee behind it).
+        _forwardGameAction(windowType, label, payload) {
+            if (this._running) {
+                this.warn(`${label} ignored — pipeline is running`);
+                return { success: false, reason: 'running' };
+            }
+            const serverName = (payload && payload.serverName) || null;
+            this.info(`${label} → ${serverName || 'home'}`);
+            Bus.window.post(windowType, { serverName });
+            return { success: true };
         }
 
         // ── enable/disable ───────────────────────────────────────────────
