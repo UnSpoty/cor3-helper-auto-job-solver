@@ -728,6 +728,87 @@
             return issues;
         }
 
+        // ─── Programmatic API for Auto-Jobs v2 (headless, no UI) ──────────
+        // Exposed via COR3.game.loadout so the v2 file-decryption flow can ask
+        // "can we decrypt <ext>?" and "make us able to" without driving the
+        // panel UI. Reuses _checkInstallFeasibility + the __cor3Loadout* WS
+        // helpers. No toasts, no i18n — pure logic + the supplied log fn.
+        _equippedDecryptExts() {
+            const exts = new Set();
+            for (const sw of (this._snapshot && this._snapshot.equippedSoftware) || []) {
+                for (const sp of (sw.specs || [])) {
+                    if (sp && sp.type === 'DECRYPT' && Array.isArray(sp.fileTypes)) {
+                        for (const e of sp.fileTypes) if (typeof e === 'string') exts.add(e.toLowerCase());
+                    }
+                }
+            }
+            return exts;
+        }
+        _ownedDecryptSwFor(ext) {
+            const e = String(ext || '').toLowerCase();
+            const equipped = new Set(((this._snapshot && this._snapshot.equippedSoftware) || []).map((s) => s.id));
+            return ((this._snapshot && this._snapshot.ownedSoftware) || [])
+                .filter((sw) => !equipped.has(sw.id))
+                .filter((sw) => (sw.specs || []).some((sp) => sp && sp.type === 'DECRYPT'
+                    && Array.isArray(sp.fileTypes) && sp.fileTypes.some((t) => String(t).toLowerCase() === e)))
+                .sort((a, b) => (Number(a.price) || 0) - (Number(b.price) || 0));
+        }
+        // Plan how to become able to decrypt `ext`:
+        //   { status:'ready' }            already covered by equipped software
+        //   { status:'install', sw }      an owned SW covers it and fits as-is
+        //   { status:'swap',    sw }      owned SW covers it but needs resources freed first
+        //   { status:'none' }             no owned SW covers this ext
+        //   { status:'unknown' }          loadout snapshot not received yet
+        apiPlanDecrypt(ext) {
+            if (!this._snapshot) return { status: 'unknown' };
+            if (this._equippedDecryptExts().has(String(ext || '').toLowerCase())) return { status: 'ready' };
+            const candidates = this._ownedDecryptSwFor(ext);
+            if (candidates.length === 0) return { status: 'none' };
+            const feasible = candidates.find((sw) => this._checkInstallFeasibility(sw).length === 0);
+            if (feasible) return { status: 'install', sw: feasible };
+            return { status: 'swap', sw: candidates[0] };
+        }
+        _isEquipped(id) {
+            return ((this._snapshot && this._snapshot.equippedSoftware) || []).some((s) => s.id === id);
+        }
+        async _waitEquipped(id, want, deadlineMs) {
+            const end = Date.now() + deadlineMs;
+            while (Date.now() < end) {
+                if (this._isEquipped(id) === want) return true;
+                await dom.sleep(300);
+            }
+            return this._isEquipped(id) === want;
+        }
+        // Make the loadout able to decrypt `ext`. Resolves to
+        //   { ok:true,  status:'ready'|'installed'|'swapped' }
+        //   { ok:false, status, reason }
+        async apiEnsureDecrypt(ext, log) {
+            const say = typeof log === 'function' ? log : () => {};
+            const plan = this.apiPlanDecrypt(ext);
+            if (plan.status === 'ready')   { say('info', `loadout already decrypts ${ext}`); return { ok: true, status: 'ready' }; }
+            if (plan.status === 'unknown') { say('warn', 'loadout snapshot not loaded yet'); return { ok: false, status: 'unknown', reason: 'no-loadout-snapshot' }; }
+            if (plan.status === 'none')    { say('warn', `no owned software can decrypt ${ext}`); return { ok: false, status: 'none', reason: `no-decrypt-software:${ext}` }; }
+            if (typeof root.__cor3LoadoutEquipSoftware !== 'function') return { ok: false, status: 'no-helper', reason: 'equip-helper-missing' };
+
+            if (plan.status === 'swap') {
+                say('info', `freeing resources — unequipping all software to fit "${plan.sw.name}"`);
+                if (typeof root.__cor3LoadoutUnequipSoftware === 'function') {
+                    for (const sw of ((this._snapshot && this._snapshot.equippedSoftware) || []).slice()) {
+                        root.__cor3LoadoutUnequipSoftware(sw.id);
+                        await this._waitEquipped(sw.id, false, 6000);
+                    }
+                }
+            }
+            say('info', `installing "${plan.sw.name}" for ${ext}`);
+            root.__cor3LoadoutEquipSoftware(plan.sw.id);
+            const equipped = await this._waitEquipped(plan.sw.id, true, 8000);
+            if (!equipped) { say('error', `install of "${plan.sw.name}" did not take effect`); return { ok: false, status: 'install-failed', reason: 'install-not-applied' }; }
+            const ready = this._equippedDecryptExts().has(String(ext).toLowerCase());
+            return ready
+                ? { ok: true, status: plan.status === 'swap' ? 'swapped' : 'installed' }
+                : { ok: false, status: 'install-failed', reason: 'installed-but-ext-not-covered' };
+        }
+
         // ─── Capability chip click: equip cheapest available ──────────
         _installCheapestForCapability(capType) {
             const owned   = this._snapshot.ownedSoftware   || [];
@@ -1190,5 +1271,15 @@
             .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
     }
 
-    Registry.register(new LoadoutPanelModule());
+    const loadoutPanel = new LoadoutPanelModule();
+    Registry.register(loadoutPanel);
+
+    // Headless loadout API for Auto-Jobs v2's flow-v2 modules (MAIN world).
+    root.COR3.game = root.COR3.game || {};
+    root.COR3.game.loadout = {
+        getSnapshot: () => loadoutPanel._snapshot,
+        decryptExtensions: () => [...loadoutPanel._equippedDecryptExts()],
+        planDecrypt: (ext) => loadoutPanel.apiPlanDecrypt(ext),
+        ensureDecrypt: (ext, log) => loadoutPanel.apiEnsureDecrypt(ext, log),
+    };
 })();

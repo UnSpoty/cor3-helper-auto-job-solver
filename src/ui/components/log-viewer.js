@@ -24,7 +24,12 @@
             return { debug: 0, info: 1, ok: 1, separator: 1, warn: 2, error: 3 }[l || 'info'] ?? 1;
         }
         function passes(modId, entry) {
-            if (moduleFilter && modId !== moduleFilter) return false;
+            // moduleFilter may be an exact id (string) or a RegExp (e.g. the v2
+            // tab matches `auto-jobs-v2` + `flow-v2-*`).
+            if (moduleFilter) {
+                if (moduleFilter instanceof RegExp) { if (!moduleFilter.test(modId)) return false; }
+                else if (modId !== moduleFilter) return false;
+            }
             if (levelFilter && levelRank(entry.level) < levelRank(levelFilter)) return false;
             return true;
         }

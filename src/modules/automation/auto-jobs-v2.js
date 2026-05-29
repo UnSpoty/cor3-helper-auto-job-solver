@@ -13,8 +13,15 @@
 //                       │                    NO  ─┐                       │
 //                       │            NO ──────────┴→ CHECK_CONDITION      │
 //                       │                            → JOB_ACCEPTION      │
-//                       │                            → JOB_FLOW (Phase 2) │
+//                       │                            → JOB_FLOW            │
 //                       └──────────────── DELAY:30s ←─────────────────────┘  (loop)
+//
+// JOB_FLOW dispatches ONE in-progress (TAKEN) job per cycle to its MAIN-world
+// flow-v2 module (FLOW_START) and parks on FLOW_RESULT — so the loop pauses for
+// that job's minigame, then goes to DELAY:30s and the next cycle handles the
+// next job. file_decryption is wired; other types are skipped until their
+// flow-v2 module lands. A flow that can't do the job (no decrypt capability /
+// file missing / timeout) is written to AJV2_BUGGED_JOBS (MARK_AS_BUGGED).
 //
 // Responsibilities:
 //   • Own START/STOP. The toggle is driven by AUTOJOBS_V2_SETTINGS.enabled
@@ -66,6 +73,9 @@
                         C.MSG.GAME.REFRESH_SRM_MARKET,
                         C.MSG.GAME.ACCEPT_JOB,
                         C.MSG.GAME.REVERT_ENDPOINT_TO_HOME,
+                        C.MSG.AUTOJOBS_V2.FLOW_START,
+                        C.MSG.AUTOJOBS_V2.FLOW_RESULT,
+                        C.MSG.AUTOJOBS_V2.FLOW_STEP,
                     ],
                 },
             });
@@ -240,8 +250,92 @@
 
             await this._setNode(NODE.JOB_ACCEPTION, token, { cycle });
             packet = await p.stages.jobAcception.run(packet, ctx);
-            // JOB_FLOW (MAIN-world) is Phase 2 — the node is drawn on the Flow
-            // Map but not yet executed here.
+            if (!this._alive(token)) return;
+
+            // JOB_FLOW — execute ONE in-progress (TAKEN) job in MAIN, then fall
+            // through to DELAY. The orchestrator parks on its FLOW_RESULT, so
+            // the loop is paused for the duration of that job's minigame.
+            await this._setNode(NODE.JOB_FLOW, token, { cycle });
+            await this._runJobFlows(token, cycle, packet);
+        }
+
+        // Run exactly ONE in-progress (TAKEN) job this cycle, then fall through
+        // to DELAY:30s — the next cycle picks up the next one. (One job per
+        // cycle: solve → complete → wait, rather than draining all accepted
+        // jobs in a single JOB_FLOW pass.) Bugged jobs were filtered before
+        // JOB:SKIP; we re-check here so a job bugged earlier this cycle is
+        // skipped.
+        async _runJobFlows(token, cycle, packet) {
+            const p = pipeline();
+            const bugged = packet.buggedJobs || await Store.local.getOne(SL.AJV2_BUGGED_JOBS, {});
+            const inProgress = packet.queue.filter((j) => j.status === 'TAKEN' && !bugged[j.id]);
+            if (inProgress.length === 0) { this.debug('JOB_FLOW → no in-progress jobs to run'); return; }
+
+            // Pick the first in-progress job of a supported type. (Only
+            // file_decryption is wired so far.)
+            const job = inProgress.find((j) => j.type === C.FLOW.FILE_DECRYPTION);
+            if (!job) {
+                this.info(`JOB_FLOW → ${inProgress.length} in-progress job(s), none of a supported type yet — skipping`);
+                return;
+            }
+            this.info(`JOB_FLOW → running 1 of ${inProgress.length} in-progress job(s) this cycle`);
+
+            const fileCondition = p.fileConditionForDecrypt(job.raw);
+            if (!fileCondition) { await this._markBugged(job, 'no file condition in job', token); return; }
+
+            this.info(`JOB_FLOW → dispatch file_decryption ${job.id} "${fileCondition}"`);
+            // NOTE: the payload field is `jobType`, NOT `type` — Bus.window
+            // builds the envelope as Object.assign({type}, payload), so a
+            // payload key named `type` would clobber the Bus message type and
+            // the message would never reach the flow's listener.
+            const result = await this._dispatchFlow({
+                jobId: job.id, marketId: job.marketId, jobType: job.type, fileCondition,
+            }, token);
+            if (!this._alive(token)) return;
+
+            if (!result) { await this._markBugged(job, 'flow timed out — no FLOW_RESULT', token); return; }
+            if (result.success && result.didWork) {
+                this.info(`JOB_FLOW → ${job.id} completed`);
+            } else if (result.success && !result.didWork) {
+                await this._markBugged(job, result.reason || 'nothing to do', token);
+            } else {
+                await this._markBugged(job, result.reason || 'flow failed', token);
+            }
+            // One job done → return → DELAY:30s → next cycle handles the next.
+        }
+
+        // Post FLOW_START to MAIN and resolve with the matching FLOW_RESULT, or
+        // null on timeout. While the flow runs, relay its FLOW_STEP messages
+        // into the live pipeline node so the Flow Map highlights the sub-step
+        // the MAIN flow is on. Cancellation is handled by the caller's _alive.
+        _dispatchFlow(payload, token) {
+            return new Promise((resolve) => {
+                let settled = false;
+                const finish = (v) => {
+                    if (settled) return;
+                    settled = true;
+                    try { unsubResult(); } catch (_) { /* noop */ }
+                    try { unsubStep(); } catch (_) { /* noop */ }
+                    clearTimeout(timer);
+                    resolve(v);
+                };
+                const unsubStep = Bus.window.on(C.MSG.AUTOJOBS_V2.FLOW_STEP, (env) => {
+                    if (env && env.jobId === payload.jobId && env.node) this._setNode(env.node, token);
+                });
+                const unsubResult = Bus.window.on(C.MSG.AUTOJOBS_V2.FLOW_RESULT, (env) => {
+                    if (env && env.jobId === payload.jobId) finish(env);
+                });
+                const timer = setTimeout(() => finish(null), LOOP.FLOW_TIMEOUT_MS);
+                Bus.window.post(C.MSG.AUTOJOBS_V2.FLOW_START, payload);
+            });
+        }
+
+        async _markBugged(job, reason, token) {
+            await this._setNode(NODE.MARK_AS_BUGGED, token);
+            const reg = await Store.local.getOne(SL.AJV2_BUGGED_JOBS, {});
+            reg[job.id] = { reason: String(reason), since: Date.now() };
+            await Store.local.setOne(SL.AJV2_BUGGED_JOBS, reg);
+            this.warn(`MARK_AS_BUGGED ${job.id}: ${reason}`);
         }
 
         _ctx(token) {

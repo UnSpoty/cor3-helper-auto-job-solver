@@ -77,6 +77,7 @@
 
             // ── filled by CHECK_JOBS_CONDITION ──
             serverOverrides: null,    // AJV2_SERVER_OVERRIDES snapshot used this cycle
+            masterSwitches: null,     // AJV2_MASTER_SWITCHES snapshot used this cycle
             evaluations: null,        // { [jobId]: { eligible, skipReason } }
             eligible: null,           // [jobId, …] (the final do-able list)
 
@@ -141,6 +142,26 @@
         const rs = job && job.relatedServers;
         if (Array.isArray(rs) && rs[0]) return rs[0].serverName || rs[0].name || null;
         if (typeof rs === 'string') return rs;
+        return null;
+    }
+
+    // Extract the File Decryption target (a file name or a bare extension) from
+    // a raw market job's conditions. v2-owned parsing — NOT v1's resolveJobParams.
+    // Returns the string the flow matches in Downloads, or null if absent.
+    function fileConditionForDecrypt(rawJob) {
+        const items = rawJob && rawJob.conditions && Array.isArray(rawJob.conditions.items)
+            ? rawJob.conditions.items : [];
+        for (const it of items) {
+            const d = (it && it.details) || {};
+            if (typeof d.fileName === 'string' && d.fileName) return d.fileName;
+            if (Array.isArray(d.fileNames) && typeof d.fileNames[0] === 'string') return d.fileNames[0];
+            if (Array.isArray(d.files) && d.files[0] && typeof d.files[0].name === 'string') return d.files[0].name;
+            if (Array.isArray(d.extensions) && d.extensions[0]) {
+                const e = d.extensions[0];
+                const ext = typeof e === 'string' ? e : (e && e.ext);
+                if (ext) return String(ext).startsWith('.') ? String(ext) : ('.' + ext);
+            }
+        }
         return null;
     }
 
@@ -376,18 +397,23 @@
     // actually do. Each non-eligible job carries an explicit skipReason that
     // the UI renders as a SKIP flag.
     //
-    // Conditions wired now (real data sources exist):
-    //   • bugged registry          → BUGGED_JOBS
-    //   • server known to the map         (only when the job has a server)
-    //   • server not on K/D cooldown      (only when the job has a server)
-    //   • server accessible               (only when the job has a server)
-    //   • user SKIP on the server   → AJV2_SERVER_OVERRIDES
-    //   • job type disabled on the server → AJV2_SERVER_OVERRIDES
+    // Two classes of reason:
+    //   DATA reasons (only the pipeline has the inputs) — stamped onto the job
+    //   as `dataSkipReason` so the popup can't recompute them but can still
+    //   show them:
+    //     • bugged registry          → BUGGED_JOBS
+    //     • server known to the map         (only when the job has a server)
+    //     • server not on K/D cooldown      (only when the job has a server)
+    //     • server accessible               (only when the job has a server)
+    //   CONFIG reasons (pure user switches) — computed by the SHARED evaluator
+    //   COR3.ajv2Eligibility.configSkipReason so the popup Job List can
+    //   re-derive them live the instant a switch changes:
+    //     • market disabled globally        → AJV2_MASTER_SWITCHES
+    //     • job type disabled globally       → AJV2_MASTER_SWITCHES
+    //     • user SKIP on the server          → AJV2_SERVER_OVERRIDES
+    //     • job type disabled on the server  → AJV2_SERVER_OVERRIDES
     // A missing related server is NOT a skip reason — download/solve job types
     // legitimately have none (their file lands in the Downloads widget).
-    // Conditions awaiting a config source (added later): global job-type
-    // enabled, market enabled. There is intentionally NO placeholder for
-    // those — we don't invent a condition without a source.
     const checkCondition = {
         id: AJV2.NODE.CHECK_CONDITION,
         async run(packet, ctx) {
@@ -402,38 +428,40 @@
             }
 
             const overrides = await ctx.store.local.getOne(SL.AJV2_SERVER_OVERRIDES, {});
+            const switches = await ctx.store.local.getOne(SL.AJV2_MASTER_SWITCHES, {});
             packet.serverOverrides = overrides;
+            packet.masterSwitches = switches;
+
+            const evalConfig = root.COR3.ajv2Eligibility.configSkipReason;
 
             const evaluations = {};
             const eligible = [];
             for (const job of packet.queue) {
-                const reasons = [];
-
-                const bug = packet.buggedJobs[job.id];
-                if (bug) reasons.push(`bugged: ${bug.reason || 'unknown'}`);
-
-                // Server-bound checks only apply when the job carries a related
-                // server. Jobs without one (download/solve types whose file
-                // lands in the Downloads widget) are NOT skipped for it.
+                // ── DATA reasons (pipeline-only inputs, baked onto the job) ──
+                const dataReasons = [];
                 if (job.serverName) {
                     const acc = packet.accessibility[job.serverName];
-                    if (!acc) reasons.push(`server not in Network Map: ${job.serverName}`);
+                    if (!acc) dataReasons.push(`server not in Network Map: ${job.serverName}`);
                     else {
-                        if (acc.onCooldown) reasons.push('server on K/D cooldown');
-                        if (!acc.accessible) reasons.push('server not accessible');
-                    }
-                    const ov = overrides[job.serverName];
-                    if (ov && ov.skip) reasons.push('server skipped by user');
-                    if (ov && job.type && ov.disabledTypes && ov.disabledTypes[job.type]) {
-                        reasons.push(`job type "${job.type}" disabled on this server`);
+                        if (acc.onCooldown) dataReasons.push('server on K/D cooldown');
+                        if (!acc.accessible) dataReasons.push('server not accessible');
                     }
                 }
+                const dataSkipReason = dataReasons.length ? dataReasons.join('; ') : null;
 
-                const ok = reasons.length === 0;
-                const skipReason = ok ? null : reasons.join('; ');
+                // ── CONFIG reason (shared with the popup) + bugged registry ──
+                // Both are storage-backed, so the popup re-derives them live;
+                // we still apply them here for the acceptance verdict.
+                const configReason = evalConfig(job, switches, overrides);
+                const bug = packet.buggedJobs[job.id];
+                const bugReason = bug ? `bugged: ${bug.reason || 'unknown'}` : null;
+
+                const ok = !dataSkipReason && !configReason && !bugReason;
+                const skipReason = [bugReason, dataSkipReason, configReason].filter(Boolean).join('; ') || null;
                 evaluations[job.id] = { eligible: ok, skipReason };
                 job.eligible = ok;
                 job.skipReason = skipReason;
+                job.dataSkipReason = dataSkipReason;  // bugged + config re-derived live in the popup
                 if (ok) eligible.push(job.id);
             }
             packet.evaluations = evaluations;
@@ -522,6 +550,7 @@
         MARKET_SLOTS,
         detectJobType,
         jobServer,
+        fileConditionForDecrypt,
         stages: { getServers, checkAccess, updateMarkets, jobQueue, buggedJobs, checkCondition, jobAcception },
     };
 })();

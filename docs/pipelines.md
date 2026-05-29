@@ -265,21 +265,56 @@ START → DELAY:10s → ┌─ GET_SERVERS → CHECK_SERVERS_ACCESABILITY
 | `CHECK_CONDITION` | `checkCondition` | per job, eligibility + explicit `skipReason`. Wired conditions: bugged registry; and (only when the job has a server) server-known / K-D cooldown / accessible / user-SKIP / type-disabled (`AJV2_SERVER_OVERRIDES`). A missing related server is **not** a skip reason. |
 | `JOB_ACCEPTION` | `jobAcception` | acceptance set = eligible AND `status==='AVAILABLE'`. Decryption-priority: if any `file_decryption` jobs exist, accept ALL across ALL markets; else accept the other types. Posts `MSG.GAME.ACCEPT_JOB` paced 1.2 s apart, then `MSG.GAME.REVERT_ENDPOINT_TO_HOME` once. Confirmation is async — accepted jobs reappear as `TAKEN` next cycle. |
 
-### Phase 2 — TODO (MAIN world): `JOB_FLOW`
+### Phase 2 — `JOB_FLOW` (MAIN world, in progress)
 
-The `JOB_FLOW` node is drawn on the Flow Map but not executed. Remaining work:
+After JOB_ACCEPTION the orchestrator runs `_runJobFlows()`: it takes ONE
+in-progress (TAKEN, non-bugged) job of a supported type, dispatches it to a MAIN
+flow-v2 module and **parks on the result** — so the v2 loop is paused for the
+duration of that minigame (the "JOB-FLOW must stop during Decrypt" rule). Then
+it falls through to DELAY:30s and the next cycle handles the next job (one job
+per cycle: solve → complete → wait).
 
-- isolated↔MAIN dispatch protocol + `flow-v2-*` modules (written from scratch,
-  extending `auto-jobs-v2-bridge.js`);
-- a per-type selector → flows: ip_injection/ip_cleanup (Transit Access),
-  file_elimination (FILES), log_deletion/log_download (LOGS),
-  data_download/data_upload (the on-screen **Downloads widget**), file_decryption
-  (read format → dynamic loadout capability check → install/swap software via the
-  `loadout-panel` helpers → run the decrypt mini-game **paused** so the flow
-  doesn't time out), decrypt_extract (download then file_decryption logic);
-- `CLOSE_SAI_TERMINAL` + `GOTO_NEXT_MODULE`;
-- job completion (`__cor3CompleteJob`);
-- a writer for `AJV2_BUGGED_JOBS` (`MARK_AS_BUGGED`).
+**Dispatch protocol** (v2-only, never the v1 `MSG.JOB.*` channel):
+
+```
+orchestrator (isolated) ──FLOW_START { jobId, marketId, type, fileCondition }──▶ flow-v2 module (MAIN)
+orchestrator (isolated) ◀──FLOW_RESULT { jobId, marketId, success, didWork, reason }── flow-v2 module (MAIN)
+```
+
+- `success:true, didWork:true`  → flow sent `job.complete` (`MSG.GAME.COMPLETE_JOB`).
+- `success:true, didWork:false` → can't do it (e.g. no decrypt capability) → orchestrator `MARK_AS_BUGGED` (`AJV2_BUGGED_JOBS`).
+- `success:false`               → runtime failure/timeout → `MARK_AS_BUGGED`.
+- timeout (`AJV2.LOOP.FLOW_TIMEOUT_MS`, 5 min) → no result → `MARK_AS_BUGGED`.
+
+While the flow runs it also posts `FLOW_STEP { jobId, node }` per sub-step; the
+orchestrator relays it to `AJV2_PIPELINE_STATE`, so the **Flow Map highlights the
+live decrypt step** (READ FORMAT → DECRYPT SW? → INSTALL/SWAP → OPEN DOWNLOADS →
+SOLVE → COMPLETE, or → MARK_AS_BUGGED). The file_decryption sub-flow is drawn as
+its own branch off the JOB_FLOW node.
+
+**`file_decryption` — implemented** (`game/flows/auto-jobs-v2/file-decryption.js`,
+id `flow-v2-file-decryption`). The most unique flow, because it manages the
+loadout:
+
+1. Parse the file format (extension) from the job's `fileCondition`.
+2. `COR3.game.loadout.ensureDecrypt(ext)` (headless API exposed by
+   `loadout-panel`): `ready` (equipped already covers it) → proceed; `install`
+   (an owned, resource-fitting software covers it) → equip it; `swap` (owned SW
+   covers it but needs resources freed) → unequip everything, then equip; `none`
+   → return `didWork:false` (→ bugged).
+3. Open the file from the on-screen **Downloads** folder (`COR3.game.sai.downloadsWatcher`).
+4. Start the standalone solvers (`MSG.SOLVER.START_*`) and wait for the minigame
+   (config-hack / ICE WALL / Simple Decrypt) to mount, then to close.
+5. Send `job.complete`; report `didWork:true`.
+
+> Status: written from the v1 reference + the loadout internals; **not yet
+> verified live in-browser** (DOM selectors + loadout swap need a real run).
+
+**Remaining types — TODO:** ip_injection/ip_cleanup (Transit Access),
+file_elimination (FILES), log_deletion/log_download (LOGS),
+data_download/data_upload (Downloads widget), decrypt_extract (download then
+file_decryption logic) — each a new `flow-v2-*` module behind the same protocol,
+plus `CLOSE_SAI_TERMINAL`.
 
 ### Cross-references in code
 
@@ -290,6 +325,9 @@ The `JOB_FLOW` node is drawn on the Flow Map but not executed. Remaining work:
 | Node ids / cadence | `shared/constants.js` | `AJV2.NODE`, `AJV2.LOOP` |
 | Flow Map | `ui/sections/auto-jobs-v2/flow-map.js` | `NODES`, `EDGES`, `edgePoints()` |
 | Job List | `ui/sections/auto-jobs-v2/job-list.js` | `render()`, `jobRow()` |
+| JOB_FLOW dispatch | `automation/auto-jobs-v2.js` | `_runJobFlows()`, `_dispatchFlow()`, `_markBugged()` |
+| file_decryption flow (MAIN) | `game/flows/auto-jobs-v2/file-decryption.js` | `runFileDecryption()` |
+| Loadout API (MAIN) | `game/loadout-panel.js` | `COR3.game.loadout.planDecrypt/ensureDecrypt` |
 | MAIN bridge | `game/auto-jobs-v2-bridge.js` | NM context-menu Open SAI / Open Market |
 
 ---

@@ -59,7 +59,18 @@
         { id: NODE.CHECK_CONDITION, label: 'CHECK_JOBS_CONDITION',        type: 'module',   x: COL_2, y: 626 },
         { id: NODE.JOB_ACCEPTION,   label: 'JOB_ACCEPTION',               type: 'module',   x: COL_2, y: 694 },
         { id: NODE.JOB_FLOW,        label: 'JOB_FLOW',                    type: 'module',   x: COL_2, y: 762 },
-        { id: NODE.DELAY_CYCLE,     label: 'DELAY 30s',                   type: 'delay',    x: CX,    y: 856 },
+
+        // JOB_FLOW : file_decryption sub-flow (lit live via FLOW_STEP). Lives in
+        // the COL_3 lane, branching right off JOB_FLOW.
+        { id: NODE.FD_READ_FORMAT,    label: 'READ FORMAT',     type: 'module',   x: COL_3, y: 762 },
+        { id: NODE.FD_CHECK_LOADOUT,  label: 'DECRYPT SW?',     type: 'decision', x: COL_3, y: 866 },
+        { id: NODE.MARK_AS_BUGGED,    label: 'MARK_AS_BUGGED',  type: 'module',   x: COL_4, y: 866 },
+        { id: NODE.FD_INSTALL_SW,     label: 'INSTALL/SWAP SW', type: 'module',   x: COL_3, y: 960 },
+        { id: NODE.FD_OPEN_DOWNLOADS, label: 'OPEN DOWNLOADS',  type: 'module',   x: COL_3, y: 1032 },
+        { id: NODE.FD_SOLVE,          label: 'SOLVE MINIGAME',  type: 'module',   x: COL_3, y: 1104 },
+        { id: NODE.FD_COMPLETE,       label: 'COMPLETE JOB',    type: 'module',   x: COL_3, y: 1176 },
+
+        { id: NODE.DELAY_CYCLE,     label: 'DELAY 30s',                   type: 'delay',    x: CX,    y: 1260 },
     ];
 
     // All edges route orthogonally (right-angle elbows, rounded corners).
@@ -83,6 +94,18 @@
         { from: NODE.CHECK_CONDITION, to: NODE.JOB_ACCEPTION,  kind: 'down' },
         { from: NODE.JOB_ACCEPTION,  to: NODE.JOB_FLOW,        kind: 'down' },
         { from: NODE.JOB_FLOW,       to: NODE.DELAY_CYCLE,     kind: 'merge', enter: 'top' },
+
+        // JOB_FLOW : file_decryption sub-flow.
+        { from: NODE.JOB_FLOW,         to: NODE.FD_READ_FORMAT,    kind: 'right', label: 'file_decryption' },
+        { from: NODE.FD_READ_FORMAT,   to: NODE.FD_CHECK_LOADOUT,  kind: 'down' },
+        { from: NODE.FD_CHECK_LOADOUT, to: NODE.MARK_AS_BUGGED,    kind: 'right', label: 'none' },
+        { from: NODE.FD_CHECK_LOADOUT, to: NODE.FD_INSTALL_SW,     kind: 'down',  label: 'have SW' },
+        { from: NODE.FD_INSTALL_SW,    to: NODE.FD_OPEN_DOWNLOADS, kind: 'down' },
+        { from: NODE.FD_OPEN_DOWNLOADS, to: NODE.FD_SOLVE,         kind: 'down' },
+        { from: NODE.FD_SOLVE,         to: NODE.FD_COMPLETE,       kind: 'down' },
+        { from: NODE.FD_COMPLETE,      to: NODE.DELAY_CYCLE,       kind: 'merge', enter: 'top' },
+        { from: NODE.MARK_AS_BUGGED,   to: NODE.DELAY_CYCLE,       kind: 'merge', enter: 'right' },
+
         { from: NODE.DELAY_CYCLE,    to: NODE.GET_SERVERS,     kind: 'loop',  label: 'loop' },
     ];
 

@@ -79,6 +79,10 @@
             OPEN_CONTAINER: 'COR3_OPEN_CONTAINER',
             COLLECT_ALL: 'COR3_COLLECT_ALL',
             ACCEPT_JOB: 'COR3_ACCEPT_JOB',
+            // market.job.complete (endpoint-preflight handled in the interceptor,
+            // like ACCEPT_JOB). Generic game RPC — used by v1 auto-jobs and
+            // Auto-Jobs v2's flow-v2 modules to claim a finished job.
+            COMPLETE_JOB: 'COR3_COMPLETE_JOB',
             RESPOND_DECISION: 'COR3_RESPOND_DECISION',
             OPEN_NETWORK_MAP: 'COR3_OPEN_NETWORK_MAP',
             OPEN_MARKET_JOBS: 'COR3_OPEN_MARKET_JOBS',
@@ -186,6 +190,28 @@
             // (serverConnect.connect / networkMap.openServerMarket).
             OPEN_SAI: 'COR3_AJV2_OPEN_SAI',
             OPEN_MARKET: 'COR3_AJV2_OPEN_MARKET',
+
+            // JOB_FLOW dispatch (isolated orchestrator → MAIN flow-v2 module).
+            // Payload: { jobId, marketId, jobType, fileCondition, fileId, serverName }.
+            // (Field is `jobType`, NOT `type` — Bus.window builds the envelope as
+            //  Object.assign({type}, payload), so a payload `type` would clobber
+            //  the Bus message id and the message would never be delivered.)
+            // The MAIN flow executes the job (loadout + minigame + complete) and
+            // replies with FLOW_RESULT. These are v2-only — they never overlap
+            // the v1 MSG.JOB.* channel.
+            FLOW_START: 'COR3_AJV2_FLOW_START',
+            // MAIN flow-v2 → isolated orchestrator: "I'm now on sub-step <node>".
+            // Payload: { jobId, node } where node ∈ AJV2.NODE.*. The orchestrator
+            // relays it to AJV2_PIPELINE_STATE so the Flow Map highlights the
+            // live sub-step inside JOB_FLOW.
+            FLOW_STEP: 'COR3_AJV2_FLOW_STEP',
+            // MAIN flow-v2 → isolated orchestrator. Payload:
+            //   { jobId, marketId, success, didWork, reason }
+            //   success:true,didWork:true  → flow completed the job (job.complete sent)
+            //   success:true,didWork:false → nothing to do / can't (e.g. no decrypt
+            //                                 capability) → orchestrator MARKs bugged
+            //   success:false              → runtime failure/timeout → MARK bugged
+            FLOW_RESULT: 'COR3_AJV2_FLOW_RESULT',
         },
     };
 
@@ -298,6 +324,12 @@
         // Read by CHECK_JOBS_CONDITION: a skipped server rejects all its jobs;
         // a disabled type rejects that job type on that server only.
         AJV2_SERVER_OVERRIDES: 'ajv2ServerOverrides',
+        // Global Master Switches set from the v2 "Master Switches" panel.
+        // Shape: { markets: { home, dark, srm }, jobTypes: { [FLOW.*]: bool } }.
+        // A value of `false` disables that market/type globally (no jobs from a
+        // disabled market are accepted; a disabled type is rejected everywhere).
+        // Absent / undefined === enabled (the default is "everything on").
+        AJV2_MASTER_SWITCHES: 'ajv2MasterSwitches',
 
         // Solver runtime
         DAILY_HACK_LOG: 'dailyHackLog',
@@ -455,7 +487,17 @@
             JOB_SKIP: 'job-skip',          // in-progress job is bugged → skip the cycle
             CHECK_CONDITION: 'check-condition',
             JOB_ACCEPTION: 'job-acception',
-            JOB_FLOW: 'job-flow',          // Phase 2 (MAIN-world) — node drawn, not yet executed
+            JOB_FLOW: 'job-flow',          // selector — dispatches each TAKEN job to its flow-v2 module
+            // file_decryption sub-flow. The MAIN flow-v2 module reports its
+            // current step via MSG.AUTOJOBS_V2.FLOW_STEP; the orchestrator
+            // relays it into AJV2_PIPELINE_STATE so the Flow Map lights it.
+            FD_READ_FORMAT: 'fd-read-format',
+            FD_CHECK_LOADOUT: 'fd-check-loadout',  // decision: can we (get capability to) decrypt?
+            FD_INSTALL_SW: 'fd-install-sw',
+            FD_OPEN_DOWNLOADS: 'fd-open-downloads',
+            FD_SOLVE: 'fd-solve',
+            FD_COMPLETE: 'fd-complete',
+            MARK_AS_BUGGED: 'mark-as-bugged',      // job can't be done → written to AJV2_BUGGED_JOBS
             DELAY_CYCLE: 'delay-cycle',
         },
 
@@ -472,6 +514,10 @@
             // job.take RPCs don't pile up faster than the server accepts them
             // (matches the 1.2s cadence v1's bulk-accept used).
             ACCEPT_PACING_MS: 1200,
+            // Max time the orchestrator parks on a single JOB_FLOW dispatch
+            // awaiting FLOW_RESULT before giving up and marking the job bugged.
+            // Long because a decrypt minigame can take minutes.
+            FLOW_TIMEOUT_MS: 5 * 60 * 1000,
         },
     };
 

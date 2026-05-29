@@ -383,8 +383,14 @@
                 g.appendChild(bg);
             }
 
+            // Market disabled via Master Switches → dim the tile.
+            const mslot = ctx.marketSlotByName && ctx.marketSlotByName[s.name];
+            const marketOff = !!(mslot && ctx.switches && ctx.switches.markets && ctx.switches.markets[mslot] === false);
+            if (marketOff) g.classList.add('nm-market-off');
+
             const title = svgEl('title');
             const parts = [s.name];
+            if (marketOff)               parts.push(`market disabled (${mslot})`);
             if (s.serverTypeName)        parts.push(s.serverTypeName);
             if (s.cluster)               parts.push(`cluster: ${s.cluster}`);
             if (Number.isFinite(s.depth)) parts.push(`depth: ${s.depth}${s.viaHidden ? ' (via hidden)' : ''}`);
@@ -701,13 +707,28 @@
         let firstRender = true;
 
         async function refresh() {
-            const [graph, home, dark, srm, overrides] = await Promise.all([
+            const [graph, home, dark, srm, overrides, switches] = await Promise.all([
                 Store.local.getOne(SL.NM_GRAPH, null),
                 Store.local.getOne(SL.MARKET, null),
                 Store.local.getOne(SL.DARK_MARKET, null),
                 Store.local.getOne(SL.SRM_MARKET, null),
                 Store.local.getOne(SL.AJV2_SERVER_OVERRIDES, {}),
+                Store.local.getOne(SL.AJV2_MASTER_SWITCHES, {}),
             ]);
+
+            // Map each market server to its slot so we can dim it when its
+            // Master Switch is off. home = the graph's home; dark/srm matched
+            // by marketId against their envelopes.
+            const marketSlotByName = {};
+            const homeNm = graph && graph.home;
+            const darkId = dark && dark.marketId;
+            const srmId = srm && srm.marketId;
+            for (const s of (graph && graph.servers) || []) {
+                if (!s || !s.name) continue;
+                if (s.name === homeNm || s.serverTypeName === 'Home') marketSlotByName[s.name] = 'home';
+                else if (darkId && s.marketId === darkId) marketSlotByName[s.name] = 'dark';
+                else if (srmId && s.marketId === srmId) marketSlotByName[s.name] = 'srm';
+            }
 
             const ctx = {
                 graph,
@@ -715,6 +736,8 @@
                 currentEndpointName: graph?.currentEndpointName || null,
                 jobCounts: buildJobCounts([home, dark, srm]),
                 overrides: overrides || {},
+                switches: switches || {},
+                marketSlotByName,
             };
 
             // Index servers for the context menu (name → server object, so the
@@ -748,7 +771,8 @@
         }
 
         const localUnsub = Store.local.onChanged((c) => {
-            if (c[SL.NM_GRAPH] || c[SL.MARKET] || c[SL.DARK_MARKET] || c[SL.SRM_MARKET] || c[SL.AJV2_SERVER_OVERRIDES]) refresh();
+            if (c[SL.NM_GRAPH] || c[SL.MARKET] || c[SL.DARK_MARKET] || c[SL.SRM_MARKET]
+                || c[SL.AJV2_SERVER_OVERRIDES] || c[SL.AJV2_MASTER_SWITCHES]) refresh();
         });
 
         // Track whether Auto-Jobs v2 is running — Open SAI / Open Market are

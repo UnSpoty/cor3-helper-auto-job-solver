@@ -42,11 +42,31 @@ is published to `STORAGE_LOCAL.AJV2_PIPELINE_STATE`. See
   `REVERT_ENDPOINT_TO_HOME` (decryption-priority, all markets). The bridge
   currently handles only the Network-Map context-menu Open SAI / Open Market
   actions.
-- **Phase 2 — TODO (MAIN world): `JOB_FLOW`.** The node is drawn on the Flow
-  Map but not executed. Remaining: isolated↔MAIN dispatch + `flow-v2-*` modules,
-  per-type flows (Transit Access / FILES / LOGS, the Downloads widget, the
-  decrypt loadout-swap + solver), job completion (`__cor3CompleteJob`), and a
-  writer for `AJV2_BUGGED_JOBS` (`MARK_AS_BUGGED`).
+- **Phase 2 — IN PROGRESS (MAIN world): `JOB_FLOW`.** The orchestrator now
+  dispatches each in-progress (TAKEN) job to a MAIN flow-v2 module via
+  `MSG.AUTOJOBS_V2.FLOW_START` and parks on `FLOW_RESULT` (so the loop pauses
+  for the minigame). A failed/impossible job is written to `AJV2_BUGGED_JOBS`
+  (MARK_AS_BUGGED); completion uses `MSG.GAME.COMPLETE_JOB`.
+  - **`file_decryption` — DONE** (`src/modules/game/flows/auto-jobs-v2/file-decryption.js`,
+    id `flow-v2-file-decryption`): reads the file format, uses the headless
+    loadout API `COR3.game.loadout.ensureDecrypt(ext)` (install/swap owned
+    software or bug-out if none), opens the file from the Downloads folder,
+    runs the standalone solvers, waits for the minigame to close, and sends
+    `job.complete`. **Needs live in-browser verification** (DOM + loadout swap
+    were written from the v1 reference, not yet run).
+  - **Remaining types — TODO:** ip_injection/ip_cleanup, file_elimination,
+    log_deletion/log_download, data_download/data_upload, decrypt_extract — each
+    a new `flow-v2-*` module behind the same FLOW_START/FLOW_RESULT protocol.
+
+**Master Switches + eligibility sync.** A collapsible "Master Switches" panel
+(`src/ui/sections/auto-jobs-v2/master-switches.js`) above the Network Map holds
+global market + job-type toggles in `STORAGE_LOCAL.AJV2_MASTER_SWITCHES`. The
+CONFIG part of a job's eligibility (markets/types/server-overrides) lives in ONE
+shared evaluator `COR3.ajv2Eligibility.configSkipReason`
+(`src/shared/ajv2-eligibility.js`, loaded in the isolated world AND the popup).
+CHECK_CONDITION uses it for acceptance and stamps the DATA-only part
+(`dataSkipReason`) onto each job; the Job List + Network Map re-derive the config
+part live so toggling a switch / server-skip reflects instantly (no cycle wait).
 
 **Hard rules when working on v2:**
 
@@ -236,8 +256,13 @@ Quick list of every registered module ID and its world:
 - `auto-jobs-v2-bridge.js` — MAIN-world endpoint for the v2 Network-Map
   context menu (Open SAI / Open Market). NOT a registered Module — a plain
   IIFE listening on `MSG.AUTOJOBS_V2.OPEN_SAI` / `OPEN_MARKET`; it drives the
-  generic `COR3.game.*` helpers and logs under id `auto-jobs-v2`. Phase 2's
-  `flow-v2-*` job execution will extend this bridge.
+  generic `COR3.game.*` helpers and logs under id `auto-jobs-v2`.
+- `flow-v2-file-decryption` — MAIN flow-v2 module (Phase 2). Listens on
+  `MSG.AUTOJOBS_V2.FLOW_START` for `file_decryption` jobs, replies
+  `FLOW_RESULT`. Logs under its own id (the v2 Activity Log filters to
+  `auto-jobs-v2` + `flow-v2-*`). `loadout-panel` also exposes a headless
+  `COR3.game.loadout` API (`planDecrypt` / `ensureDecrypt`) the flow uses for
+  install/swap.
 
 **Isolated content_scripts:**
 - `auth`, `expeditions`, `archived-expeditions`, `decisions`, `market`,

@@ -35,6 +35,7 @@
     const DEFAULT_SETTINGS = { enabled: false };
 
     let liveLogViewer = null;
+    let liveMasterSwitches = null;
     let liveNetworkMap = null;
     let liveJobList = null;
     let liveFlowMap = null;
@@ -86,6 +87,15 @@
         });
         head.appendChild(downloadBtn);
 
+        const clearBuggedBtn = el('button', 'btn small btn-block mt-sm', 'Clear Bugged');
+        clearBuggedBtn.title = 'Remove all jobs from the v2 bugged list';
+        clearBuggedBtn.addEventListener('click', async () => {
+            await Store.local.setOne(C.STORAGE_LOCAL.AJV2_BUGGED_JOBS, {});
+            clearBuggedBtn.textContent = 'Cleared';
+            setTimeout(() => { clearBuggedBtn.textContent = 'Clear Bugged'; }, 1500);
+        });
+        head.appendChild(clearBuggedBtn);
+
         host.appendChild(head);
     }
 
@@ -100,13 +110,19 @@
 
         container.innerHTML = '';
         const headerHost  = el('div');
+        const masterHost  = el('div', 'ajv2-ms-host');
         const networkHost = el('div', 'aj-network-host');
         const jobsHost    = el('div', 'ajv2-jobs-host');
         const flowHost    = el('div', 'ajv2-flow-host');
         container.appendChild(headerHost);
+        container.appendChild(masterHost);
         container.appendChild(networkHost);
         container.appendChild(jobsHost);
         container.appendChild(flowHost);
+
+        if (uiComponentsV2.masterSwitches && typeof uiComponentsV2.masterSwitches.attach === 'function') {
+            liveMasterSwitches = uiComponentsV2.masterSwitches.attach(masterHost);
+        }
 
         if (uiComponentsV2.networkMap && typeof uiComponentsV2.networkMap.attach === 'function') {
             liveNetworkMap = uiComponentsV2.networkMap.attach(networkHost);
@@ -124,7 +140,7 @@
         const stream = el('div', 'log-stream');
         container.appendChild(stream);
         if (uiComponents.logViewer && typeof uiComponents.logViewer.attach === 'function') {
-            liveLogViewer = uiComponents.logViewer.attach(stream, { moduleFilter: 'auto-jobs-v2' });
+            liveLogViewer = uiComponents.logViewer.attach(stream, { moduleFilter: /^(auto-jobs-v2|flow-v2-.+)$/ });
         }
 
         panel = { container, headerHost, networkHost };
@@ -132,6 +148,7 @@
 
     function tearDownPanel() {
         if (liveLogViewer)  { try { liveLogViewer.destroy();  } catch (_) {} liveLogViewer  = null; }
+        if (liveMasterSwitches) { try { liveMasterSwitches.destroy(); } catch (_) {} liveMasterSwitches = null; }
         if (liveNetworkMap) { try { liveNetworkMap.destroy(); } catch (_) {} liveNetworkMap = null; }
         if (liveJobList)    { try { liveJobList.destroy();    } catch (_) {} liveJobList    = null; }
         if (liveFlowMap)    { try { liveFlowMap.destroy();    } catch (_) {} liveFlowMap    = null; }

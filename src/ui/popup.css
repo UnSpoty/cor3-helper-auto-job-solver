@@ -1100,3 +1100,55 @@ body.theme-amber-console .aj-state {
     background: transparent !important;
     border: 1px solid currentColor;
 }
+
+/* ── Auto-Jobs v2 — Master Switches ─────────────────────────────────── */
+.ajv2-ms { padding: 0; overflow: hidden; }
+.ajv2-ms-head {
+    display: flex; align-items: center; gap: 8px;
+    width: 100%; padding: 8px 10px;
+    background: transparent; border: 0; cursor: pointer;
+    font: inherit; color: var(--os-color-text); text-align: left;
+}
+.ajv2-ms-head:hover { background: var(--os-color-hover-bg); }
+.ajv2-ms-caret { width: 10px; color: var(--os-color-text-tertiary); }
+.ajv2-ms-summary { margin-left: auto; }
+.ajv2-ms-body { padding: 4px 10px 10px; border-top: 1px solid var(--os-color-border); }
+.ajv2-ms-body.collapsed { display: none; }
+.ajv2-ms-group { margin-top: 8px; }
+.ajv2-ms-grp-title {
+    color: var(--os-color-text-secondary); font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;
+}
+.ajv2-ms-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.ajv2-ms-chip {
+    padding: 3px 9px; border-radius: 5px;
+    font: inherit; font-size: 11px; font-weight: 600;
+    color: var(--os-color-text-tertiary);
+    background: transparent;
+    border: 1px solid var(--os-color-border);
+    cursor: pointer; text-transform: capitalize;
+    transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.ajv2-ms-chip:hover { background: var(--os-color-hover-bg); }
+.ajv2-ms-chip.on {
+    color: var(--os-color-success, #4ade80);
+    border-color: rgba(74, 222, 128, 0.45);
+    background: rgba(74, 222, 128, 0.12);
+}
+
+/* Network Map tile dimmed when its market is disabled via Master Switches. */
+.nm-node.nm-market-off { opacity: 0.45; }
+
+/* Jobs — bugged state + un-bug button. */
+.pill.ajv2-bugged {
+    color: var(--os-color-danger); border: 1px solid var(--os-color-danger);
+    background: rgba(254, 73, 73, 0.12);
+}
+.ajv2-job.is-bugged { opacity: 0.85; }
+.ajv2-unbug {
+    margin-left: 6px; padding: 0 6px; line-height: 16px;
+    font: inherit; font-size: 11px; color: var(--os-color-text-tertiary);
+    background: transparent; border: 1px solid var(--os-color-border);
+    border-radius: 4px; cursor: pointer;
+}
+.ajv2-unbug:hover { color: var(--os-color-danger); border-color: var(--os-color-danger); }

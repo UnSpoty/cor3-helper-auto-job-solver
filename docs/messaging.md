@@ -78,7 +78,8 @@ the game-module helpers.
 | `GAME.LAUNCH_EXPEDITION` | `COR3_LAUNCH_EXPEDITION` | `{ config: {mercenaryId, marketId, locationConfigId, zoneConfigId, objectiveId, hasInsurance} }` | `expeditions.configure` then `expeditions.launch`. |
 | `GAME.OPEN_CONTAINER` | `COR3_OPEN_CONTAINER` | `{ expeditionId }` | `expeditions.open.container`. |
 | `GAME.COLLECT_ALL` | `COR3_COLLECT_ALL` | `{ expeditionId }` | `expeditions.collect.all`. |
-| `GAME.ACCEPT_JOB` | `COR3_ACCEPT_JOB` | `{ jobId, marketId }` | `market.job.take`. |
+| `GAME.ACCEPT_JOB` | `COR3_ACCEPT_JOB` | `{ jobId, marketId }` | `market.job.take` (endpoint-preflight in the interceptor). |
+| `GAME.COMPLETE_JOB` | `COR3_COMPLETE_JOB` | `{ jobId, marketId }` | `market.job.complete`. Sent by v1 auto-jobs and by Auto-Jobs v2's flow-v2 modules after a job's minigame finishes. |
 | `GAME.RESPOND_DECISION` | `COR3_RESPOND_DECISION` | `{ expeditionId, messageId, selectedOption }` | `expeditions.respond.event`. |
 | `GAME.OPEN_NETWORK_MAP` | `COR3_OPEN_NETWORK_MAP` | `null` | clicks the taskbar `TabBarItem-NETWORK_MAP`; on success scrapes the server list. |
 | `GAME.OPEN_MARKET_JOBS` | `COR3_OPEN_MARKET_JOBS` | `{ home: bool, dark: bool }` | sequentially opens home market and/or dark market job tabs. |
@@ -102,7 +103,6 @@ the game-module helpers.
 - `COR3_SELL_ITEM` — `{itemId, quantity}` → `stash.sell.item`.
 - `COR3_KEEP_ALIVE` — no-op marker the SW pings to keep the page-side socket awake.
 - `COR3_RELAUNCH_EXPEDITION` — `{data}` — alias for `LAUNCH_EXPEDITION` with stored last config.
-- `COR3_COMPLETE_JOB` — `{jobId, marketId}` — sent by auto-jobs after `MINIGAME_DONE`.
 
 ---
 
@@ -179,6 +179,9 @@ messages (`ACCEPT_JOB`, `REVERT_ENDPOINT_TO_HOME`, `REFRESH_*`).
 | `AUTOJOBS_V2.OPEN_MARKET_ACTION` | `ajv2OpenMarket` | popup → isolated (runtime) | `{ serverName }` | NM context-menu "Open Market". Same refuse-while-running guard. |
 | `AUTOJOBS_V2.OPEN_SAI` | `COR3_AJV2_OPEN_SAI` | isolated → MAIN (window) | `{ serverName }` | handled by `auto-jobs-v2-bridge.js` → `serverConnect.connect`. |
 | `AUTOJOBS_V2.OPEN_MARKET` | `COR3_AJV2_OPEN_MARKET` | isolated → MAIN (window) | `{ serverName }` | handled by the bridge → `networkMap.openServerMarket`. |
+| `AUTOJOBS_V2.FLOW_START` | `COR3_AJV2_FLOW_START` | isolated → MAIN (window) | `{ jobId, marketId, jobType, fileCondition, fileId?, serverName? }` | JOB_FLOW dispatch. The MAIN `flow-v2-*` module for `jobType` executes the job. **Field is `jobType` not `type`** — `Bus.window` builds the envelope as `Object.assign({type}, payload)`, so a payload `type` would clobber the Bus message id and never be delivered. |
+| `AUTOJOBS_V2.FLOW_RESULT` | `COR3_AJV2_FLOW_RESULT` | MAIN → isolated (window) | `{ jobId, marketId, success, didWork, reason }` | flow outcome. `success&&didWork` = completed; `success&&!didWork` = can't do it → bugged; `success:false` = failure → bugged. |
+| `AUTOJOBS_V2.FLOW_STEP` | `COR3_AJV2_FLOW_STEP` | MAIN → isolated (window) | `{ jobId, node }` | live sub-step report (`node` ∈ `AJV2.NODE.fd-*`). The orchestrator relays it to `AJV2_PIPELINE_STATE` so the Flow Map highlights the current step inside JOB_FLOW. |
 
 Acceptance confirmation is **not** a dedicated message: an accepted job leaves
 the market board's `jobs[]` and reappears in `recentJobs[]` with
@@ -250,8 +253,17 @@ v2 owns these keys exclusively — it never reads or writes the v1 `autoJobs*` /
 |---|---|---|
 | `ajv2PipelineState` | `{ running, cycle, node, startedAt, updatedAt, error? }` | `auto-jobs-v2.js`. `node` ∈ `AJV2.NODE.*` — drives the Flow Map highlight. |
 | `ajv2JobQueue` | `{ cycle, computedAt, markets:[{slot, reachable, refreshed, jobCount, takenCount, reason}], jobs:[{id, name, type, status, serverName, marketSlot, marketId, rewardCredits, eligible, skipReason}] }` | `auto-jobs-v2/pipeline.js` (JOB_QUEUE / CHECK_CONDITION). `status` = `'AVAILABLE'` (board) or `'TAKEN'` (in-progress); `eligible` is null until CHECK_CONDITION runs. |
-| `ajv2BuggedJobs` | `{ [jobId]: { reason, since } }` | read by the pipeline now; written by `JOB_FLOW`'s MARK_AS_BUGGED (Phase 2). |
-| `ajv2ServerOverrides` | `{ [serverName]: { skip: bool, disabledTypes: { [jobType]: true } } }` | NM context menu → read by CHECK_CONDITION. |
+| `ajv2BuggedJobs` | `{ [jobId]: { reason, since } }` | written by JOB_FLOW's `_markBugged`; read by the pipeline (CHECK_CONDITION) + the Job List (shows a **BUGGED** pill live). The UI writes it too: per-job ✕ (un-bug) and the header **Clear Bugged** button (`= {}`). |
+| `ajv2ServerOverrides` | `{ [serverName]: { skip: bool, disabledTypes: { [jobType]: true } } }` | NM context menu → read by CHECK_CONDITION + Job List (live). |
+| `ajv2MasterSwitches` | `{ markets: { home, dark, srm }, jobTypes: { [FLOW.*]: bool } }` | Master Switches panel. `false` = disabled globally (absent = on). Read by CHECK_CONDITION (acceptance) + Job List/Network Map (live display). |
+
+> **Config eligibility is shared.** The market/type/server-override part of a
+> job's verdict is computed by `COR3.ajv2Eligibility.configSkipReason(job,
+> switches, overrides)` (`src/shared/ajv2-eligibility.js`, loaded in BOTH the
+> isolated content world and the popup). The pipeline stamps the *data* part it
+> alone can compute (bugged / K-D / accessibility) onto each queue job as
+> `dataSkipReason`; the popup re-derives the config part live so a toggle
+> reflects in the Job List immediately, without waiting for a pipeline cycle.
 
 ### Solver runtime
 
@@ -327,11 +339,12 @@ Map (which boxes to draw and highlight).
 | Field | Value | Notes |
 |---|---|---|
 | `AJV2.PACKET_TYPE` | `'ajv2/packet'` | `type` stamped on the packet that flows stage→stage. |
-| `AJV2.NODE.*` | `start`, `delay-initial`, `get-servers`, `check-access`, `update-markets`, `job-queue`, `queue-empty`, `have-tasks-in-progress`, `bugged-jobs`, `job-skip`, `check-condition`, `job-acception`, `job-flow`, `delay-cycle` | flowchart node ids. `job-flow` is drawn but not executed yet (Phase 2). |
+| `AJV2.NODE.*` | top-level: `start`, `delay-initial`, `get-servers`, `check-access`, `update-markets`, `job-queue`, `queue-empty`, `have-tasks-in-progress`, `bugged-jobs`, `job-skip`, `check-condition`, `job-acception`, `job-flow`, `delay-cycle`; file_decryption sub-flow: `fd-read-format`, `fd-check-loadout`, `fd-install-sw`, `fd-open-downloads`, `fd-solve`, `fd-complete`, `mark-as-bugged` | flowchart node ids. The `fd-*` sub-steps are reported live by the MAIN flow via `FLOW_STEP` and highlighted on the Flow Map. |
 | `AJV2.LOOP.INITIAL_DELAY_MS` | `10000` | one-time delay after START before the first cycle. |
 | `AJV2.LOOP.CYCLE_DELAY_MS` | `30000` | gap between cycles. |
 | `AJV2.LOOP.MARKET_REFRESH_TIMEOUT_MS` | `6000` | UPDATE_MARKETS wait for a refreshed market frame before logging loud & moving on. |
 | `AJV2.LOOP.ACCEPT_PACING_MS` | `1200` | gap between successive `ACCEPT_JOB` posts in JOB_ACCEPTION. |
+| `AJV2.LOOP.FLOW_TIMEOUT_MS` | `300000` | max time JOB_FLOW parks on one `FLOW_RESULT` before bugging the job. |
 
 ---
 
