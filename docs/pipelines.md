@@ -218,6 +218,82 @@ if any added: saveQueue + executeNextFromQueue (2 s)
 
 ---
 
+## 1b. Auto-Jobs v2 (rewrite — Phase 1 done, Phase 2 in progress)
+
+A ground-up rewrite of the job pipeline under the **Auto-Jobs v2** tab. NOT a
+refactor of section 1 — different shape, different rules (see
+[CLAUDE.md → Active work](../CLAUDE.md) and
+[architecture.md → Auto-Jobs v2 subsystem](architecture.md#auto-jobs-v2-subsystem-orchestrator--stages)).
+
+**Shape.** One registered Module — the orchestrator
+(`automation/auto-jobs-v2.js`) — owns START/STOP and runs an infinite loop.
+Each flowchart box is a plain *stage* object on
+`COR3.autoJobsV2.pipeline.stages.*` (`automation/auto-jobs-v2/pipeline.js`) with
+`async run(packet, ctx) -> packet`. A single growing **packet** flows
+stage→stage. The orchestrator stamps the active `AJV2.NODE.*` onto
+`STORAGE_LOCAL.AJV2_PIPELINE_STATE` so the popup Flow Map highlights the live
+node. Cadence: 10 s initial delay, then a cycle every 30 s. STOP invalidates the
+in-flight cycle via a generation token.
+
+### Loop (per cycle)
+
+```
+START → DELAY:10s → ┌─ GET_SERVERS → CHECK_SERVERS_ACCESABILITY
+                    │   → UPDATE_MARKETS → JOB_QUEUE → <QUEUE:EMPTY?>
+                    │       YES ───────────────────────────────────────┐
+                    │       NO → <HAVE_TASKS_IN_PROGRESS?>             │
+                    │              YES → <BUGGED?>                     │
+                    │                      YES → JOB:SKIP ─────────────┤
+                    │                      NO ─┐                       │
+                    │              NO ─────────┴→ CHECK_JOBS_CONDITION │
+                    │                            → JOB_ACCEPTION       │
+                    │                            → JOB_FLOW  (Phase 2) │
+                    └──────────────── DELAY:30s ←──────────────────────┘  (loop)
+```
+
+### Stages (Phase 1 — implemented, isolated world)
+
+| Node (`AJV2.NODE`) | Stage | What it does |
+|---|---|---|
+| `GET_SERVERS` | `getServers` | reads `NM_GRAPH`; throws loud if the map was never opened. Copies `home` + `servers[]` onto the packet. |
+| `CHECK_ACCESS` | `checkAccess` | per server: `accessible` / `hasSaiAccess` / `onCooldown` from the graph flags. Resolves market reachability (home always; dark/srm unless their `*_AVAILABLE` flag is `false`). |
+| `UPDATE_MARKETS` | `updateMarkets` | for each **reachable** market: post `MSG.GAME.REFRESH_*`, await a fresh frame (≤6 s), then read the envelope. Pulls BOTH `jobs[]` (tag `status:'AVAILABLE'`) and `recentJobs[]` TAKEN entries (tag `status:'TAKEN'`). Unreachable markets recorded with a reason, not refreshed. |
+| `JOB_QUEUE` | `jobQueue` | normalises rawJobs → queue entries `{id, name, type, status, serverName, marketSlot, marketId, rewardCredits, eligible, skipReason}`; writes `AJV2_JOB_QUEUE` for the UI. |
+| `QUEUE_EMPTY?` | (orchestrator) | empty board+in-progress → fall through to DELAY and loop. |
+| `HAVE_TASKS_IN_PROGRESS?` | (orchestrator) | any queue job with `status==='TAKEN'`. |
+| `BUGGED?` | `buggedJobs` + orchestrator | reads `AJV2_BUGGED_JOBS`; if every in-progress job is bugged → `JOB:SKIP` (skip the cycle). |
+| `CHECK_CONDITION` | `checkCondition` | per job, eligibility + explicit `skipReason`. Wired conditions: bugged registry; and (only when the job has a server) server-known / K-D cooldown / accessible / user-SKIP / type-disabled (`AJV2_SERVER_OVERRIDES`). A missing related server is **not** a skip reason. |
+| `JOB_ACCEPTION` | `jobAcception` | acceptance set = eligible AND `status==='AVAILABLE'`. Decryption-priority: if any `file_decryption` jobs exist, accept ALL across ALL markets; else accept the other types. Posts `MSG.GAME.ACCEPT_JOB` paced 1.2 s apart, then `MSG.GAME.REVERT_ENDPOINT_TO_HOME` once. Confirmation is async — accepted jobs reappear as `TAKEN` next cycle. |
+
+### Phase 2 — TODO (MAIN world): `JOB_FLOW`
+
+The `JOB_FLOW` node is drawn on the Flow Map but not executed. Remaining work:
+
+- isolated↔MAIN dispatch protocol + `flow-v2-*` modules (written from scratch,
+  extending `auto-jobs-v2-bridge.js`);
+- a per-type selector → flows: ip_injection/ip_cleanup (Transit Access),
+  file_elimination (FILES), log_deletion/log_download (LOGS),
+  data_download/data_upload (the on-screen **Downloads widget**), file_decryption
+  (read format → dynamic loadout capability check → install/swap software via the
+  `loadout-panel` helpers → run the decrypt mini-game **paused** so the flow
+  doesn't time out), decrypt_extract (download then file_decryption logic);
+- `CLOSE_SAI_TERMINAL` + `GOTO_NEXT_MODULE`;
+- job completion (`__cor3CompleteJob`);
+- a writer for `AJV2_BUGGED_JOBS` (`MARK_AS_BUGGED`).
+
+### Cross-references in code
+
+| Part | File | Symbol |
+|---|---|---|
+| Orchestrator / loop | `automation/auto-jobs-v2.js` | `_loop()`, `_runCycle()`, `_ctx()`, `_setNode()` |
+| Stages | `automation/auto-jobs-v2/pipeline.js` | `stages.*`, `createPacket()`, `MARKET_SLOTS` |
+| Node ids / cadence | `shared/constants.js` | `AJV2.NODE`, `AJV2.LOOP` |
+| Flow Map | `ui/sections/auto-jobs-v2/flow-map.js` | `NODES`, `EDGES`, `edgePoints()` |
+| Job List | `ui/sections/auto-jobs-v2/job-list.js` | `render()`, `jobRow()` |
+| MAIN bridge | `game/auto-jobs-v2-bridge.js` | NM context-menu Open SAI / Open Market |
+
+---
+
 ## 2. Auto-send-merc
 
 After an expedition completes, open the container, collect the rewards,

@@ -79,6 +79,26 @@ disables itself when stash doesn't have ≥ 2 free slots.
 
 **LIMITS** — tunables (TTLs, ring sizes).
 
+**AJV2** — Auto-Jobs v2 constant group (`constants.AJV2`): `NODE` (flowchart
+node ids), `LOOP` (cadence), `PACKET_TYPE`. Storage keys are `STORAGE_LOCAL.AJV2_*`.
+
+**orchestrator (v2)** — the single registered Module `auto-jobs-v2` that owns
+START/STOP and runs the pipeline loop. Distinct from the **stages** it drives.
+
+**stage (v2)** — a plain object on `COR3.autoJobsV2.pipeline.stages.*` with
+`async run(packet, ctx) -> packet`. NOT a registered module.
+
+**packet (v2)** — the single growing envelope (`type:'ajv2/packet'`) that flows
+stage→stage, enriched at each hop.
+
+**TAKEN / in-progress** — a job we've accepted. It leaves the market board's
+`jobs[]` and appears in `recentJobs[]` with `status:'TAKEN'`. The available board
+(`jobs[]`) carries no status — being on the board IS "available".
+
+**Downloads widget** — an on-screen panel in the game desktop (see
+`loadout.html`), NOT a filesystem directory. data_download/upload flows interact
+with it.
+
 **Bus** — cross-context message bus (`Bus.window` for postMessage,
 `Bus.runtime` for chrome.runtime).
 

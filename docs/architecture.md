@@ -28,19 +28,25 @@ and the runtime API. They communicate over `window.postMessage`.
 ```
 ┌────────────────────────────────────────────────┐
 │ UI  (src/ui/popup.html + popup.css + shell.js) │
-│  • 5 sections — Overview, Expeditions,         │
-│    Auto-Jobs, Modules, Logs                    │
-│  • 4 components — icons, timer, module-card,   │
-│    log-viewer                                  │
+│  • 6 tabs — Overview, Expeditions, Auto-Jobs,  │
+│    Auto-Jobs v2, Modules, Logs                 │
+│  • components — icons, timer, module-card,     │
+│    log-viewer, network-map                     │
+│  • Auto-Jobs v2 UI: sections/auto-jobs-v2/*    │
+│    (network-map, job-list, flow-map, log-      │
+│    export) on COR3.uiComponentsV2.*            │
 ├────────────────────────────────────────────────┤
 │ Isolated content (src/entry/content.js)        │
-│  • 9 data modules (auth, expeditions, market,  │
-│    dark-market, stash, mercenaries, decisions, │
-│    merc-config, expedition-config)             │
-│  • 9 automation modules (auto-jobs, auto-send- │
-│    merc, auto-choose-decision, auto-refresh,   │
-│    auto-decrypt, auto-ice-wall, daily-ops,     │
-│    timers, runtime-bridge)                     │
+│  • 12 data modules (auth, expeditions,         │
+│    archived-expeditions, decisions, market,    │
+│    dark-market, srm-market, stash, loadout,    │
+│    mercenaries, merc-config, expedition-config)│
+│  • automation: timers, auto-refresh, auto-send-│
+│    merc, auto-choose-decision, auto-decrypt,   │
+│    auto-ice-wall, auto-simple-decrypt, daily-  │
+│    ops, auto-jobs (+ auto-jobs/ helpers),      │
+│    auto-jobs-v2 (+ auto-jobs-v2/pipeline),     │
+│    runtime-bridge                              │
 │  • 4 appearance modules                        │
 ├────────────────────────────────────────────────┤
 │ MAIN content   (src/entry/content-early.js)    │
@@ -48,18 +54,19 @@ and the runtime API. They communicate over `window.postMessage`.
 │    http-interceptor (wraps fetch + XHR),       │
 │    solver-loader                               │
 │  • game core: network-map, server-connect,     │
-│    sai-navigator                               │
+│    sai-navigator, auto-jobs-v2-bridge,         │
+│    loadout-panel                               │
 │  • flows-core + 9 flow modules                 │
-│  • 3 solver modules (decrypt, daily-ops,       │
-│    ice-wall)                                   │
+│  • 4 solver modules (decrypt, daily-ops,       │
+│    ice-wall, simple-decrypt)                   │
 ├────────────────────────────────────────────────┤
 │ Background SW  (src/entry/background.js)       │
 │  • keep-alive ping                             │
-│  • expedition polling                          │
+│  • expedition polling + ext-update probe       │
 ├────────────────────────────────────────────────┤
 │ CORE  (src/core/, loaded into every context)   │
 │   bus · store · logger · module · registry     │
-│   · settings                                   │
+│   · settings   (+ shared: i18n, build-info)    │
 └────────────────────────────────────────────────┘
 ```
 
@@ -73,48 +80,62 @@ The order matters: core primitives must exist before modules use them.
 
 ```
 1.  src/shared/platform.js           ← isFirefox / isChromium runtime detect
-2.  src/shared/constants.js          ← MSG, STORAGE_*, FLOW, CATEGORY enums
-3.  src/shared/dom.js                ← sleep, waitForEl, click, react-input
-4.  src/shared/ws-frames.js          ← Socket.IO v4 parser
-5.  src/shared/errors.js             ← cor3LogError + back-compat aliases
-6.  src/core/bus.js                  ← Bus.window.{post,on}; Bus.runtime.{send,on}
-7.  src/core/store.js                ← Store.local / Store.sync facade
-8.  src/core/logger.js               ← per-module ring buffer; forwards from MAIN
-9.  src/core/module.js               ← base class
-10. src/core/settings.js             ← module-state persistence
-11. src/core/registry.js             ← topo-sort, boot()
-12. src/interceptors/ws-interceptor.js
-13. src/interceptors/http-interceptor.js
-14. src/interceptors/solver-loader.js
-15. src/modules/game/network-map.js
-16. src/modules/game/server-connect.js
-17. src/modules/game/sai-navigator.js
-18. src/modules/game/flows/_shared.js
-19-27. src/modules/game/flows/*      ← 9 flow modules
-28. src/modules/solvers/decrypt.js
-29. src/modules/solvers/daily-ops.js    ← Game Center Daily Ops solver
-30. src/modules/solvers/ice-wall.js     ← SAI Porter-lite r4 ICE WALL solver
-31. src/entry/content-early.js       ← Registry.boot()
+2.  src/shared/constants.js          ← MSG, STORAGE_*, FLOW, CATEGORY, AJV2 enums
+3.  src/shared/build-info.js         ← commit/date stamp
+4.  src/shared/dom.js                ← sleep, waitForEl, click, react-input
+5.  src/shared/ws-frames.js          ← Socket.IO v4 parser
+6.  src/shared/errors.js             ← cor3LogError + back-compat aliases
+7.  src/core/bus.js                  ← Bus.window.{post,on}; Bus.runtime.{send,on}
+8.  src/core/store.js                ← Store.local / Store.sync facade
+9.  src/core/logger.js               ← per-module ring buffer; forwards from MAIN
+10. src/core/module.js               ← base class
+11. src/core/settings.js             ← module-state persistence
+12. src/core/registry.js             ← topo-sort, boot()
+13. src/shared/i18n.js               ← translation table
+14. src/shared/i18n-bridge.js        ← page-language detect → i18n
+15. src/interceptors/ws-interceptor.js
+16. src/interceptors/http-interceptor.js
+17. src/interceptors/solver-loader.js
+18. src/modules/game/network-map.js
+19. src/modules/game/server-connect.js
+20. src/modules/game/sai-navigator.js
+21. src/modules/game/auto-jobs-v2-bridge.js  ← v2 NM context-menu endpoint (plain IIFE, not a Module)
+22. src/modules/game/loadout-panel.js        ← site-embedded loadout UI
+23. src/modules/game/flows/_shared.js
+24-32. src/modules/game/flows/*      ← 9 flow modules
+33. src/modules/solvers/decrypt.js
+34. src/modules/solvers/daily-ops.js    ← Game Center Daily Ops solver
+35. src/modules/solvers/ice-wall.js     ← SAI Porter-lite r4 ICE WALL solver
+36. src/modules/solvers/simple-decrypt.js
+37. src/entry/content-early.js       ← Registry.boot()
 ```
 
 ### Isolated content_scripts (`content_scripts[1]`, isolated world, `run_at: document_idle`)
 
 ```
-1-10. shared/* + core/* (same as MAIN, minus interceptor families)
-11.  src/modules/data/auth.js
-12-19. src/modules/data/*            ← 8 more data modules
-20.  src/modules/automation/timers.js
-21.  src/modules/automation/auto-refresh.js
-22.  src/modules/automation/auto-send-merc.js
-23.  src/modules/automation/auto-choose-decision.js
-24.  src/modules/automation/auto-decrypt.js
-25.  src/modules/automation/auto-daily-hack.js
-26.  src/modules/automation/daily-ops.js
-27.  src/modules/automation/auto-jobs.js
-28.  src/modules/automation/runtime-bridge.js
-29-32. src/modules/appearance/*      ← 4 appearance modules
-33.  src/entry/content.js            ← Registry.boot() + log-bridge
+1-14. shared/* + core/* + i18n (same prelude as MAIN, minus interceptors)
+15.  src/modules/data/auth.js
+16-26. src/modules/data/*            ← 11 more data modules (incl. srm-market, loadout, archived-expeditions)
+27.  src/modules/automation/timers.js
+28.  src/modules/automation/auto-refresh.js
+29.  src/modules/automation/auto-send-merc.js
+30.  src/modules/automation/auto-choose-decision.js
+31.  src/modules/automation/auto-decrypt.js
+32.  src/modules/automation/auto-ice-wall.js
+33.  src/modules/automation/auto-simple-decrypt.js
+34.  src/modules/automation/daily-ops.js
+35-40. src/modules/automation/auto-jobs/*  ← v1 helpers (action-cooldown, log-export, reachability, planner, executor, orchestrator) — NOT Registry modules
+41.  src/modules/automation/auto-jobs.js
+42.  src/modules/automation/auto-jobs-v2/pipeline.js  ← v2 stages (plain objects)
+43.  src/modules/automation/auto-jobs-v2.js           ← v2 orchestrator (Module)
+44.  src/modules/automation/runtime-bridge.js
+45-48. src/modules/appearance/*      ← 4 appearance modules
+49.  src/entry/content.js            ← Registry.boot() + log-bridge
 ```
+
+> Load order matters: `auto-jobs-v2/pipeline.js` must load **before**
+> `auto-jobs-v2.js` — the orchestrator reads the stages off
+> `COR3.autoJobsV2.pipeline` at `start()`.
 
 ### Service worker (`background.service_worker`, Chrome) / `background.scripts` (Firefox)
 
@@ -166,6 +187,39 @@ The Module base class provides:
 - `track(unsub)` — accumulates cleanup callbacks; auto-runs all on `_runStop()`
 - `info(msg, ctx)` / `debug` / `warn` / `error` — go through `Logger.push()`,
   honor the per-module `logsEnabled` toggle
+
+## Auto-Jobs v2 subsystem (orchestrator + stages)
+
+Auto-Jobs v2 is a ground-up rewrite of the job pipeline and uses a different
+shape from the rest of the codebase — worth understanding before touching it.
+(Rules and status live in [CLAUDE.md → Active work](../CLAUDE.md); the full
+pipeline diagram lives in [pipelines.md](pipelines.md).)
+
+- **One Module, many stages.** Exactly one registered `COR3.Module`
+  (`auto-jobs-v2`, the *orchestrator*, in
+  `src/modules/automation/auto-jobs-v2.js`) owns START/STOP and runs an
+  infinite loop. The pipeline "modules" are NOT registered modules — they are
+  plain stage objects on `COR3.autoJobsV2.pipeline.stages.*`
+  (`src/modules/automation/auto-jobs-v2/pipeline.js`), each with the uniform
+  contract `async run(packet, ctx) -> packet`.
+- **Packet envelope.** A single growing object (`type: 'ajv2/packet'`) flows
+  stage→stage, getting enriched at each hop. The orchestrator owns ordering,
+  cancellation (a generation token invalidates an in-flight cycle on STOP),
+  and Flow-Map highlighting.
+- **Node ids are shared truth.** `constants.AJV2.NODE.*` names every flowchart
+  node. The orchestrator stamps the active node onto
+  `STORAGE_LOCAL.AJV2_PIPELINE_STATE`; the popup Flow Map
+  (`COR3.uiComponentsV2.flowMap`) reads the same ids to highlight the live
+  stage.
+- **Isolation.** v2 runs in the isolated world, owns only `AJV2_*` /
+  `AUTOJOBS_V2_SETTINGS` keys, logs under id `auto-jobs-v2`, and reads only
+  shared read-only game state (`NM_GRAPH` + the three market envelopes). The
+  only commands it posts are generic `MSG.GAME.*` (REFRESH_*, ACCEPT_JOB,
+  REVERT_ENDPOINT_TO_HOME) — never v1 auto-jobs messages.
+- **MAIN-world bridge.** `src/modules/game/auto-jobs-v2-bridge.js` (a plain
+  IIFE, not a Module) is the MAIN endpoint for the v2 Network-Map context menu
+  (Open SAI / Open Market), driving the generic `COR3.game.*` helpers. Phase 2's
+  job execution (`JOB_FLOW` → `flow-v2-*`) will extend this bridge.
 
 ## Cross-world communication
 

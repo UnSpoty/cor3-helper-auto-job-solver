@@ -61,10 +61,10 @@
             marketReachability: null,
 
             // ── filled by UPDATE_MARKETS ──
-            // [{ slot, reachable, refreshed, jobCount, marketId, reason }]
+            // [{ slot, reachable, refreshed, jobCount, takenCount, marketId, reason }]
             markets: null,
-            // raw market jobs as the game returned them, tagged with origin:
-            // [{ job, slot, marketId }]
+            // raw market jobs tagged with origin + source-derived status:
+            // [{ job, slot, marketId, status:'AVAILABLE'|'TAKEN' }]
             rawJobs: null,
 
             // ── filled by JOB_QUEUE ──
@@ -79,6 +79,9 @@
             serverOverrides: null,    // AJV2_SERVER_OVERRIDES snapshot used this cycle
             evaluations: null,        // { [jobId]: { eligible, skipReason } }
             eligible: null,           // [jobId, …] (the final do-able list)
+
+            // ── filled by JOB_ACCEPTION ──
+            accepted: null,           // [jobId, …] (ACCEPT_JOB posted this cycle)
         };
     }
 
@@ -139,6 +142,24 @@
         if (Array.isArray(rs) && rs[0]) return rs[0].serverName || rs[0].name || null;
         if (typeof rs === 'string') return rs;
         return null;
+    }
+
+    // Plain cancellable pause used to pace ACCEPT_JOB posts. Resolves early
+    // (returning false) the moment the orchestrator's run is cancelled, so a
+    // STOP mid-acceptance doesn't keep firing job.take RPCs.
+    function pacedDelay(ms, alive) {
+        return new Promise((resolve) => {
+            const STEP = 150;
+            let waited = 0;
+            const tick = () => {
+                if (!alive()) return resolve(false);
+                if (waited >= ms) return resolve(true);
+                const chunk = Math.min(STEP, ms - waited);
+                waited += chunk;
+                setTimeout(tick, chunk);
+            };
+            tick();
+        });
     }
 
     // Resolve once the matching at-timestamp key advances past `prevAt`
@@ -234,6 +255,15 @@
     // jobs the game returned. Unreachable markets are recorded with a reason
     // and skipped (not refreshed) — that is the "don't update a market we
     // can't reach" rule, made explicit on the packet.
+    //
+    // The market envelope is { marketId, jobs, recentJobs, … }: `jobs` is the
+    // AVAILABLE board (acceptance candidates — they carry no status, being on
+    // the board IS the status), while accepted jobs leave the board and appear
+    // in `recentJobs` tagged status:'TAKEN' (= in-progress). We pull BOTH and
+    // stamp each rawJob with a source-derived status so JOB_QUEUE /
+    // HAVE_TASKS_IN_PROGRESS / JOB_ACCEPTION can route on it. Other recentJobs
+    // states (FAILED/EXPIRED/COMPLETED/ready-to-claim) are out of v2's current
+    // scope and intentionally not collected.
     const updateMarkets = {
         id: AJV2.NODE.UPDATE_MARKETS,
         async run(packet, ctx) {
@@ -246,7 +276,7 @@
             for (const m of MARKET_SLOTS) {
                 const reachable = !!(packet.marketReachability[m.slot] && packet.marketReachability[m.slot].reachable);
                 if (!reachable) {
-                    markets.push({ slot: m.slot, reachable: false, refreshed: false, jobCount: 0, marketId: null, reason: 'market-not-reachable' });
+                    markets.push({ slot: m.slot, reachable: false, refreshed: false, jobCount: 0, takenCount: 0, marketId: null, reason: 'market-not-reachable' });
                     ctx.log.debug(`UPDATE_MARKETS · ${m.label}: unreachable — not updated`);
                     continue;
                 }
@@ -261,17 +291,29 @@
                 }
 
                 const envelope = await ctx.store.local.getOne(m.storageKey, null);
-                const jobs = (envelope && Array.isArray(envelope.jobs)) ? envelope.jobs : [];
+                const available = (envelope && Array.isArray(envelope.jobs)) ? envelope.jobs : [];
+                const recent = (envelope && Array.isArray(envelope.recentJobs)) ? envelope.recentJobs : [];
                 const marketId = (envelope && envelope.marketId) || null;
-                for (const job of jobs) rawJobs.push({ job, slot: m.slot, marketId });
-                markets.push({ slot: m.slot, reachable: true, refreshed, jobCount: jobs.length, marketId, reason: null });
-                ctx.log.debug(`UPDATE_MARKETS · ${m.label}: ${jobs.length} jobs${refreshed ? '' : ' (stale)'}`);
+
+                for (const job of available) rawJobs.push({ job, slot: m.slot, marketId, status: 'AVAILABLE' });
+                let takenCount = 0;
+                for (const job of recent) {
+                    if (job && job.status === 'TAKEN') {
+                        rawJobs.push({ job, slot: m.slot, marketId, status: 'TAKEN' });
+                        takenCount++;
+                    }
+                }
+
+                markets.push({ slot: m.slot, reachable: true, refreshed, jobCount: available.length, takenCount, marketId, reason: null });
+                ctx.log.debug(`UPDATE_MARKETS · ${m.label}: ${available.length} available, ${takenCount} in-progress${refreshed ? '' : ' (stale)'}`);
             }
 
             packet.markets = markets;
             packet.rawJobs = rawJobs;
-            ctx.log.info(`UPDATE_MARKETS → ${rawJobs.length} jobs across ${markets.filter((x) => x.reachable).length} reachable market(s)`);
-            return stamp(packet, this.id, { jobs: rawJobs.length });
+            const avail = rawJobs.filter((r) => r.status === 'AVAILABLE').length;
+            const taken = rawJobs.length - avail;
+            ctx.log.info(`UPDATE_MARKETS → ${avail} available + ${taken} in-progress across ${markets.filter((x) => x.reachable).length} reachable market(s)`);
+            return stamp(packet, this.id, { available: avail, inProgress: taken });
         },
     };
 
@@ -283,10 +325,16 @@
         async run(packet, ctx) {
             if (!packet.rawJobs) throw new Error('JOB_QUEUE: packet.rawJobs missing (UPDATE_MARKETS must run first)');
 
-            const queue = packet.rawJobs.map(({ job, slot, marketId }) => ({
+            const queue = packet.rawJobs.map(({ job, slot, marketId, status }) => ({
                 id: job.id,
                 name: job.name || job.category || 'Unknown',
                 type: detectJobType(job),
+                // Source-derived status stamped by UPDATE_MARKETS: 'AVAILABLE'
+                // (from the board — an acceptance candidate) or 'TAKEN' (from
+                // recentJobs — in-progress). The whole in-progress flow (the
+                // HAVE_TASKS_IN_PROGRESS? diamond, the BUGGED_JOBS decision,
+                // JOB_ACCEPTION's accept filter) reads off this field.
+                status,
                 serverName: jobServer(job),
                 marketSlot: slot,
                 marketId,
@@ -330,12 +378,13 @@
     //
     // Conditions wired now (real data sources exist):
     //   • bugged registry          → BUGGED_JOBS
-    //   • related-server present
-    //   • server known to the map
-    //   • server not on K/D cooldown
-    //   • server accessible
+    //   • server known to the map         (only when the job has a server)
+    //   • server not on K/D cooldown      (only when the job has a server)
+    //   • server accessible               (only when the job has a server)
     //   • user SKIP on the server   → AJV2_SERVER_OVERRIDES
     //   • job type disabled on the server → AJV2_SERVER_OVERRIDES
+    // A missing related server is NOT a skip reason — download/solve job types
+    // legitimately have none (their file lands in the Downloads widget).
     // Conditions awaiting a config source (added later): global job-type
     // enabled, market enabled. There is intentionally NO placeholder for
     // those — we don't invent a condition without a source.
@@ -344,7 +393,13 @@
         async run(packet, ctx) {
             if (!packet.queue) throw new Error('CHECK_CONDITION: packet.queue missing (JOB_QUEUE must run first)');
             if (!packet.accessibility) throw new Error('CHECK_CONDITION: packet.accessibility missing (CHECK_ACCESS must run first)');
-            if (!packet.buggedJobs) throw new Error('CHECK_CONDITION: packet.buggedJobs missing (BUGGED_JOBS must run first)');
+            // The BUGGED_JOBS decision only runs on the in-progress branch, so
+            // CHECK_CONDITION loads the registry itself when reached via the
+            // no-tasks-in-progress path — its own required input, from the real
+            // source (no prior-stage coupling).
+            if (!packet.buggedJobs) {
+                packet.buggedJobs = await ctx.store.local.getOne(SL.AJV2_BUGGED_JOBS, {});
+            }
 
             const overrides = await ctx.store.local.getOne(SL.AJV2_SERVER_OVERRIDES, {});
             packet.serverOverrides = overrides;
@@ -357,9 +412,10 @@
                 const bug = packet.buggedJobs[job.id];
                 if (bug) reasons.push(`bugged: ${bug.reason || 'unknown'}`);
 
-                if (!job.serverName) {
-                    reasons.push('no related server');
-                } else {
+                // Server-bound checks only apply when the job carries a related
+                // server. Jobs without one (download/solve types whose file
+                // lands in the Downloads widget) are NOT skipped for it.
+                if (job.serverName) {
                     const acc = packet.accessibility[job.serverName];
                     if (!acc) reasons.push(`server not in Network Map: ${job.serverName}`);
                     else {
@@ -395,6 +451,63 @@
         },
     };
 
+    // MODULE:JOB_ACCEPTION — accept jobs off the board via the game's
+    // market/job.take RPC (MAIN's __cor3AcceptJob, reached through the generic
+    // MSG.GAME.ACCEPT_JOB window message — same shared game infrastructure
+    // UPDATE_MARKETS uses for REFRESH_*; NOT a v1-auto-jobs message).
+    //
+    // Acceptance set = jobs that passed CHECK_CONDITION (eligible) AND are
+    // still AVAILABLE on the board (status 'AVAILABLE' — never re-accept a
+    // TAKEN/FAILED/EXPIRED entry). Decryption is prioritised exactly as the
+    // flowchart draws it: if there are any file_decryption jobs, accept ALL of
+    // them across ALL markets this cycle; only when there are none do we accept
+    // the other-type jobs (no depth calc — we just accept them).
+    //
+    // Posts are paced ACCEPT_PACING_MS apart so the job.take bursts don't
+    // outrun the server; after the batch we post REVERT_ENDPOINT_TO_HOME once
+    // (the accept helper does set.endpoint per remote market but never reverts
+    // on its own). Acceptance is confirmed asynchronously — the accepted jobs
+    // flip to status 'TAKEN', which the next UPDATE_MARKETS cycle observes.
+    const jobAcception = {
+        id: AJV2.NODE.JOB_ACCEPTION,
+        async run(packet, ctx) {
+            if (!packet.eligible) throw new Error('JOB_ACCEPTION: packet.eligible missing (CHECK_CONDITION must run first)');
+
+            const eligibleSet = new Set(packet.eligible);
+            const acceptable = packet.queue.filter((j) => eligibleSet.has(j.id) && j.status === 'AVAILABLE');
+
+            const decryption = acceptable.filter((j) => j.type === C.FLOW.FILE_DECRYPTION);
+            const toAccept = decryption.length > 0 ? decryption : acceptable;
+            const mode = decryption.length > 0 ? 'file_decryption (all markets)' : 'other types';
+
+            packet.accepted = [];
+            if (toAccept.length === 0) {
+                ctx.log.info('JOB_ACCEPTION → nothing to accept (no eligible AVAILABLE jobs)');
+                return stamp(packet, this.id, { accepted: 0 });
+            }
+
+            ctx.log.info(`JOB_ACCEPTION → accepting ${toAccept.length} job(s) [${mode}]`);
+            for (let i = 0; i < toAccept.length; i++) {
+                if (!ctx.alive()) { ctx.log.warn('JOB_ACCEPTION cancelled mid-batch'); break; }
+                const job = toAccept[i];
+                if (!job.marketId) {
+                    ctx.log.error(`JOB_ACCEPTION: job ${job.id} has no marketId — cannot accept`, { job: stripRaw(job) });
+                    continue;
+                }
+                ctx.bus.window.post(C.MSG.GAME.ACCEPT_JOB, { jobId: job.id, marketId: job.marketId });
+                packet.accepted.push(job.id);
+                ctx.log.debug(`JOB_ACCEPTION · take ${job.id} (${job.type || 'unknown'}) @ ${job.marketSlot}`);
+                if (i < toAccept.length - 1) await pacedDelay(AJV2.LOOP.ACCEPT_PACING_MS, ctx.alive);
+            }
+
+            // One revert after the whole batch — remote-market accepts may have
+            // left the endpoint on DARK/SRM.
+            ctx.bus.window.post(C.MSG.GAME.REVERT_ENDPOINT_TO_HOME, null);
+            ctx.log.info(`JOB_ACCEPTION → ${packet.accepted.length} accept(s) sent, endpoint reverted to home`);
+            return stamp(packet, this.id, { accepted: packet.accepted.length, mode });
+        },
+    };
+
     // The raw game job object is heavy and circular-ish; strip it before
     // writing the queue to storage for the UI.
     function stripRaw(job) {
@@ -409,6 +522,6 @@
         MARKET_SLOTS,
         detectJobType,
         jobServer,
-        stages: { getServers, checkAccess, updateMarkets, jobQueue, buggedJobs, checkCondition },
+        stages: { getServers, checkAccess, updateMarkets, jobQueue, buggedJobs, checkCondition, jobAcception },
     };
 })();

@@ -15,9 +15,38 @@ IIFE-loaded scripts. No build step.
 
 A rewrite of the Auto-Jobs subsystem is in progress under the
 **"Auto-Jobs v2"** tab. Code lives in
-[src/ui/sections/auto-jobs-v2/](src/ui/sections/auto-jobs-v2/) and uses the
-isolated storage key `STORAGE_SYNC.AUTOJOBS_V2_SETTINGS`. The v2 namespaces
-are `COR3.autoJobsV2.*` and `COR3.uiComponentsV2.*`.
+[src/ui/sections/auto-jobs-v2/](src/ui/sections/auto-jobs-v2/) (UI) and
+[src/modules/automation/auto-jobs-v2.js](src/modules/automation/auto-jobs-v2.js)
++ [src/modules/automation/auto-jobs-v2/pipeline.js](src/modules/automation/auto-jobs-v2/pipeline.js)
+(logic), with a MAIN-world bridge at
+[src/modules/game/auto-jobs-v2-bridge.js](src/modules/game/auto-jobs-v2-bridge.js).
+It uses the isolated storage key `STORAGE_SYNC.AUTOJOBS_V2_SETTINGS`. The v2
+namespaces are `COR3.autoJobsV2.*` and `COR3.uiComponentsV2.*`.
+
+**Architecture:** ONE registered `COR3.Module` (`auto-jobs-v2`, the
+orchestrator) owns START/STOP and runs an infinite loop; the pipeline "modules"
+are plain stage objects under `COR3.autoJobsV2.pipeline.stages.*`, each with a
+uniform `async run(packet, ctx) -> packet` contract. A single growing **packet**
+envelope flows stage→stage. Flowchart node ids live in `constants.AJV2.NODE`
+(shared between orchestrator execution and the Flow Map drawing); live progress
+is published to `STORAGE_LOCAL.AJV2_PIPELINE_STATE`. See
+[docs/pipelines.md → Auto-Jobs v2](docs/pipelines.md) for the full diagram.
+
+**Status (current):**
+- **Phase 1 — DONE (isolated world):** the planning + acceptance half runs end
+  to end: `GET_SERVERS → CHECK_ACCESS → UPDATE_MARKETS → JOB_QUEUE →
+  QUEUE:EMPTY? → HAVE_TASKS_IN_PROGRESS? → BUGGED? → JOB:SKIP →
+  CHECK_CONDITION → JOB_ACCEPTION`. UPDATE_MARKETS reads both the market
+  envelope's `jobs[]` (status `AVAILABLE`) and `recentJobs[]` (status `TAKEN` =
+  in-progress); JOB_ACCEPTION accepts via the generic `MSG.GAME.ACCEPT_JOB` +
+  `REVERT_ENDPOINT_TO_HOME` (decryption-priority, all markets). The bridge
+  currently handles only the Network-Map context-menu Open SAI / Open Market
+  actions.
+- **Phase 2 — TODO (MAIN world): `JOB_FLOW`.** The node is drawn on the Flow
+  Map but not executed. Remaining: isolated↔MAIN dispatch + `flow-v2-*` modules,
+  per-type flows (Transit Access / FILES / LOGS, the Downloads widget, the
+  decrypt loadout-swap + solver), job completion (`__cor3CompleteJob`), and a
+  writer for `AJV2_BUGGED_JOBS` (`MARK_AS_BUGGED`).
 
 **Hard rules when working on v2:**
 
@@ -58,7 +87,7 @@ Read these in order when ramping up:
 | [docs/architecture.md](docs/architecture.md) | Execution contexts, boot order, module lifecycle, cross-world topology |
 | [docs/module-spec.md](docs/module-spec.md) | Module contract; templates for each kind of module (data / automation / game / flow / solver / appearance / UI section) |
 | [docs/messaging.md](docs/messaging.md) | Exhaustive enum of MSG / STORAGE_LOCAL / STORAGE_SYNC / FLOW / CATEGORY / LIMITS with payload shapes and producer/consumer mapping |
-| [docs/pipelines.md](docs/pipelines.md) | Diagrams of auto-jobs state machine, auto-send-merc, auto-choose-decision, NM→SC→SAI startup, daily-ops fetch, alarms, auto-refresh, Logger |
+| [docs/pipelines.md](docs/pipelines.md) | Diagrams of auto-jobs (v1) state machine, **Auto-Jobs v2** orchestrator+stages pipeline, auto-send-merc, auto-choose-decision, NM→SC→SAI startup, daily-ops fetch, alarms, auto-refresh, Logger |
 | [docs/debugging.md](docs/debugging.md) | Live state probes, chrome-devtools-mcp runbook, common issues, smoke-test script |
 | [docs/glossary.md](docs/glossary.md) | Game terms (K/D, SAI, Network Map, etc.), DOM selector reference, Socket.IO frame primer |
 
@@ -204,6 +233,11 @@ Quick list of every registered module ID and its world:
   `flow-file-elimination`, `flow-data-download`, `flow-decrypt-extract`
 - `solver-decrypt`, `solver-daily-ops`, `solver-ice-wall`,
   `solver-simple-decrypt`
+- `auto-jobs-v2-bridge.js` — MAIN-world endpoint for the v2 Network-Map
+  context menu (Open SAI / Open Market). NOT a registered Module — a plain
+  IIFE listening on `MSG.AUTOJOBS_V2.OPEN_SAI` / `OPEN_MARKET`; it drives the
+  generic `COR3.game.*` helpers and logs under id `auto-jobs-v2`. Phase 2's
+  `flow-v2-*` job execution will extend this bridge.
 
 **Isolated content_scripts:**
 - `auth`, `expeditions`, `archived-expeditions`, `decisions`, `market`,
@@ -211,9 +245,11 @@ Quick list of every registered module ID and its world:
   `merc-config`, `expedition-config` — data
 - `timers`, `auto-refresh`, `auto-send-merc`, `auto-choose-decision`,
   `auto-decrypt`, `auto-ice-wall`, `auto-simple-decrypt`, `daily-ops`,
-  `auto-jobs`, `runtime-bridge` — automation
+  `auto-jobs`, `auto-jobs-v2`, `runtime-bridge` — automation
 - `appearance-system-messages`, `appearance-background`,
   `appearance-network-fog`, `appearance-map-fx` — appearance
 
 Plus synthetic ID `bus` (used by Logger to record traced bus traffic) and
-`registry` (used by Registry's own warn/error logs).
+`registry` (used by Registry's own warn/error logs). The v2 pipeline stages
+(`COR3.autoJobsV2.pipeline.stages.*`) are plain objects, NOT registered
+modules — the `auto-jobs-v2` orchestrator drives them directly.

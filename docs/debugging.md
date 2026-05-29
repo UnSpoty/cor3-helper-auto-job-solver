@@ -36,13 +36,16 @@ Run any of these in the MCP browser console:
 
 | Probe | World | What it tells you |
 |---|---|---|
-| `window.COR3.Registry.list().length` | isolated **or** MAIN | how many modules registered (expect ~25 isolated, ~16 MAIN) |
+| `window.COR3.Registry.list().length` | isolated **or** MAIN | how many modules registered (expect ~27 isolated, ~18 MAIN; the v2 `auto-jobs-v2-bridge` is a plain IIFE, not counted) |
 | `window.COR3.Registry.snapshot()` | either | full list with `{id, category, dependsOn, started, enabled}` |
 | `window.COR3.Registry.get('auto-jobs')?.started` | isolated | whether auto-jobs is currently active |
 | `Object.keys(window.COR3.game ?? {})` | MAIN | should print `['networkMap','serverConnect','sai','flows']` |
 | `await chrome.storage.local.get('cor3_logs')` | isolated/popup | full per-module ring buffers |
-| `await chrome.storage.local.get(['autoJobsState','autoJobsQueue','buggedJobIds'])` | isolated/popup | auto-jobs runtime |
-| `await chrome.storage.sync.get(['autoJobsSettings','modules','autoSendMerc'])` | isolated/popup | user prefs + module state |
+| `await chrome.storage.local.get(['autoJobsState','autoJobsQueue','buggedJobIds'])` | isolated/popup | auto-jobs (v1) runtime |
+| `await chrome.storage.local.get(['ajv2PipelineState','ajv2JobQueue','ajv2BuggedJobs'])` | isolated/popup | **Auto-Jobs v2** runtime: `ajv2PipelineState.node` = the live flowchart node; `ajv2JobQueue.jobs[].status` = `AVAILABLE`/`TAKEN` |
+| `window.COR3.Registry.get('auto-jobs-v2')?.started` | isolated | whether the v2 orchestrator loop is running |
+| `Object.keys(window.COR3.autoJobsV2?.pipeline?.stages ?? {})` | isolated | the v2 stage objects (getServers, checkAccess, updateMarkets, jobQueue, buggedJobs, checkCondition, jobAcception) |
+| `await chrome.storage.sync.get(['autoJobsSettings','autoJobsV2Settings','modules','autoSendMerc'])` | isolated/popup | user prefs + module state (incl. v2 `{enabled}`) |
 | `window.__cor3WsInterceptorActive` | MAIN | confirms WS wrap is installed |
 | `window.__cor3LastMarketId` | MAIN | last home market id seen by interceptor |
 | `window.__cor3CachedMercIds` | MAIN | cached mercenary IDs for configure cascade |
@@ -74,6 +77,14 @@ chrome.storage.local.set({ buggedJobIds: {} });
 
 // Reset auto-jobs state to idle (use only when stuck)
 chrome.storage.local.set({ autoJobsState: { status: 'idle', updatedAt: Date.now() } });
+
+// ── Auto-Jobs v2 ──
+// Start / stop the v2 loop (from isolated or popup console — the orchestrator
+// reacts to the sync key; the runtime message makes it immediate on Firefox).
+chrome.storage.sync.set({ autoJobsV2Settings: { enabled: true } });
+chrome.runtime.sendMessage({ action: 'toggleAutoJobsV2', settings: { enabled: true } });
+// Clear the v2 bugged registry
+chrome.storage.local.set({ ajv2BuggedJobs: {} });
 ```
 
 ### F12 dump helper

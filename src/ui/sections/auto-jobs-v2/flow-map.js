@@ -31,27 +31,41 @@
     const MODULE_PAD = 26;
     const MODULE_MIN_W = 132;
 
-    const CX = 230;         // centre column x
-    const RX = 250;         // right column x = CX + RX
+    const CX = 230;         // centre column x (main descent + delays)
+    const COL_2 = 470;      // mid-right lane: NO-branch execution chain
+    const COL_3 = 690;      // BUGGED? decision
+    const COL_4 = 900;      // JOB:SKIP
     const LOOP_X = 46;      // far-left lane for the loop-back edge
+    const ROW_DECISION = 486;  // top decision row (all four diamonds/skip)
 
     // type: 'terminal' | 'delay' | 'module' | 'decision'
     // x/y are box CENTRES.
+    //
+    // Lanes: centre = main descent + the "queue empty → wait" YES bypass;
+    // mid-right = the NO-branch execution chain; the two right lanes hold the
+    // in-progress BUGGED? detour. All four decision/skip boxes share one row so
+    // their branches are clean horizontals.
     const NODES = [
-        { id: NODE.START,           label: 'START',                       type: 'terminal', x: CX,      y: 40 },
-        { id: NODE.DELAY_INITIAL,   label: 'DELAY 10s',                   type: 'delay',    x: CX,      y: 108 },
-        { id: NODE.GET_SERVERS,     label: 'GET_SERVERS',                 type: 'module',   x: CX,      y: 180 },
-        { id: NODE.CHECK_ACCESS,    label: 'CHECK_SERVERS_ACCESABILITY',  type: 'module',   x: CX,      y: 252 },
-        { id: NODE.UPDATE_MARKETS,  label: 'UPDATE_MARKETS',              type: 'module',   x: CX,      y: 324 },
-        { id: NODE.JOB_QUEUE,       label: 'JOB_QUEUE',                   type: 'module',   x: CX,      y: 396 },
-        { id: NODE.QUEUE_EMPTY,     label: 'QUEUE EMPTY?',                type: 'decision', x: CX,      y: 482 },
-        { id: NODE.BUGGED_JOBS,     label: 'BUGGED_JOBS',                 type: 'module',   x: CX + RX, y: 482 },
-        { id: NODE.CHECK_CONDITION, label: 'CHECK_JOBS_CONDITION',        type: 'module',   x: CX + RX, y: 566 },
-        { id: NODE.DELAY_CYCLE,     label: 'DELAY 30s',                   type: 'delay',    x: CX,      y: 642 },
+        { id: NODE.START,           label: 'START',                       type: 'terminal', x: CX,    y: 40 },
+        { id: NODE.DELAY_INITIAL,   label: 'DELAY 10s',                   type: 'delay',    x: CX,    y: 108 },
+        { id: NODE.GET_SERVERS,     label: 'GET_SERVERS',                 type: 'module',   x: CX,    y: 180 },
+        { id: NODE.CHECK_ACCESS,    label: 'CHECK_SERVERS_ACCESABILITY',  type: 'module',   x: CX,    y: 252 },
+        { id: NODE.UPDATE_MARKETS,  label: 'UPDATE_MARKETS',              type: 'module',   x: CX,    y: 324 },
+        { id: NODE.JOB_QUEUE,       label: 'JOB_QUEUE',                   type: 'module',   x: CX,    y: 396 },
+        { id: NODE.QUEUE_EMPTY,     label: 'QUEUE EMPTY?',                type: 'decision', x: CX,    y: ROW_DECISION },
+        { id: NODE.HAVE_TASKS_IN_PROGRESS, label: 'IN PROGRESS?',         type: 'decision', x: COL_2, y: ROW_DECISION },
+        { id: NODE.BUGGED_JOBS,     label: 'BUGGED?',                     type: 'decision', x: COL_3, y: ROW_DECISION },
+        { id: NODE.JOB_SKIP,        label: 'JOB:SKIP',                    type: 'module',   x: COL_4, y: ROW_DECISION },
+        { id: NODE.CHECK_CONDITION, label: 'CHECK_JOBS_CONDITION',        type: 'module',   x: COL_2, y: 626 },
+        { id: NODE.JOB_ACCEPTION,   label: 'JOB_ACCEPTION',               type: 'module',   x: COL_2, y: 694 },
+        { id: NODE.JOB_FLOW,        label: 'JOB_FLOW',                    type: 'module',   x: COL_2, y: 762 },
+        { id: NODE.DELAY_CYCLE,     label: 'DELAY 30s',                   type: 'delay',    x: CX,    y: 856 },
     ];
 
-    // kind: 'down' (straight vertical), 'right' (horizontal),
-    //       'merge' (curve back to centre), 'loop' (orthogonal far-left).
+    // All edges route orthogonally (right-angle elbows, rounded corners).
+    // kind: 'down' (A.bottom → B.top), 'right' (A.right → B.left),
+    //       'merge' (elbow into B; `enter` = 'right' into B's right side, or
+    //       'top' across then down into B's top), 'loop' (far-left lane).
     const EDGES = [
         { from: NODE.START,          to: NODE.DELAY_INITIAL,  kind: 'down' },
         { from: NODE.DELAY_INITIAL,  to: NODE.GET_SERVERS,    kind: 'down' },
@@ -60,10 +74,16 @@
         { from: NODE.UPDATE_MARKETS, to: NODE.JOB_QUEUE,      kind: 'down' },
         { from: NODE.JOB_QUEUE,      to: NODE.QUEUE_EMPTY,    kind: 'down' },
         { from: NODE.QUEUE_EMPTY,    to: NODE.DELAY_CYCLE,    kind: 'down',  label: 'YES' },
-        { from: NODE.QUEUE_EMPTY,    to: NODE.BUGGED_JOBS,    kind: 'right', label: 'NO' },
-        { from: NODE.BUGGED_JOBS,    to: NODE.CHECK_CONDITION, kind: 'down' },
-        { from: NODE.CHECK_CONDITION, to: NODE.DELAY_CYCLE,   kind: 'merge' },
-        { from: NODE.DELAY_CYCLE,    to: NODE.GET_SERVERS,    kind: 'loop',  label: 'loop' },
+        { from: NODE.QUEUE_EMPTY,    to: NODE.HAVE_TASKS_IN_PROGRESS, kind: 'right', label: 'NO' },
+        { from: NODE.HAVE_TASKS_IN_PROGRESS, to: NODE.CHECK_CONDITION, kind: 'down',  label: 'NO' },
+        { from: NODE.HAVE_TASKS_IN_PROGRESS, to: NODE.BUGGED_JOBS,     kind: 'right', label: 'YES' },
+        { from: NODE.BUGGED_JOBS,    to: NODE.JOB_SKIP,        kind: 'right', label: 'YES' },
+        { from: NODE.BUGGED_JOBS,    to: NODE.CHECK_CONDITION, kind: 'merge', enter: 'right', label: 'NO' },
+        { from: NODE.JOB_SKIP,       to: NODE.DELAY_CYCLE,     kind: 'merge', enter: 'right' },
+        { from: NODE.CHECK_CONDITION, to: NODE.JOB_ACCEPTION,  kind: 'down' },
+        { from: NODE.JOB_ACCEPTION,  to: NODE.JOB_FLOW,        kind: 'down' },
+        { from: NODE.JOB_FLOW,       to: NODE.DELAY_CYCLE,     kind: 'merge', enter: 'top' },
+        { from: NODE.DELAY_CYCLE,    to: NODE.GET_SERVERS,     kind: 'loop',  label: 'loop' },
     ];
 
     // DELAY node → its total duration, so the map can run a local countdown
@@ -108,43 +128,66 @@
         };
     }
 
-    function edgePath(edge, byId) {
+    // Build an SVG path through a list of points using straight segments and
+    // small rounded right-angle corners (no bezier sweeps). Every flowchart
+    // edge is expressed as such a point list, so all corners are 90°.
+    const CORNER_R = 8;
+    function orthoPath(pts) {
+        if (!pts || pts.length < 2) return '';
+        if (pts.length === 2) return `M ${pts[0].x} ${pts[0].y} L ${pts[1].x} ${pts[1].y}`;
+        let d = `M ${pts[0].x} ${pts[0].y}`;
+        for (let i = 1; i < pts.length - 1; i++) {
+            const p0 = pts[i - 1], p1 = pts[i], p2 = pts[i + 1];
+            const len1 = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+            const len2 = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+            const r = Math.min(CORNER_R, len1 / 2, len2 / 2);
+            const u1x = (p1.x - p0.x) / (len1 || 1), u1y = (p1.y - p0.y) / (len1 || 1);
+            const u2x = (p2.x - p1.x) / (len2 || 1), u2y = (p2.y - p1.y) / (len2 || 1);
+            d += ` L ${(p1.x - u1x * r).toFixed(1)} ${(p1.y - u1y * r).toFixed(1)}`;
+            d += ` Q ${p1.x} ${p1.y} ${(p1.x + u2x * r).toFixed(1)} ${(p1.y + u2y * r).toFixed(1)}`;
+        }
+        const last = pts[pts.length - 1];
+        d += ` L ${last.x} ${last.y}`;
+        return d;
+    }
+
+    // Each edge kind resolves to an orthogonal point list.
+    function edgePoints(edge, byId) {
         const a = byId.get(edge.from);
         const b = byId.get(edge.to);
         const A = anchors(a), B = anchors(b);
         switch (edge.kind) {
             case 'down': {
                 const p0 = A.bottom, p1 = B.top;
-                const k = (p1.y - p0.y) * 0.5;
-                return `M ${p0.x} ${p0.y} C ${p0.x} ${p0.y + k} ${p1.x} ${p1.y - k} ${p1.x} ${p1.y}`;
+                if (Math.abs(p0.x - p1.x) < 0.5) return [p0, p1];
+                const midY = (p0.y + p1.y) / 2;
+                return [p0, { x: p0.x, y: midY }, { x: p1.x, y: midY }, p1];
             }
             case 'right': {
                 const p0 = A.right, p1 = B.left;
-                return `M ${p0.x} ${p0.y} L ${p1.x} ${p1.y}`;
+                if (Math.abs(p0.y - p1.y) < 0.5) return [p0, p1];
+                const midX = (p0.x + p1.x) / 2;
+                return [p0, { x: midX, y: p0.y }, { x: midX, y: p1.y }, p1];
             }
             case 'merge': {
-                // From bottom of the right-column node, curve back left into
-                // the right side of the centre delay pill.
-                const p0 = A.bottom, p1 = B.right;
-                return `M ${p0.x} ${p0.y} C ${p0.x} ${p0.y + 36} ${p1.x + 60} ${p1.y} ${p1.x} ${p1.y}`;
+                if (edge.enter === 'top') {
+                    // Across at A's bottom-y to B's column, then down into B.top.
+                    return [A.bottom, { x: B.top.x, y: A.bottom.y }, B.top];
+                }
+                // 'right': down to B's centre-y, then across into B's right side.
+                return [A.bottom, { x: A.bottom.x, y: B.right.y }, B.right];
             }
             case 'loop': {
-                // Orthogonal lane on the far left: out the left of the delay,
-                // left to LOOP_X, up, then right into the left of GET_SERVERS.
-                const p0 = A.left, p1 = B.left;
-                const r = 9;
-                return [
-                    `M ${p0.x} ${p0.y}`,
-                    `L ${LOOP_X + r} ${p0.y}`,
-                    `Q ${LOOP_X} ${p0.y} ${LOOP_X} ${p0.y - r}`,
-                    `L ${LOOP_X} ${p1.y + r}`,
-                    `Q ${LOOP_X} ${p1.y} ${LOOP_X + r} ${p1.y}`,
-                    `L ${p1.x} ${p1.y}`,
-                ].join(' ');
+                // Far-left lane: out the delay's left, up, back into GET_SERVERS.
+                return [A.left, { x: LOOP_X, y: A.left.y }, { x: LOOP_X, y: B.left.y }, B.left];
             }
             default:
-                return '';
+                return [];
         }
+    }
+
+    function edgePath(edge, byId) {
+        return orthoPath(edgePoints(edge, byId));
     }
 
     function edgeLabelPos(edge, byId) {
@@ -154,6 +197,9 @@
         switch (edge.kind) {
             case 'down':  return { x: A.bottom.x + 12, y: (A.bottom.y + B.top.y) / 2 };
             case 'right': return { x: (A.right.x + B.left.x) / 2, y: A.right.y - 7 };
+            case 'merge':
+                if (edge.enter === 'top') return { x: (A.bottom.x + B.top.x) / 2, y: A.bottom.y - 7 };
+                return { x: A.bottom.x + 12, y: (A.bottom.y + B.right.y) / 2 };
             case 'loop':  return { x: LOOP_X + 8, y: (A.left.y + B.left.y) / 2 };
             default:      return null;
         }
@@ -214,7 +260,7 @@
         const PAD = 36;
         const worldW = maxX + PAD;
         const worldH = maxY + PAD;
-        const CANVAS_H = 320;
+        const CANVAS_H = 420;
 
         const wrap = htmlEl('div', 'ajv2-flow');
 

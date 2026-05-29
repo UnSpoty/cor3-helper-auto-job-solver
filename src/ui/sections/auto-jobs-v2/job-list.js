@@ -28,16 +28,19 @@
     }
 
     function jobRow(job) {
-        const skipped = job.eligible === false;
-        const pending = job.eligible == null;
+        const inProgress = job.status === 'TAKEN';
+        const skipped = !inProgress && job.eligible === false;
+        const pending = !inProgress && job.eligible == null;
 
-        const row = el('div', 'ajv2-job' + (skipped ? ' is-skip' : ''));
+        const row = el('div', 'ajv2-job' + (skipped ? ' is-skip' : '') + (inProgress ? ' is-active' : ''));
 
         const head = el('div', 'ajv2-job-head');
         const name = el('span', 'job-name', job.name || 'Unknown');
         head.appendChild(name);
 
-        if (skipped) {
+        if (inProgress) {
+            head.appendChild(el('span', 'pill ok', 'in-progress'));
+        } else if (skipped) {
             const skip = el('span', 'pill ajv2-skip', 'SKIP');
             if (job.skipReason) skip.title = job.skipReason;
             head.appendChild(skip);
@@ -111,15 +114,20 @@
             }
 
             const jobs = Array.isArray(queue.jobs) ? queue.jobs : [];
-            const evaluated = jobs.filter((j) => j.eligible != null).length;
-            const eligible = jobs.filter((j) => j.eligible === true).length;
-            const skipped = jobs.filter((j) => j.eligible === false).length;
+            // Counts describe the acceptance board (available jobs); in-progress
+            // (TAKEN) jobs are reported separately.
+            const avail = jobs.filter((j) => j.status !== 'TAKEN');
+            const inProgress = jobs.length - avail.length;
+            const evaluated = avail.filter((j) => j.eligible != null).length;
+            const eligible = avail.filter((j) => j.eligible === true).length;
+            const skipped = avail.filter((j) => j.eligible === false).length;
+            const active = inProgress ? ` · ${inProgress} in-progress` : '';
             const cyc = `cycle ${queue.cycle || '—'}`;
             summary.textContent = !jobs.length
                 ? `0 jobs · ${cyc}`
                 : evaluated
-                    ? `${jobs.length} jobs · ${eligible} eligible · ${skipped} skip · ${cyc}`
-                    : `${jobs.length} jobs · pending · ${cyc}`;
+                    ? `${avail.length} available · ${eligible} eligible · ${skipped} skip${active} · ${cyc}`
+                    : `${avail.length} available${active} · pending · ${cyc}`;
 
             // Group jobs by their market slot.
             const bySlot = {};

@@ -237,6 +237,49 @@ const unsub = Bus.runtime.on('toggleAutoJobs', async (payload, sender) => {
 
 Регистрация в `manifest.content_scripts[1].js` после data-модулей.
 
+### Auto-Jobs v2: оркестратор + стейджи (isolated world)
+
+Отдельный паттерн **только для Auto-Jobs v2** (см. [CLAUDE.md → Active work](../CLAUDE.md)
+и [pipelines.md → Auto-Jobs v2](pipelines.md)). Правила v2 строгие: никакого
+порта v1, никаких fallback'ов/тихих скипов, свои ключи `AJV2_*`, лог под id
+`auto-jobs-v2`.
+
+- **Один зарегистрированный Module** — оркестратор
+  (`src/modules/automation/auto-jobs-v2.js`, id `auto-jobs-v2`). Владеет
+  START/STOP и крутит бесконечный цикл. Отмена через generation-token: STOP
+  инвалидирует in-flight цикл, чтобы половина прохода не «протекла».
+- **Стейджи — обычные объекты**, НЕ Module и НЕ в Registry. Живут на
+  `COR3.autoJobsV2.pipeline.stages.*`
+  (`src/modules/automation/auto-jobs-v2/pipeline.js`). Контракт у всех один:
+
+  ```js
+  const myStage = {
+      id: AJV2.NODE.MY_STAGE,           // из constants.AJV2.NODE
+      async run(packet, ctx) {
+          if (!packet.somePrereq) throw new Error('MY_STAGE: prereq missing');  // громко, без fallback
+          // …читаем shared read-only state, считаем, пишем в свои AJV2_* ключи…
+          ctx.log.info('MY_STAGE → done');
+          return stamp(packet, this.id, { summary: 1 });
+      },
+  };
+  ```
+
+- **Packet** — один растущий конверт (`type: 'ajv2/packet'`), течёт stage→stage,
+  обогащаясь на каждом шаге (см. `createPacket()`).
+- **`ctx`** даёт оркестратор: `{ store, bus, C, alive, log:{debug,info,warn,error} }`.
+  `log` пишет под id `auto-jobs-v2`; `alive()` позволяет длинным стейджам
+  (paced-приём в JOB_ACCEPTION) бросить работу сразу при STOP.
+- **Node ids — единый источник правды.** Каждый узел флоучарта объявлен в
+  `constants.AJV2.NODE.*`. Оркестратор штампует активный узел в
+  `STORAGE_LOCAL.AJV2_PIPELINE_STATE`, а Flow Map
+  (`COR3.uiComponentsV2.flowMap`) подсвечивает по тем же id.
+- **Загрузка:** `pipeline.js` в manifest идёт ДО `auto-jobs-v2.js` (оркестратор
+  читает стейджи на `start()`).
+
+Новый стейдж: добавить объект в `pipeline.js` + экспорт в `stages`, узел в
+`constants.AJV2.NODE`, вызов в нужном месте `_runCycle()` оркестратора и
+(если виден на схеме) узел/ребро в `flow-map.js`.
+
 ### Game module (MAIN world)
 
 Делает что-то с DOM игры или с WebSocket'ом.

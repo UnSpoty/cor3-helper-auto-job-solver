@@ -450,8 +450,12 @@
             UPDATE_MARKETS: 'update-markets',
             JOB_QUEUE: 'job-queue',
             QUEUE_EMPTY: 'queue-empty',     // decision: is the queue empty?
-            BUGGED_JOBS: 'bugged-jobs',
+            HAVE_TASKS_IN_PROGRESS: 'have-tasks-in-progress', // decision: any TAKEN job?
+            BUGGED_JOBS: 'bugged-jobs',    // decision: is the in-progress job bugged?
+            JOB_SKIP: 'job-skip',          // in-progress job is bugged → skip the cycle
             CHECK_CONDITION: 'check-condition',
+            JOB_ACCEPTION: 'job-acception',
+            JOB_FLOW: 'job-flow',          // Phase 2 (MAIN-world) — node drawn, not yet executed
             DELAY_CYCLE: 'delay-cycle',
         },
 
@@ -462,6 +466,12 @@
             // Max time UPDATE_MARKETS waits for a refreshed market envelope to
             // land in storage before it logs loudly and moves on.
             MARKET_REFRESH_TIMEOUT_MS: 6 * 1000,
+            // Gap between successive ACCEPT_JOB posts in JOB_ACCEPTION. MAIN's
+            // __cor3AcceptJob serialises the bursts and does set.endpoint
+            // preflight per remote market; we pace the posts so the
+            // job.take RPCs don't pile up faster than the server accepts them
+            // (matches the 1.2s cadence v1's bulk-accept used).
+            ACCEPT_PACING_MS: 1200,
         },
     };
 

@@ -83,7 +83,12 @@ the game-module helpers.
 | `GAME.OPEN_NETWORK_MAP` | `COR3_OPEN_NETWORK_MAP` | `null` | clicks the taskbar `TabBarItem-NETWORK_MAP`; on success scrapes the server list. |
 | `GAME.OPEN_MARKET_JOBS` | `COR3_OPEN_MARKET_JOBS` | `{ home: bool, dark: bool }` | sequentially opens home market and/or dark market job tabs. |
 | `GAME.REQUEST_NM_SERVERS` | `COR3_REQUEST_NM_SERVERS` | `null` | ensure NM open + scrape server list (sends `GAME.NM_SERVERS` back). |
-| `GAME.NM_SERVERS` | `COR3_NM_SERVERS` | `{ servers: string[] }` | **inverse direction** — MAIN → isolated, the only one in this group. Auto-jobs merges into `STORAGE_LOCAL.NM_SERVERS`. |
+| `GAME.NM_SERVERS` | `COR3_NM_SERVERS` | `{ servers: string[] }` | **inverse direction** — MAIN → isolated. Auto-jobs merges into `STORAGE_LOCAL.NM_SERVERS`. |
+| `GAME.REFRESH_DARK_MARKET` / `GAME.REFRESH_SRM_MARKET` | `COR3_REFRESH_DARK_MARKET` / `COR3_REFRESH_SRM_MARKET` | `null` | set endpoint to the dark / SRM7-M server, then `get.options`. Used by auto-refresh and Auto-Jobs v2's UPDATE_MARKETS. |
+| `GAME.REQUEST_NM_MAP` | `COR3_REQUEST_NM_MAP` | `null` | request `network-map.get.map`; reply lands in `STORAGE_LOCAL.NM_GRAPH` (BFS-depth graph). |
+| `GAME.NM_GRAPH` | `COR3_NM_GRAPH` | `{ home, currentEndpointId, servers:[…] }` | **inverse** — MAIN → isolated, the parsed graph. |
+| `GAME.REQUEST_LOADOUT` | `COR3_REQUEST_LOADOUT` | `null` | join `loadout` room → server replies `loadout/get.options` (→ `STORAGE_LOCAL.LOADOUT`). |
+| `GAME.REVERT_ENDPOINT_TO_HOME` | `COR3_REVERT_ENDPOINT_TO_HOME` | `null` | reset the NM endpoint back to HOME. Posted at the end of a bulk-accept batch (v1 auto-jobs and Auto-Jobs v2's JOB_ACCEPTION) that may have left the endpoint on DARK/SRM. |
 
 ### Off-enum
 
@@ -156,7 +161,28 @@ or both.
 - `COR3_FETCH_DAILY_OPS` — MAIN → isolated, fired by interceptor on WS open; daily-ops module fetches `svc-corie.cor3.gg/api/user-daily-claim`.
 - `COR3_LOCK_UI` / `COR3_UNLOCK_UI` — aliases for AUTOJOBS_ACTIVE_CHANGED; flows-core listens.
 - `COR3_LOG_REMOTE` — MAIN → isolated, log-bridge envelope. `{ moduleId, entry: {ts, level, msg, ctx} }`. Logger ingests it.
-- `COR3_ACCEPT_JOB_SEND_FAILED` — MAIN → isolated, fired when `wsSend` returned false during accept. Auto-jobs drops the slot.
+- `COR3_ACCEPT_JOB_SEND_FAILED` — MAIN → isolated, fired when `wsSend` returned false during accept. Auto-jobs (v1 and v2) can observe it.
+
+---
+
+## MSG.AUTOJOBS_V2 — Auto-Jobs v2 control
+
+Owned entirely by Auto-Jobs v2; never overlaps v1's `toggleAutoJobs`. See
+[pipelines.md → Auto-Jobs v2](pipelines.md). v2 does NOT add WS/game RPCs of
+its own — for accept/refresh/endpoint it reuses the generic `MSG.GAME.*`
+messages (`ACCEPT_JOB`, `REVERT_ENDPOINT_TO_HOME`, `REFRESH_*`).
+
+| Constant | Wire string | Direction | Payload | What it does |
+|---|---|---|---|---|
+| `AUTOJOBS_V2.TOGGLE` | `toggleAutoJobsV2` | popup → isolated (runtime) | `{ settings: { enabled } }` | fired alongside the `AUTOJOBS_V2_SETTINGS` sync write so the orchestrator starts/stops its loop immediately (Firefox sync.onChanged can be flaky cross-context). |
+| `AUTOJOBS_V2.OPEN_SAI_ACTION` | `ajv2OpenSai` | popup → isolated (runtime) | `{ serverName }` | NM context-menu "Open SAI". Orchestrator forwards to the MAIN bridge — **refused while the loop runs**. |
+| `AUTOJOBS_V2.OPEN_MARKET_ACTION` | `ajv2OpenMarket` | popup → isolated (runtime) | `{ serverName }` | NM context-menu "Open Market". Same refuse-while-running guard. |
+| `AUTOJOBS_V2.OPEN_SAI` | `COR3_AJV2_OPEN_SAI` | isolated → MAIN (window) | `{ serverName }` | handled by `auto-jobs-v2-bridge.js` → `serverConnect.connect`. |
+| `AUTOJOBS_V2.OPEN_MARKET` | `COR3_AJV2_OPEN_MARKET` | isolated → MAIN (window) | `{ serverName }` | handled by the bridge → `networkMap.openServerMarket`. |
+
+Acceptance confirmation is **not** a dedicated message: an accepted job leaves
+the market board's `jobs[]` and reappears in `recentJobs[]` with
+`status: 'TAKEN'`, which the next `UPDATE_MARKETS` cycle observes.
 
 ---
 
@@ -171,6 +197,9 @@ or both.
 | `marketData` | `{marketId, jobs, recentJobs, nextJobsResetAt}` | `data/market.js` | + `marketDataUpdatedAt`. Flat shape — we fetch only `get.jobs` (not `get.options`). |
 | `darkMarketData` | same | `data/dark-market.js` | + `darkMarketDataUpdatedAt`. |
 | `darkMarketAvailable` | `boolean` | `data/dark-market.js` | flips false on `WS.DARK_MARKET_UNREACHABLE`. |
+| `srmMarketData` | `{marketId, jobs, recentJobs, …}` | `data/srm-market.js` | SRM7-M market. + `srmMarketDataUpdatedAt`. |
+| `srmMarketAvailable` | `boolean` | `data/srm-market.js` | reachability flag (mirrors dark). |
+| `loadoutData` | `{ …snapshot, _derived:{decryptExtensions, capabilities, canBoot} }` | `data/loadout.js` | from `loadout/get.options`. `_derived` is computed up-front so Auto-Jobs doesn't recompute each cycle. |
 | `stashData` | `{items, currentUsage, maxCapacity}` | `data/stash.js` | + `stashDataUpdatedAt`. |
 | `mercenariesData` | `Merc[] \| {mercenaries: Merc[]}` | `data/mercenaries.js` | + `mercenariesUpdatedAt`. |
 | `mercConfigData` | `{[mercId]: {totalCost, riskScore, ...}}` | `data/merc-config.js` | merged per-merc; + `mercConfigUpdatedAt`. |
@@ -199,6 +228,7 @@ or both.
 | Key | Shape | Owner |
 |---|---|---|
 | `networkMapServers` | `string[]` | `auto-jobs.js` (merged from `MSG.GAME.NM_SERVERS`) |
+| `networkMapGraph` | `{ home, currentEndpointId, servers:[{id,name,depth,faction,…}] }` | `network-map.js` (from `network-map.get.map`, BFS-depth). Read-only shared input for both v1 and Auto-Jobs v2. |
 
 ### Auto-jobs runtime
 
@@ -210,6 +240,18 @@ or both.
 | `buggedJobIds` | `{[jobId]: {ts, name}}` 2 h TTL | `auto-jobs.js` |
 | `autoJobsPendingConfirm` | confirm payload from solver, with `ts` | `auto-jobs.js` (debug mode) |
 | `autoJobsConfirmResult` | `{requestTs, approved}` | popup writes it |
+
+### Auto-Jobs v2 runtime
+
+v2 owns these keys exclusively — it never reads or writes the v1 `autoJobs*` /
+`aj*` keys above. Constants live under `STORAGE_LOCAL.AJV2_*`.
+
+| Key | Shape | Owner |
+|---|---|---|
+| `ajv2PipelineState` | `{ running, cycle, node, startedAt, updatedAt, error? }` | `auto-jobs-v2.js`. `node` ∈ `AJV2.NODE.*` — drives the Flow Map highlight. |
+| `ajv2JobQueue` | `{ cycle, computedAt, markets:[{slot, reachable, refreshed, jobCount, takenCount, reason}], jobs:[{id, name, type, status, serverName, marketSlot, marketId, rewardCredits, eligible, skipReason}] }` | `auto-jobs-v2/pipeline.js` (JOB_QUEUE / CHECK_CONDITION). `status` = `'AVAILABLE'` (board) or `'TAKEN'` (in-progress); `eligible` is null until CHECK_CONDITION runs. |
+| `ajv2BuggedJobs` | `{ [jobId]: { reason, since } }` | read by the pipeline now; written by `JOB_FLOW`'s MARK_AS_BUGGED (Phase 2). |
+| `ajv2ServerOverrides` | `{ [serverName]: { skip: bool, disabledTypes: { [jobType]: true } } }` | NM context menu → read by CHECK_CONDITION. |
 
 ### Solver runtime
 
@@ -233,7 +275,8 @@ or both.
 |---|---|---|---|
 | `selectedTheme` | string | `'default'` | (unused; UI ships a single theme) |
 | `alarms` | `Alarm[]` | `[]` | popup `alarms` section + `automation/timers.js` |
-| `autoJobsSettings` | `{enabled, debugMode, markets:{home,dark}, enabledJobTypes}` | `{enabled:false, debugMode:false, markets:{home:true,dark:true}, enabledJobTypes:{}}` | `auto-jobs.js` |
+| `autoJobsSettings` | `{enabled, debugMode, markets:{home,dark}, enabledJobTypes}` | `{enabled:false, debugMode:false, markets:{home:true,dark:true}, enabledJobTypes:{}}` | `auto-jobs.js` (v1) |
+| `autoJobsV2Settings` | `{enabled}` | `{enabled:false}` | `auto-jobs-v2.js` — the ONLY sync key v2 owns; toggling it starts/stops the v2 loop (alongside `MSG.AUTOJOBS_V2.TOGGLE`). |
 | `serverPriorities` | `{[serverName]: number}` | `{}` | `auto-jobs.js` (used by queue sort; UI for editing not built yet) |
 | `autoSendMerc` | `{enabled, autoChooseMerc, mercenaryId, mercenaryName, disabledReason}` | `{enabled:false, autoChooseMerc:true}` | `auto-send-merc.js`, mercenaries section |
 | `autoDecryptEnabled` | bool | `false` | `auto-decrypt.js` |
@@ -275,6 +318,23 @@ START_*_FLOW message.
 
 ---
 
+## AJV2 — Auto-Jobs v2 flowchart nodes & loop cadence
+
+Lives in `constants.AJV2`. The single source of truth shared between the v2
+orchestrator (execution order + `AJV2_PIPELINE_STATE.node`) and the popup Flow
+Map (which boxes to draw and highlight).
+
+| Field | Value | Notes |
+|---|---|---|
+| `AJV2.PACKET_TYPE` | `'ajv2/packet'` | `type` stamped on the packet that flows stage→stage. |
+| `AJV2.NODE.*` | `start`, `delay-initial`, `get-servers`, `check-access`, `update-markets`, `job-queue`, `queue-empty`, `have-tasks-in-progress`, `bugged-jobs`, `job-skip`, `check-condition`, `job-acception`, `job-flow`, `delay-cycle` | flowchart node ids. `job-flow` is drawn but not executed yet (Phase 2). |
+| `AJV2.LOOP.INITIAL_DELAY_MS` | `10000` | one-time delay after START before the first cycle. |
+| `AJV2.LOOP.CYCLE_DELAY_MS` | `30000` | gap between cycles. |
+| `AJV2.LOOP.MARKET_REFRESH_TIMEOUT_MS` | `6000` | UPDATE_MARKETS wait for a refreshed market frame before logging loud & moving on. |
+| `AJV2.LOOP.ACCEPT_PACING_MS` | `1200` | gap between successive `ACCEPT_JOB` posts in JOB_ACCEPTION. |
+
+---
+
 ## CATEGORY — Module category tags
 
 Used by Module Manager UI for grouping. Each module declares one in its
@@ -283,10 +343,10 @@ Used by Module Manager UI for grouping. Each module declares one in its
 | Constant | Value | Modules |
 |---|---|---|
 | `CATEGORY.CORE` | `core` | `runtime-bridge` |
-| `CATEGORY.DATA` | `data` | 9 data modules |
-| `CATEGORY.AUTOMATION` | `automation` | timers, auto-refresh, auto-jobs, auto-send-merc, auto-choose-decision, auto-decrypt, auto-ice-wall, daily-ops, runtime-bridge |
-| `CATEGORY.GAME` | `game` | network-map, server-connect, sai-navigator, flows-core, 9 flows |
-| `CATEGORY.SOLVER` | `solver` | solver-decrypt, solver-daily-ops, solver-ice-wall |
+| `CATEGORY.DATA` | `data` | 12 data modules (auth, expeditions, archived-expeditions, decisions, market, dark-market, srm-market, stash, loadout, mercenaries, merc-config, expedition-config) |
+| `CATEGORY.AUTOMATION` | `automation` | timers, auto-refresh, auto-send-merc, auto-choose-decision, auto-decrypt, auto-ice-wall, auto-simple-decrypt, daily-ops, auto-jobs, auto-jobs-v2, runtime-bridge |
+| `CATEGORY.GAME` | `game` | network-map, server-connect, sai-navigator, loadout-panel, flows-core, 9 flows (the `auto-jobs-v2-bridge` IIFE is GAME-world but not a registered Module) |
+| `CATEGORY.SOLVER` | `solver` | solver-decrypt, solver-daily-ops, solver-ice-wall, solver-simple-decrypt |
 | `CATEGORY.APPEARANCE` | `appearance` | 4 appearance modules |
 | `CATEGORY.UI` | `ui` | (UI sections aren't Modules — they live in popup context separately) |
 

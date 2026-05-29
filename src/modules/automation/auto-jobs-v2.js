@@ -6,9 +6,15 @@
 //
 //   START → DELAY:10s → ┌─ GET_SERVERS → CHECK_SERVERS_ACCESABILITY
 //                       │   → UPDATE_MARKETS → JOB_QUEUE → <QUEUE:EMPTY?>
-//                       │        YES ─────────────────────────────┐
-//                       │        NO → BUGGED_JOBS → CHECK_CONDITION│
-//                       └──────────────── DELAY:30s ←──────────────┘   (loop)
+//                       │     YES ───────────────────────────────────────┐
+//                       │     NO → <HAVE_TASKS_IN_PROGRESS?>              │
+//                       │            YES → <BUGGED_JOBS?>                 │
+//                       │                    YES → JOB:SKIP ──────────────┤
+//                       │                    NO  ─┐                       │
+//                       │            NO ──────────┴→ CHECK_CONDITION      │
+//                       │                            → JOB_ACCEPTION      │
+//                       │                            → JOB_FLOW (Phase 2) │
+//                       └──────────────── DELAY:30s ←─────────────────────┘  (loop)
 //
 // Responsibilities:
 //   • Own START/STOP. The toggle is driven by AUTOJOBS_V2_SETTINGS.enabled
@@ -58,6 +64,8 @@
                         C.MSG.GAME.REFRESH_MARKET,
                         C.MSG.GAME.REFRESH_DARK_MARKET,
                         C.MSG.GAME.REFRESH_SRM_MARKET,
+                        C.MSG.GAME.ACCEPT_JOB,
+                        C.MSG.GAME.REVERT_ENDPOINT_TO_HOME,
                     ],
                 },
             });
@@ -174,7 +182,7 @@
 
         async _runCycle(token, cycle) {
             const p = pipeline();
-            const ctx = this._ctx();
+            const ctx = this._ctx(token);
             let packet = p.createPacket(cycle);
 
             await this._setNode(NODE.GET_SERVERS, token, { cycle, error: null });
@@ -198,19 +206,52 @@
             this.debug(`QUEUE:EMPTY? → ${empty ? 'YES' : 'NO'}`, { jobs: packet.queue ? packet.queue.length : 0 });
             if (empty) return;  // YES branch → fall through to DELAY:30s
 
-            await this._setNode(NODE.BUGGED_JOBS, token, { cycle });
-            packet = await p.stages.buggedJobs.run(packet, ctx);
-            if (!this._alive(token)) return;
+            // QUEUE:HAVE_TASKS_IN_PROGRESS? — any job we've accepted (status
+            // TAKEN) is in progress.
+            await this._setNode(NODE.HAVE_TASKS_IN_PROGRESS, token, { cycle });
+            const inProgress = packet.queue.filter((j) => j.status === 'TAKEN');
+            const hasInProgress = inProgress.length > 0;
+            this.debug(`HAVE_TASKS_IN_PROGRESS? → ${hasInProgress ? 'YES' : 'NO'}`, { taken: inProgress.length });
+
+            if (hasInProgress) {
+                // MODULE:BUGGED_JOBS (decision) — is the in-progress work
+                // bugged? Reads the bugged registry into the packet, then we
+                // route on whether any in-progress job is still resumable.
+                await this._setNode(NODE.BUGGED_JOBS, token, { cycle });
+                packet = await p.stages.buggedJobs.run(packet, ctx);
+                if (!this._alive(token)) return;
+
+                const resumable = inProgress.filter((j) => !packet.buggedJobs[j.id]);
+                const allBugged = resumable.length === 0;
+                this.debug(`BUGGED_JOBS? → ${allBugged ? 'YES (all in-progress bugged)' : 'NO'}`, {
+                    inProgress: inProgress.length, resumable: resumable.length,
+                });
+                if (allBugged) {
+                    // JOB:SKIP — nothing resumable this cycle; loop back.
+                    await this._setNode(NODE.JOB_SKIP, token, { cycle });
+                    this.info(`JOB:SKIP — ${inProgress.length} in-progress job(s), all bugged — skipping cycle`);
+                    return;
+                }
+            }
 
             await this._setNode(NODE.CHECK_CONDITION, token, { cycle });
             packet = await p.stages.checkCondition.run(packet, ctx);
+            if (!this._alive(token)) return;
+
+            await this._setNode(NODE.JOB_ACCEPTION, token, { cycle });
+            packet = await p.stages.jobAcception.run(packet, ctx);
+            // JOB_FLOW (MAIN-world) is Phase 2 — the node is drawn on the Flow
+            // Map but not yet executed here.
         }
 
-        _ctx() {
+        _ctx(token) {
             return {
                 store: Store,
                 bus: Bus,
                 C,
+                // Lets long-running stages (JOB_ACCEPTION's paced accept batch)
+                // bail the instant STOP invalidates this run.
+                alive: () => this._alive(token),
                 log: {
                     debug: (m, c) => this.debug(m, c),
                     info: (m, c) => this.info(m, c),
