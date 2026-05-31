@@ -1,40 +1,54 @@
 // Auto-Jobs v2 — MAIN-world bridge for the Network Map context menu.
 //
 // The v2 Network Map (popup) lets the user Open SAI / Open Market for a
-// server. Those are in-game DOM actions, so the request travels:
+// server. The request travels:
 //
 //   popup → (runtime) v2 orchestrator (isolated) → (window) here (MAIN)
 //
-// This file is the MAIN-world endpoint. It does NOT reimplement navigation —
-// it drives the generic game helpers already exposed by the v1 game modules
-// (networkMap.ensureNetworkMapOpen / serverConnect.connect /
-// networkMap.openServerMarket). That keeps v2 from duplicating v1 logic while
-// reusing the shared game plumbing.
+// This is the MAIN-world endpoint. v1 drove these flows by synthesising DOM
+// mouse-clicks at screen coordinates (open the map, hunt the tile, click
+// Connect, click Login/Market). This rewrite drives the SAME flows through the
+// game's own client functions and direct WS requests instead:
 //
-// Open SAI preconditions handled here:
-//   • Network Map must be open — we open it first (connect() assumes it's open).
-//   • Active Access / Hack-tool fallback / server-access — handled INSIDE
-//     connect()'s chain; we surface its progress (see the log mirror below).
-//   • HOME has no SAI terminal — the popup never offers Open SAI for HOME, so
-//     it never reaches here.
+//   • Open the Network Map window  → COR3.game.desktop.openAppAndWait()
+//        (invokes the dock launcher's React onClick — no MouseEvent).
+//   • Connect to the server        → __cor3SetEndpoint(serverId)  (WS
+//        network-map.set.endpoint — the panel's "Connect" as a request).
+//   • Open the SAI / Market view   → invoke the panel control's React onClick
+//        (COR3.game.desktop.invokeReactClick) — no MouseEvent.
+//   • Gain server access (SAI)     → saiAccess(): ACTIVE ACCESS, not the
+//        password fields (__cor3SaiGetLoginStatus → __cor3SaiLoginWithAccess,
+//        a task_access grant), OR — with no grant — HACK the server
+//        (loadout.ensureHack installs HACK software → click the hack-tool →
+//        the standalone solver wins the minigame → use the granted access).
+//        No password, no login-attempt spend.
 //
-// Logging: connect()/openServerMarket() only emit via MSG.JOB.LOG (the v1
-// channel), which never shows up in the v2 Activity Log. While a v2-initiated
-// action runs we MIRROR those entries into the v2 logger id ('auto-jobs-v2'),
-// plus log each step ourselves — so the v2 tab shows exactly what happened.
+// The ONE residual screen interaction is selecting the server NODE on the map:
+// the SVG map's selection is pointer/tap-driven with no callable handler, so
+// desktop.selectServerTile() dispatches a single targeted pointer tap on the
+// LOCATED tile element (its own centre, not blind coordinates). Everything else
+// is a function call or a WS frame.
 //
-// The orchestrator refuses to forward these while the v2 loop is running, so
-// by the time a message reaches this bridge the pipeline is idle.
+// The message carries `serverId` (the popup reads it from NM_GRAPH) — required
+// for the WS connect. v2 rule: a missing precondition fails LOUD, never a
+// silent DOM fallback.
+//
+// Logging: connect()/panel controls emit on the v1 MSG.JOB.LOG channel; while a
+// v2-initiated action runs we MIRROR those into the v2 logger id
+// ('auto-jobs-v2') so the v2 Activity Log shows every step.
+//
+// The orchestrator refuses to forward these while the v2 loop is running, so by
+// the time a message reaches this bridge the pipeline is idle.
 
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
     if (!root.COR3 || !root.COR3.constants || !root.COR3.Bus) return;
-    const { Bus, constants: C } = root.COR3;
+    const { Bus, dom, constants: C } = root.COR3;
     const AJV2 = C.MSG.AUTOJOBS_V2;
     const MSG = C.MSG;
     const LOG_ID = 'auto-jobs-v2';
 
-    function game() { return root.COR3.game || {}; }
+    function desktop() { return (root.COR3.game || {}).desktop || null; }
 
     function log(level, msg, ctx) {
         const L = root.COR3 && root.COR3.Logger;
@@ -42,10 +56,10 @@
         else console.log(`[ajv2-bridge:${level}] ${msg}`, ctx || '');
     }
 
-    // Mirror the game modules' MSG.JOB.LOG entries into the v2 Activity Log
-    // for the duration of one v2-initiated action — connect()/openServerMarket
-    // log only on that (v1) channel, so this is the only way their step-by-step
-    // diagnostics surface in the v2 tab.
+    // Mirror the game's MSG.JOB.LOG entries into the v2 Activity Log for the
+    // duration of one v2-initiated action. Detach LATER, not immediately:
+    // window.postMessage delivers async, so a helper's FINAL line is posted in
+    // the same tick it returns and its message event fires after this finally.
     async function withGameLogMirror(fn) {
         const unsub = Bus.window.on(MSG.JOB.LOG, (env) => {
             if (env && env.msg) log(env.level || 'info', `· ${env.msg}`);
@@ -53,190 +67,242 @@
         try {
             return await fn();
         } finally {
-            // Detach LATER, not now: window.postMessage delivers async, so the
-            // helper's FINAL line (e.g. "Market button not found…") is posted
-            // in the same tick it returns and its message event fires after
-            // this finally runs. Unsubscribing immediately drops it — which is
-            // exactly why the failure reason was missing from the log.
             setTimeout(() => { try { unsub(); } catch (_) { /* noop */ } }, 1500);
         }
     }
 
-    // Snapshot the relevant DOM at a failure point so we can see WHY a button
-    // wasn't found (does it exist at all? which tiles/panels are present?).
-    // Uses the selectors the game module already publishes.
-    function dumpDom(tag) {
-        const NM = game().networkMap;
-        const SEL = (NM && NM.SEL) || {};
-        const n = (sel) => { try { return sel ? document.querySelectorAll(sel).length : '?'; } catch (_) { return 'err'; } };
-        let homeTile = false;
-        try {
-            const items = document.querySelectorAll(SEL.SERVER_ITEM || '[data-sentry-component="ServerItem"]');
-            for (const it of items) {
-                if (it.querySelector(SEL.HOME_ICON || '[data-sentry-component="HomeServerIcon"]')) { homeTile = true; break; }
-            }
-        } catch (_) { /* noop */ }
-        log('info', `DOM @ ${tag}: serverItems=${n(SEL.SERVER_ITEM)} homeTilePresent=${homeTile} `
-            + `marketIcon=${n(SEL.MARKET_ICON)} jobCard=${n(SEL.JOB_CARD)} marketNav=${n(SEL.MARKET_NAV)} `
-            + `nmApp=${n(SEL.NM_APP)} saiApp=${n(SEL.SAI_APP)}`);
-    }
+    // Shared navigation: open the Network Map window (client fn) and connect to
+    // the server (WS). Returns true once both are done, false (logged) on any
+    // failed precondition. serverName === null → HOME (no connect needed).
+    async function navigateToServer(serverName, serverId, label) {
+        const D = desktop();
+        if (!D) { log('error', `${label} aborted — COR3.game.desktop helper not loaded`); return false; }
 
-    // The market-button selectors are clearly stale (marketIcon=0). Probe the
-    // live DOM for the CURRENT identifiers so we can rewrite them precisely:
-    //   • every data-onboarding-300-id present (Connect already uses this
-    //     scheme: "ServerInfoPanelConnectButton" — the market one is likely a
-    //     sibling), and
-    //   • any attribute value mentioning "market".
-    function marketProbe() {
-        try {
-            const ids = new Set();
-            for (const el of document.querySelectorAll('[data-onboarding-300-id]')) {
-                ids.add(el.getAttribute('data-onboarding-300-id'));
-                if (ids.size >= 40) break;
-            }
-            const marketAttrs = new Set();
-            const wanted = /^(data-sentry-component|data-sentry-element|data-component-name|data-onboarding-300-id|aria-label|title)$/i;
-            for (const el of document.querySelectorAll('*')) {
-                for (const a of el.attributes) {
-                    if (wanted.test(a.name) && /market/i.test(a.value)) marketAttrs.add(`${a.name}="${a.value}"`);
-                }
-                if (marketAttrs.size >= 20) break;
-            }
-            log('info', `onboarding-300-ids present: ${[...ids].join(', ') || '(none)'}`);
-            log('info', `attrs mentioning "market": ${[...marketAttrs].join(' | ') || '(none)'}`);
-        } catch (e) {
-            log('warn', `marketProbe failed: ${(e && e.message) || e}`);
-        }
-    }
+        // 1. Open the Network Map window via the client's own launcher.
+        const nmOk = await D.openAppAndWait('NETWORK_MAP', 8000);
+        if (!nmOk) { log('error', `${label} aborted — Network Map window did not mount`); return false; }
+        log('debug', `${label}: Network Map window open (client fn)`);
 
-    // ── v2 market navigation ────────────────────────────────────────────
-    // The v1 openServerMarket (MarketIcon/JobCard selectors) is dead in this
-    // build, so we drive the flow the user described instead:
-    //   HOME : click Home tile → click the full-width "Market" button.
-    //   other: click tile → Connect (if needed) → click the chest icon button
-    //          to the RIGHT of Login in the panel's actions row.
-    function findHomeTile(NM) {
-        const SEL = NM.SEL || {};
-        for (const it of document.querySelectorAll(SEL.SERVER_ITEM || '[data-sentry-component="ServerItem"]')) {
-            if (it.querySelector(SEL.HOME_ICON || '[data-sentry-component="HomeServerIcon"]')) return it;
-        }
-        return null;
-    }
+        // 2. Select the server node on the map. NetworkMapApplication mounts a
+        //    beat before its SVG tiles render, so wait for the tile to EXIST
+        //    first — otherwise the select is a false-negative on a cold open.
+        //    The selection itself is the one residual pointer tap (the SVG map
+        //    exposes no callable selection handler).
+        const tile = await D.waitFor(() => D.findServerTile(serverName), 8000);
+        if (!tile) { log('error', `${label} aborted — server tile "${serverName || 'home'}" not found on the map`); return false; }
+        if (!D.selectServerTile(serverName)) { log('error', `${label} aborted — could not select tile "${serverName || 'home'}"`); return false; }
+        await dom.sleep(500);
 
-    function findMarketButton() {
-        // (a) Labelled button — the HOME panel's full-width "Market" button.
-        for (const b of document.querySelectorAll('button')) {
-            if ((b.textContent || '').trim().toLowerCase() === 'market') return b;
-        }
-        // (b) Connected non-home server — the icon-only "chest" button placed
-        //     immediately to the RIGHT of Login in the actions row.
-        const login = document.querySelector('[data-onboarding-300-id="ServerInfoPanelLoginButton"]');
-        if (login) {
-            const loginBtn = login.closest('button') || login;
-            const row = loginBtn.closest('[data-sentry-element="ActionsRowStyled"]') || loginBtn.parentElement;
-            if (row) {
-                const btns = [...row.querySelectorAll('button')];
-                for (let i = btns.indexOf(loginBtn) + 1; i < btns.length; i++) {
-                    if (!(btns[i].textContent || '').trim()) return btns[i];  // icon-only ⇒ chest/Market
-                }
-            }
-        }
-        return null;
-    }
+        // HOME needs no connect — its endpoint is always local.
+        if (!serverName) return true;
 
-    async function waitFor(fn, timeoutMs) {
-        const deadline = Date.now() + timeoutMs;
-        while (Date.now() < deadline) {
-            let v = null;
-            try { v = fn(); } catch (_) { /* noop */ }
-            if (v) return v;
-            await new Promise((r) => setTimeout(r, 250));
-        }
-        return null;
-    }
-
-    async function openMarketV2(serverName, NM, dom) {
-        const SEL = NM.SEL || {};
-
-        const nmOk = await NM.ensureNetworkMapOpen();
-        log(nmOk ? 'debug' : 'error', `Open Market: Network Map open → ${nmOk}`);
-        if (!nmOk) return false;
-
-        const tile = serverName ? NM.findServerItemByName(serverName) : findHomeTile(NM);
-        if (!tile) { log('error', `Open Market: server tile not found for "${serverName || 'home'}"`); return false; }
-        dom.clickEl(tile.querySelector(SEL.SERVER_ICON) || tile);
-        await dom.sleep(700);
-
-        // Non-home markets need an active connection before the chest appears.
-        if (serverName) {
-            const connectEl = document.querySelector('[data-onboarding-300-id="ServerInfoPanelConnectButton"]')
-                || document.querySelector(SEL.CONNECT_BTN);
-            const connectBtn = connectEl && (connectEl.closest('button') || connectEl);
-            if (connectBtn && !connectBtn.disabled) {
-                log('info', `Open Market: connecting to "${serverName}"…`);
-                dom.clickEl(connectBtn);
-                const ready = await waitFor(() => findMarketButton()
-                    || document.querySelector('[data-onboarding-300-id="ServerInfoPanelLoginButton"]'), 15000);
-                log('debug', `Open Market: post-connect control appeared → ${!!ready}`);
-            }
-        }
-
-        const btn = await waitFor(() => findMarketButton(), 8000);
-        if (!btn) { log('warn', `Open Market: Market button not found for "${serverName || 'home'}"`); return false; }
-        dom.clickEl(btn);
-        log('info', `Open Market: clicked Market for "${serverName || 'home'}"`);
+        // 3. Connect via a direct WS request (replaces the panel "Connect" click).
+        if (typeof root.__cor3SetEndpoint !== 'function') { log('error', `${label} aborted — __cor3SetEndpoint WS helper missing`); return false; }
+        if (!serverId) { log('error', `${label} aborted — no serverId in message (the popup must send it)`); return false; }
+        const sent = root.__cor3SetEndpoint(serverId);
+        if (!sent) { log('error', `${label} aborted — set.endpoint not sent (no open socket?)`); return false; }
+        log('info', `${label}: Connect sent over WS (set.endpoint → "${serverName}")`);
         return true;
     }
 
+    // Locate the Market control in the open ServerInfoPanel. HOME (and any
+    // market with a labelled button) shows a full-width "Market"/"Рынок"
+    // button; a remote connected market server (DARK/SRM) shows an icon-only
+    // "chest" button immediately to the RIGHT of the Login control in the
+    // actions row (no stable id, so we walk the row — the shape v1 relied on).
+    // Without the icon fallback, Open Market on a remote market would never
+    // find its (text-less) button.
+    function findMarketControl(D) {
+        const labelled = D.findPanelButton({ text: 'Market' }) || D.findPanelButton({ text: 'Рынок' });
+        if (labelled) return labelled;
+        const login = D.findPanelButton({ onb: 'ServerInfoPanelLoginButton' });
+        if (!login) return null;
+        const row = login.closest('[data-sentry-element="ActionsRowStyled"]') || login.parentElement;
+        if (!row) return null;
+        const btns = [...row.querySelectorAll('button')];
+        for (let i = btns.indexOf(login) + 1; i < btns.length; i++) {
+            if (!(btns[i].textContent || '').trim()) return btns[i];   // icon-only ⇒ chest/Market
+        }
+        return null;
+    }
+
+    // ── SAI server access (Active Access, or hack the server) ─────────────────
+    // The minigames a hack opens are the SAME set as file-decryption; their
+    // standalone solvers watch for these components.
+    const MINIGAME_SELS = [
+        '[data-sentry-element="LogContentStyled"][data-sentry-source-file="config-hack-application.tsx"]',
+        '[data-sentry-component="IceWallBreakApplication"]',
+        '[data-sentry-component="SimpleDecryptApplication"]',
+        '[data-component-name="SimpleDecryptApplication"]',
+    ];
+    const SOLVER_START = [MSG.SOLVER.START_DECRYPT, MSG.SOLVER.START_ICE_WALL, MSG.SOLVER.START_SIMPLE_DECRYPT];
+    const SOLVER_STOP  = [MSG.SOLVER.STOP_DECRYPT,  MSG.SOLVER.STOP_ICE_WALL,  MSG.SOLVER.STOP_SIMPLE_DECRYPT];
+    const startSolvers = () => { for (const m of SOLVER_START) Bus.window.post(m, null); };
+    const stopSolvers  = () => { for (const m of SOLVER_STOP)  Bus.window.post(m, null); };
+    const findMinigame = () => { for (const s of MINIGAME_SELS) { if (document.querySelector(s)) return true; } return false; };
+
+    // Pick a usable access grant from a get.login.status snapshot: a job
+    // task_access grant, else whatever grant is present (e.g. one just minted by
+    // a successful hack).
+    const pickSaiGrant = (s) => ((s && s.activeAccesses) || []).find((g) => g.sourceType === 'task_access') || ((s && s.activeAccesses) || [])[0] || null;
+
+    // After a hack WIN the server writes the access grant ASYNCHRONOUSLY — a
+    // single get.login.status right after the minigame closes RACES the grant and
+    // misses it (that was the "hack finished but no grant" bug). So POLL until a
+    // grant appears (the solver wins the minigame in the background meanwhile).
+    async function pollForGrant(serverId, timeoutMs) {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+            const g = pickSaiGrant(await root.__cor3SaiGetLoginStatus(serverId));
+            if (g) return g;
+            await dom.sleep(2000);
+        }
+        return null;
+    }
+
+    // Locate the clickable hack-tool row (by software name) in the open SAI
+    // terminal's Hack-Tools section.
+    function findHackToolRow(D, moduleName) {
+        const sect = document.querySelector('[data-onboarding-300-id="SaiHackTools"]')
+            || document.querySelector('[data-sentry-source-file*="hack-tools"]');
+        return D.findClickableByText(sect, moduleName);
+    }
+
+    // Drive SAI server access end-to-end (the SaiLogin terminal is already open):
+    //   active-access grant present → log in.
+    //   no grant → hack: install HACK software if the Hack-Tools section is empty
+    //   (loadout.ensureHack), click the hack tool (mounts the minigame), let the
+    //   solver win, then the granted access logs us in. Password/passhack unused.
+    async function saiAccess(D, serverName, serverId, serverType) {
+        if (typeof root.__cor3SaiGetLoginStatus !== 'function' || typeof root.__cor3SaiLoginWithAccess !== 'function') {
+            log('error', 'Open SAI — SAI WS helpers missing'); return;
+        }
+        await dom.sleep(600);   // let the SAI terminal mount before the status query
+
+        let status = await root.__cor3SaiGetLoginStatus(serverId);
+        if (!status) { log('error', 'Open SAI — no sai.get.login.status reply'); return; }
+        let grant = pickSaiGrant(status);
+
+        if (!grant) {
+            // No Active Access → HACK the server.
+            // 1. Ensure a Hack Tool exists — install HACK software if empty.
+            if (!(status.hackTools && status.hackTools.length)) {
+                const LO = (root.COR3.game || {}).loadout;
+                if (!LO || typeof LO.ensureHack !== 'function') { log('error', 'Open SAI — COR3.game.loadout.ensureHack unavailable'); return; }
+                if (!serverType) { log('error', 'Open SAI — no serverType in message (needed to pick HACK software)'); return; }
+                log('info', `Open SAI → no Active Access, no Hack Tool — installing HACK software for "${serverType}"`);
+                const cap = await LO.ensureHack(serverType, (lvl, m) => log(lvl, m));
+                if (!cap.ok) { log('warn', `Open SAI → cannot gain hack capability for "${serverType}" (${cap.status}${cap.reason ? ': ' + cap.reason : ''})`); return; }
+                status = await root.__cor3SaiGetLoginStatus(serverId);
+                if (!status || !(status.hackTools && status.hackTools.length)) { log('warn', 'Open SAI → Hack Tool still absent after install'); return; }
+            }
+            // 2. Launch the hack: click the hack-tool row in the SAI terminal
+            //    (mounts the minigame window) and run the solvers.
+            const tool = status.hackTools[0];
+            const toolEl = await D.waitFor(() => findHackToolRow(D, tool.moduleName), 8000);
+            if (!toolEl) { log('error', `Open SAI — hack tool "${tool.moduleName}" not found in the SAI terminal`); return; }
+            log('info', `Open SAI → hacking "${serverName}" with "${tool.moduleName}" (power ${tool.hackPower} vs defence ${status.serverDefenceRate})`);
+            startSolvers();
+            try {
+                const clickAt = Date.now();
+                if (!D.invokeReactClick(toolEl)) { log('error', 'Open SAI — hack tool row has no React onClick'); return; }
+                // Confirm the hack minigame launched (else don't poll for a grant
+                // that will never come).
+                if (!(await D.waitFor(() => findMinigame(), 30000))) { log('warn', 'Open SAI → hack minigame did not appear after clicking the tool'); return; }
+                // Size the grant-poll budget to the LAUNCHED minigame's OWN timer
+                // (the interceptor captures timerDurationMs from
+                // minigames.start.minigame) + a buffer for the async grant write —
+                // each minigame type (decrypt / ICE WALL / simple) has its own
+                // duration, so this is no longer a hardcoded ceiling.
+                const mg = root.__cor3LastMinigame;
+                let timerMs = (mg && mg.at >= clickAt - 1500 && mg.timerDurationMs) ? mg.timerDurationMs : null;
+                if (!timerMs) { log('warn', 'Open SAI → could not read the hack minigame timer — using 300s'); timerMs = 300000; }
+                const budget = timerMs + 15000;
+                log('debug', `Open SAI → hack minigame open (timer ${Math.round(timerMs / 1000)}s) — solver running, polling for the grant`);
+                // The solver wins the minigame in the background; the access grant
+                // lands ASYNC after the win, so poll for it (a single immediate
+                // query raced the grant and missed it — that was the bug). The poll
+                // returns the instant the grant appears, well before `budget`.
+                grant = await pollForGrant(serverId, budget);
+                if (!grant) { log('warn', `Open SAI → hack did not grant access within ${Math.round(budget / 1000)}s (lost / timed out?)`); return; }
+            } finally { stopSolvers(); }
+            log('info', 'Open SAI → hack succeeded — access granted');
+        }
+
+        // Log in with the grant (Active Access — no password / passhack). The
+        // server's verdict is surfaced by the `sai` inbound handler.
+        if (!root.__cor3SaiLoginWithAccess(serverId, grant.id)) { log('error', 'Open SAI — login.with-access send failed'); return; }
+        log('info', `Open SAI → logged in via Active Access (sai.login.with-access) for "${serverName}"`);
+    }
+
+    // ── Open SAI ────────────────────────────────────────────────────────────
+    // Navigate (client fn + WS), open the SAI terminal (React onClick), then
+    // gain access via saiAccess() — Active Access, or hack the server. The whole
+    // body is wrapped: openApp()/invokeReactClick() can THROW (missing dock item
+    // / handler), and an uncaught throw in an async Bus handler is an unhandled
+    // rejection — we want a loud v2 LOG instead.
     Bus.window.on(AJV2.OPEN_SAI, async (env) => {
         const serverName = env && env.serverName;
-        log('info', `Open SAI requested → "${serverName || '(none)'}"`);
-        const g = game();
-        const NM = g.networkMap;
-        const SC = g.serverConnect;
+        const serverId = env && env.serverId;
+        const serverType = env && env.serverType;
+        log('info', `Open SAI → "${serverName || '(none)'}"`);
         if (!serverName) { log('error', 'Open SAI aborted — no server name in message'); return; }
-        if (!NM || typeof NM.ensureNetworkMapOpen !== 'function') { log('error', 'Open SAI aborted — networkMap helper missing'); return; }
-        if (!SC || typeof SC.connect !== 'function') { log('error', 'Open SAI aborted — serverConnect helper missing'); return; }
 
-        await withGameLogMirror(async () => {
-            // 1. Network Map must be open (connect() looks the server up in it).
-            const nmOk = await NM.ensureNetworkMapOpen();
-            log(nmOk ? 'debug' : 'error', `Network Map open check → ${nmOk}`);
-            if (!nmOk) { log('error', 'Open SAI aborted — Network Map did not open'); return; }
+        try {
+            await withGameLogMirror(async () => {
+                const D = desktop();
+                if (!(await navigateToServer(serverName, serverId, 'Open SAI'))) return;
 
-            // 2. connect() runs Connect → Login → Active-Access (else Hack tool)
-            //    → SAI. Its own log() calls are routed into the v2 log too.
-            try {
-                const ok = await SC.connect(serverName, (lvl, m) => log(lvl, m));
-                log(ok ? 'info' : 'warn', `Open SAI ${ok ? 'succeeded — SAI open' : 'failed — could not open SAI'} for "${serverName}"`);
-                if (!ok) dumpDom('open-sai-fail');
-            } catch (e) {
-                log('error', `Open SAI threw for "${serverName}": ${(e && e.message) || e}`);
-                dumpDom('open-sai-throw');
-            }
-        });
+                // Open the SAI terminal via the panel's Login/access control
+                // (client fn — mounts the SaiLogin window).
+                const loginBtn = await D.waitFor(() => D.findPanelButton({ onb: 'ServerInfoPanelLoginButton' }), 12000);
+                if (!loginBtn) {
+                    log('warn', `Open SAI → connected to "${serverName}", but the SAI/Login control never appeared (server may need access granted first)`);
+                    return;
+                }
+                if (!D.invokeReactClick(loginBtn)) {
+                    log('error', 'Open SAI — SAI/Login control has no React onClick handler');
+                    return;
+                }
+                log('info', `Open SAI → SAI terminal open for "${serverName}"`);
+
+                // Gain access — Active Access, or hack the server (install HACK
+                // software → run the hack minigame → use the granted access).
+                await saiAccess(D, serverName, serverId, serverType);
+            });
+        } catch (e) {
+            log('error', `Open SAI threw for "${serverName}": ${(e && e.message) || e}`, { stack: e && e.stack });
+        }
     });
 
+    // ── Open Market ───────────────────────────────────────────────────────────
+    // HOME: open the map, select the Home tile, click the full-width "Market".
+    // Remote market server: navigate (client fn + WS connect), then click the
+    // panel's Market control (text button for HOME, chest icon for DARK/SRM).
+    // All control clicks are React-onClick invocations. Wrapped in try/catch for
+    // the same reason as Open SAI.
     Bus.window.on(AJV2.OPEN_MARKET, async (env) => {
-        // serverName === null → the HOME market.
-        const serverName = (env && env.serverName) || null;
-        log('info', `Open Market requested → "${serverName || '(home)'}"`);
-        const NM = game().networkMap;
-        const dom = root.COR3 && root.COR3.dom;
-        if (!NM || typeof NM.ensureNetworkMapOpen !== 'function' || !dom) { log('error', 'Open Market aborted — game helpers missing'); return; }
+        const serverName = (env && env.serverName) || null;   // null → HOME market
+        const serverId = (env && env.serverId) || null;
+        log('info', `Open Market → "${serverName || '(home)'}"`);
 
-        await withGameLogMirror(async () => {
-            try {
-                const ok = await openMarketV2(serverName, NM, dom);
-                log(ok ? 'info' : 'warn', `Open Market ${ok ? 'done — Market clicked' : 'failed'} for "${serverName || 'home'}"`);
-                if (!ok) { dumpDom('open-market-fail'); marketProbe(); }
-            } catch (e) {
-                log('error', `Open Market threw for "${serverName || 'home'}": ${(e && e.message) || e}`);
-                dumpDom('open-market-throw');
-                marketProbe();
-            }
-        });
+        try {
+            await withGameLogMirror(async () => {
+                const D = desktop();
+                if (!(await navigateToServer(serverName, serverId, 'Open Market'))) return;
+                // Remote markets need a moment after connect for the chest control
+                // to appear in the panel.
+                if (serverName) await dom.sleep(1000);
+
+                const marketBtn = await D.waitFor(() => findMarketControl(D), 10000);
+                if (!marketBtn) { log('warn', `Open Market → Market control not found for "${serverName || 'home'}"`); return; }
+                if (!D.invokeReactClick(marketBtn)) { log('error', 'Open Market — Market control has no React onClick handler'); return; }
+                log('info', `Open Market → Market opened (client fn) for "${serverName || 'home'}"`);
+            });
+        } catch (e) {
+            log('error', `Open Market threw for "${serverName || 'home'}": ${(e && e.message) || e}`, { stack: e && e.stack });
+        }
     });
 
-    console.log('[COR3] Auto-Jobs v2 bridge installed (MAIN)');
+    console.log('[COR3] Auto-Jobs v2 bridge installed (MAIN) — WS + client-fn navigation');
 })();

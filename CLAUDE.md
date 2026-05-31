@@ -41,7 +41,20 @@ is published to `STORAGE_LOCAL.AJV2_PIPELINE_STATE`. See
   in-progress); JOB_ACCEPTION accepts via the generic `MSG.GAME.ACCEPT_JOB` +
   `REVERT_ENDPOINT_TO_HOME` (decryption-priority, all markets). The bridge
   currently handles only the Network-Map context-menu Open SAI / Open Market
-  actions.
+  actions, and drives them **without DOM coordinate clicks**: it opens the
+  Network Map / SAI windows via the game's own React handlers
+  (`COR3.game.desktop`, see `src/modules/game/desktop-window.js`) and navigates
+  by direct WS request — Connect = `__cor3SetEndpoint` (`network-map.set.endpoint`).
+  Open SAI then gains access via `saiAccess()`: `__cor3SaiGetLoginStatus` reads
+  `activeAccesses[]` + `hackTools[]`; with an **Active Access** grant it
+  `__cor3SaiLoginWithAccess` (`sai.login.with-access`, no password/passhack);
+  with **no grant** it HACKS the server — `COR3.game.loadout.ensureHack(serverType)`
+  installs a covering HACK software so a hack tool appears, clicks the hack-tool
+  row (mounts the minigame), the standalone solver wins, and the freshly-granted
+  access logs in. The poll budget is sized to the LAUNCHED minigame's own
+  `timerDurationMs` (interceptor `__cor3LastMinigame`), not a hardcode. The only
+  residual screen interaction is selecting a server node (the SVG map exposes no
+  callable selection handler) — one targeted pointer tap on the located tile.
 - **Phase 2 — IN PROGRESS (MAIN world): `JOB_FLOW`.** The orchestrator now
   dispatches each in-progress (TAKEN) job to a MAIN flow-v2 module via
   `MSG.AUTOJOBS_V2.FLOW_START` and parks on `FLOW_RESULT` (so the loop pauses
@@ -50,10 +63,13 @@ is published to `STORAGE_LOCAL.AJV2_PIPELINE_STATE`. See
   - **`file_decryption` — DONE** (`src/modules/game/flows/auto-jobs-v2/file-decryption.js`,
     id `flow-v2-file-decryption`): reads the file format, uses the headless
     loadout API `COR3.game.loadout.ensureDecrypt(ext)` (install/swap owned
-    software or bug-out if none), opens the file from the Downloads folder,
-    runs the standalone solvers, waits for the minigame to close, and sends
-    `job.complete`. **Needs live in-browser verification** (DOM + loadout swap
-    were written from the v1 reference, not yet run).
+    software or bug-out if none), then finds + opens the file **purely over WS**
+    (no DOM scrape): `__cor3DesktopOpenFolder` (Downloads) → match `files[]` by
+    name/ext → `__cor3DesktopOpenFile(fileId)`. The raw `open.file` is REQUIRED:
+    a cor3.gg update made a DOM double-click open a "File Analysis" info window
+    (`desktop.get.file.analysis` → `FileAnalysisProtocolApplication`) instead of
+    the minigame; WS `open.file` starts the minigame directly (verified live).
+    The standalone solvers then win and `job.complete` is sent.
   - **Remaining types — TODO:** ip_injection/ip_cleanup, file_elimination,
     log_deletion/log_download, data_download/data_upload, decrypt_extract — each
     a new `flow-v2-*` module behind the same FLOW_START/FLOW_RESULT protocol.
@@ -253,16 +269,33 @@ Quick list of every registered module ID and its world:
   `flow-file-elimination`, `flow-data-download`, `flow-decrypt-extract`
 - `solver-decrypt`, `solver-daily-ops`, `solver-ice-wall`,
   `solver-simple-decrypt`
+- `desktop-window.js` — MAIN-world `COR3.game.desktop` namespace (NOT a
+  registered Module). Opens cor3.gg desktop windows by invoking the dock
+  launcher's React `onClick` off the fiber (`openApp` / `openAppAndWait`, no
+  MouseEvent — there is NO WS request to open a window), plus
+  `invokeReactClick` / `findClickableByText` (click a list row by text —
+  SAI access grants / hack tools) / `findServerTile` / `selectServerTile` (one
+  targeted pointer tap — the map has no callable selection handler) /
+  `findPanelButton` / `waitFor`. Used by the v2 bridge.
 - `auto-jobs-v2-bridge.js` — MAIN-world endpoint for the v2 Network-Map
   context menu (Open SAI / Open Market). NOT a registered Module — a plain
-  IIFE listening on `MSG.AUTOJOBS_V2.OPEN_SAI` / `OPEN_MARKET`; it drives the
-  generic `COR3.game.*` helpers and logs under id `auto-jobs-v2`.
+  IIFE listening on `MSG.AUTOJOBS_V2.OPEN_SAI` / `OPEN_MARKET` (payload carries
+  `serverName` + `serverId` + `serverType`). Drives the flows through client
+  functions + direct WS instead of DOM coordinate clicks: `COR3.game.desktop`
+  to open windows, `__cor3SetEndpoint` (WS `network-map.set.endpoint`) to
+  Connect. Its `saiAccess()` orchestrator then logs in via **Active Access**
+  (`__cor3SaiGetLoginStatus` → `__cor3SaiLoginWithAccess`) or, with no grant,
+  **hacks** the server (`COR3.game.loadout.ensureHack` → click the hack-tool
+  row → solver wins the minigame → use the granted access). Logs under id
+  `auto-jobs-v2`.
 - `flow-v2-file-decryption` — MAIN flow-v2 module (Phase 2). Listens on
   `MSG.AUTOJOBS_V2.FLOW_START` for `file_decryption` jobs, replies
   `FLOW_RESULT`. Logs under its own id (the v2 Activity Log filters to
   `auto-jobs-v2` + `flow-v2-*`). `loadout-panel` also exposes a headless
-  `COR3.game.loadout` API (`planDecrypt` / `ensureDecrypt`) the flow uses for
-  install/swap.
+  `COR3.game.loadout` API — `planDecrypt`/`ensureDecrypt(ext)` (DECRYPT, matched
+  by `fileTypes`) for the file flow, and `planHack`/`ensureHack(serverType)`
+  (HACK, matched by `serverTypes`) for the bridge's Open-SAI hack path — both
+  doing install/swap with the same resource-fit logic.
 
 **Isolated content_scripts:**
 - `auth`, `expeditions`, `archived-expeditions`, `decisions`, `market`,

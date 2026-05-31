@@ -30,6 +30,12 @@
     let activeSocket = null;
     const socketLastActivity = new Map();
 
+    // SAI get.login.status one-shot map: serverId -> resolve(statusData).
+    // Declared HERE (above dispatchEvent, which reads it) so there's no
+    // declaration-order question; set by __cor3SaiGetLoginStatus below and
+    // resolved by the `sai` inbound handler.
+    const pendingSaiLoginStatus = {};
+
     // ──────────────────────────────────────────────────────────────────────
     // Token-expired retry queue
     // ──────────────────────────────────────────────────────────────────────
@@ -54,6 +60,8 @@
                 else if (op === 'srmMarket') root.__cor3RequestSrmMarket();
                 else if (op === 'stash') root.__cor3RequestStash();
                 else if (op === 'dailyOps') post('COR3_FETCH_DAILY_OPS', null);
+                else if (op === 'networkMap') root.__cor3RequestNetworkMap();
+                else if (op === 'archivedExpeditions') root.__cor3RequestArchivedExpeditions();
                 else if (op.startsWith('decision:')) {
                     try {
                         const data = JSON.parse(op.substring(9));
@@ -181,7 +189,11 @@
         if (eventName === 'error' && payload && payload.message === 'token-expired') {
             console.log('[COR3] Token expired — closing sockets to force reconnect');
             tokenExpiredFlag = true;
-            ['expeditions', 'market', 'darkMarket', 'srmMarket', 'stash', 'dailyOps'].forEach(queueRetryOp);
+            // Include networkMap (NM_GRAPH) + archivedExpeditions: the open
+            // handler's __cor3InitialFetch is a no-op once initialFetchDone is
+            // set, so without queueing them here the depth graph and the
+            // archive go stale after every token-expired reconnect.
+            ['expeditions', 'market', 'darkMarket', 'srmMarket', 'stash', 'dailyOps', 'networkMap', 'archivedExpeditions'].forEach(queueRetryOp);
             post(MSG.AUTH.TOKEN_EXPIRED, null);
             for (const s of trackedSockets.slice()) {
                 try { s.close(); } catch (_) {}
@@ -479,6 +491,46 @@
             }
             return;
         }
+
+        // sai: Server Admin Interface room.
+        //   • get.login.status — resolves the one-shot set by
+        //     __cor3SaiGetLoginStatus; its activeAccesses[] + hackTools[] drive
+        //     the bridge's SAI access orchestration.
+        //   • login.with-access — the server's verdict on our login. The bridge
+        //     only logged that the request was SENT, so surface the real
+        //     success/failure here (on MSG.JOB.LOG, which the v2 bridge mirrors).
+        // Other sai actions (transit / files) have no consumer here yet.
+        if (eventName === 'sai' && payload && payload.event) {
+            const action = payload.event.action;
+            if (action === 'get.login.status' && payload.data) {
+                const sid = payload.data.serverId;
+                const cb = sid ? pendingSaiLoginStatus[sid] : null;
+                if (cb) { delete pendingSaiLoginStatus[sid]; try { cb(payload.data); } catch (_) { /* noop */ } }
+            } else if (action === 'login.with-access') {
+                if (payload.error) post(MSG.JOB.LOG, { msg: `[sai] login.with-access failed: ${(payload.error && (payload.error.message || payload.error.key)) || 'error'}`, level: 'warn' });
+                else if (payload.data && payload.data.success) post(MSG.JOB.LOG, { msg: '[sai] login.with-access → success', level: 'info' });
+            }
+            return;
+        }
+
+        // minigames: capture the LAUNCHED game's own metadata — notably its
+        // timerDurationMs — so callers can size waits to the actual game instead
+        // of a hardcoded ceiling. start.minigame is the lifecycle launch
+        // (file-decryption, SAI hack, …); we keep the latest in __cor3LastMinigame.
+        if (eventName === 'minigames' && payload && payload.event) {
+            if (payload.event.action === 'start.minigame' && payload.data) {
+                const d = payload.data;
+                const sp = (d.meta && d.meta.staticParams) || {};
+                root.__cor3LastMinigame = {
+                    id: d.id || null,
+                    type: d.type || null,
+                    timerDurationMs: Number(sp.timerDurationMs) || null,
+                    maxAttempts: Number(sp.maxAttempts) || null,
+                    at: Date.now(),
+                };
+            }
+            return;
+        }
     }
 
     function computeNmGraph(data) {
@@ -746,9 +798,15 @@
         // Reserve our slot now so concurrent calls space behind us instead
         // of all computing the same wait==X and stacking at the same time.
         lastSendAt = now + wait;
+        const reservedAt = lastSendAt;   // absolute instant THIS send should go out
         const reservedSock = sock;
         pendingSendQueue = pendingSendQueue.then(async () => {
-            await delay(wait);
+            // Wait until our own reserved instant — NOT `wait` ms after the
+            // previous queued send resolved. The closures run back-to-back, so
+            // awaiting the relative `wait` each time stacked the offsets
+            // quadratically (200·n(n+1)/2); a deadline keeps spacing a flat 200ms.
+            const d = reservedAt - Date.now();
+            if (d > 0) await delay(d);
             // Socket may have closed during the wait; fall back to any
             // other open one. If nothing is open, drop silently — caller
             // already got `true` and any module-level watchdog will
@@ -831,6 +889,9 @@
     root.__cor3WebVersion = null;
     root.__cor3SystemVersion = null;
     root.__serverPathFailed = false;
+    // Latest minigame launched (from minigames.start.minigame): used to size
+    // waits to the game's own timerDurationMs instead of a hardcoded ceiling.
+    root.__cor3LastMinigame = null;
 
     root.__cor3RequestExpeditions = function () {
         console.log('[COR3] Requesting expedition data');
@@ -914,6 +975,14 @@
     // accept).
     let inflightAcceptChain = Promise.resolve();
     root.__cor3AcceptJob = function (jobId, marketId) {
+        // Validate up front: the debug line below calls jobId/marketId.slice and
+        // would throw on a missing id — swallowed by the chain's .catch, losing
+        // the accept silently. Fail loudly with a failure signal instead.
+        if (!jobId || !marketId) {
+            console.warn('[COR3] __cor3AcceptJob: missing jobId/marketId', { jobId, marketId });
+            post('COR3_ACCEPT_JOB_SEND_FAILED', { jobId, marketId });
+            return false;
+        }
         inflightAcceptChain = inflightAcceptChain.then(async () => {
             const cfg = MARKET_BY_ID[marketId];
             const requiredServer = cfg ? cfg.serverId : null;
@@ -1065,6 +1134,56 @@
     root.__cor3DesktopOpenFile = function (fileId) {
         if (!fileId) return false;
         return wsSendRpc('desktop', 'open.file', { fileId, source: 'desktop' });
+    };
+
+    // ─── NETWORK-MAP RPC ──────────────────────────────────────────────
+    // Direct WS equivalent of the in-game "Connect" (the Network Map panel's
+    // Connect button), so callers navigate by request instead of synthesising a
+    // DOM click on the SVG map. Mirrors the site's own network-map.setEndpoint:
+    // it re-routes the endpoint and the response lands on the existing
+    // `network-map` inbound route (which corrects currentEndpoint from
+    // data.servers[?isEndpoint]); the wrapped ws.send's captureOutboundSetEndpoint
+    // also observes it, so endpoint tracking stays consistent with our
+    // preflight/accept dances.
+    root.__cor3SetEndpoint = function (serverId) {
+        if (!serverId) { console.warn('[COR3] __cor3SetEndpoint: missing serverId'); return false; }
+        return wsSendRpc('network-map', 'set.endpoint', { serverId });
+    };
+
+    // ─── SAI (Server Admin Interface) RPC ─────────────────────────────
+    // Granular helpers so the v2 bridge can orchestrate the full server-access
+    // flow (active-access login OR hack-the-server). Server login uses ACTIVE
+    // ACCESS — a grant from a job — via sai.login.with-access {serverId,
+    // accessGrantId}; the password path (sai.login.attempt) spends
+    // remainingAttempts and is never used. Grant ids + hackTools come from
+    // sai.get.login.status, whose reply is routed to the one-shot below
+    // (pendingSaiLoginStatus, declared near the top) by the `sai` inbound
+    // handler in dispatchEvent.
+    //
+    //   __cor3SaiGetLoginStatus(serverId)  → Promise<statusData|null>
+    //       { activeAccesses:[{id,sourceType,…}], hackTools:[{moduleId,hackPower,
+    //         accessTypeOnHack}], serverDefenceRate, remainingAttempts, isLocked }
+    //   __cor3SaiLoginWithAccess(serverId, grantId) → bool (fires; the server's
+    //       verdict comes back on the `sai` login.with-access inbound → MSG.JOB.LOG)
+    //   __cor3SaiHackStart(serverId) → bool (launches the hack minigame; on WIN
+    //       an access grant appears in a subsequent get.login.status)
+    root.__cor3SaiGetLoginStatus = function (serverId) {
+        if (!serverId) return Promise.resolve(null);
+        return new Promise((resolve) => {
+            let done = false;
+            const finish = (data) => { if (done) return; done = true; clearTimeout(guard); delete pendingSaiLoginStatus[serverId]; resolve(data); };
+            const guard = setTimeout(() => finish(null), 15000);   // no reply → resolve null
+            pendingSaiLoginStatus[serverId] = finish;
+            if (!wsSendRpc('sai', 'get.login.status', { serverId })) finish(null);
+        });
+    };
+    root.__cor3SaiLoginWithAccess = function (serverId, accessGrantId) {
+        if (!serverId || !accessGrantId) { console.warn('[COR3] __cor3SaiLoginWithAccess: missing serverId/accessGrantId'); return false; }
+        return wsSendRpc('sai', 'login.with-access', { serverId, accessGrantId });
+    };
+    root.__cor3SaiHackStart = function (serverId) {
+        if (!serverId) { console.warn('[COR3] __cor3SaiHackStart: missing serverId'); return false; }
+        return wsSendRpc('sai', 'hack.start', { serverId });
     };
 
     root.__cor3SellItem = function (itemId, quantity) {

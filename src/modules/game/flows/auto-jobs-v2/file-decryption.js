@@ -26,9 +26,10 @@
 //      requirement).
 //   5. Send job.complete and report success.
 //
-// Reuses shared game infra only: COR3.game.sai (Downloads helpers),
-// COR3.game.loadout (capability API exposed by loadout-panel), the
-// MSG.SOLVER.* watchers, and the __cor3CompleteJob WS helper.
+// Reuses shared infra only: the desktop WS helpers (__cor3DesktopGetOptions /
+// OpenFolder / OpenFile — find + open the file, no DOM scrape), COR3.game.loadout
+// (capability API from loadout-panel), the MSG.SOLVER.* watchers, and the
+// __cor3CompleteJob WS helper.
 
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
@@ -48,7 +49,6 @@
         '[data-sentry-component="SimpleDecryptApplication"]',
         '[data-component-name="SimpleDecryptApplication"]',
     ];
-    const FOLDER_APP_SEL = '[data-component-name="FolderApplication"]';
 
     function findMinigame() {
         for (const s of MINIGAME_SELS) { const el = document.querySelector(s); if (el) return el; }
@@ -66,24 +66,44 @@
         return i >= 0 ? s.slice(i) : '';
     }
 
-    function fileRowName(item) {
-        const nameDiv = [...item.children].find((c) => c.tagName === 'DIV' && !c.classList.contains('folder-application-icon'));
-        return (nameDiv && nameDiv.textContent ? nameDiv.textContent : '').trim().toLowerCase();
+    // Await the next Bus.window message of `type` after firing `trigger()`,
+    // resolving with the envelope (or null on timeout). The interceptor relays
+    // desktop WS replies (open.folder/get.options responses) onto the bus, so
+    // this reads them without scraping the DOM.
+    function awaitBus(type, timeoutMs, trigger) {
+        return new Promise((resolve) => {
+            let done = false;
+            const finish = (v) => { if (done) return; done = true; try { unsub(); } catch (_) { /* noop */ } clearTimeout(timer); resolve(v); };
+            const unsub = Bus.window.on(type, (env) => finish(env));
+            const timer = setTimeout(() => finish(null), timeoutMs);
+            try { trigger(); } catch (_) { finish(null); }
+        });
     }
 
-    async function findFileEl(needle, isExtOnly, timeoutMs) {
-        const deadline = Date.now() + timeoutMs;
-        while (Date.now() < deadline) {
-            const app = document.querySelector(FOLDER_APP_SEL);
-            if (app) {
-                for (const item of app.querySelectorAll('.folder-application[data-app-id]')) {
-                    const name = fileRowName(item);
-                    if (isExtOnly ? name.endsWith(needle) : name === needle) return item;
-                }
-            }
-            await dom.sleep(500);
+    // Resolve the Downloads fileId for `fileCondition` purely over WS: open the
+    // Downloads folder (desktop.open.folder) and match the returned files[] by
+    // exact name, or by extension when the condition is a bare ".ext". The
+    // Downloads folder id is cached by the interceptor (from the get.options it
+    // sees on load); if it isn't in yet, ask for the options once to populate it.
+    // No DOM scrape, no FolderApplication window required.
+    async function findDownloadsFileId(fileCondition, say, timeoutMs) {
+        let folderId = root.__cor3DownloadFolderId;
+        if (!folderId) {
+            if (typeof root.__cor3DesktopGetOptions !== 'function') { say('error', '__cor3DesktopGetOptions WS helper missing'); return null; }
+            await awaitBus(MSG.WS.DESKTOP_OPTIONS, 8_000, () => root.__cor3DesktopGetOptions());
+            folderId = root.__cor3DownloadFolderId;
         }
-        return null;
+        if (!folderId) { say('warn', 'Downloads folder id unknown (open the desktop in-game once)'); return null; }
+        if (typeof root.__cor3DesktopOpenFolder !== 'function') { say('error', '__cor3DesktopOpenFolder WS helper missing'); return null; }
+        const resp = await awaitBus(MSG.WS.DESKTOP_FOLDER, timeoutMs, () => root.__cor3DesktopOpenFolder(folderId));
+        const files = (resp && resp.data && Array.isArray(resp.data.files)) ? resp.data.files : [];
+        const raw = String(fileCondition || '').trim().toLowerCase();
+        const isExtOnly = raw.startsWith('.');
+        const file = files.find((f) => {
+            const name = String((f && f.name) || '').toLowerCase();
+            return isExtOnly ? name.endsWith(raw) : name === raw;
+        });
+        return file ? file.id : null;
     }
 
     const SOLVER_START = [MSG.SOLVER.START_DECRYPT, MSG.SOLVER.START_ICE_WALL, MSG.SOLVER.START_SIMPLE_DECRYPT];
@@ -104,7 +124,7 @@
         say('info', `file format: ${ext}`);
 
         const LO = game().loadout;
-        if (!LO || typeof LO.ensureDecrypt !== 'function') return { success: false, reason: 'loadout-api-missing' };
+        if (!LO || typeof LO.ensureDecrypt !== 'function') return { success: false, retryable: true, reason: 'loadout-api-missing' };
 
         // ── MODULE:FD_CHECK_LOADOUT (decision) ──
         step(NODE.FD_CHECK_LOADOUT);
@@ -116,48 +136,56 @@
         }
         const cap = await LO.ensureDecrypt(ext, say);
         if (!cap.ok) {
-            // none / install-failed → cannot do this job → orchestrator bugs it.
+            // Split transient vs permanent: 'unknown' (loadout snapshot not in
+            // yet) and 'no-helper' (WS equip helper not ready) are timing races
+            // → retry next cycle. 'none' (no owned software covers this ext) and
+            // 'install-failed' are genuinely undoable → orchestrator bugs it.
+            const retryable = cap.status === 'unknown' || cap.status === 'no-helper';
             say('warn', `cannot gain decrypt capability for ${ext} (${cap.status})`);
-            return { success: true, didWork: false, reason: cap.reason || `no-decrypt-capability:${ext}` };
+            return { success: true, didWork: false, retryable, reason: cap.reason };
         }
 
-        const SAI = game().sai;
-        if (!SAI || !SAI.downloadsWatcher) return { success: false, reason: 'sai-helpers-missing' };
-
-        // Shared Downloads/SAI helpers gate their loops on this flag; v1 may
-        // have left it set. (Runtime flag, not v1 storage/messages.)
+        // Runtime flag the standalone solvers gate their loops on; v1 may have
+        // left it set. (Runtime flag, not v1 storage/messages.)
         root.__jobManagerAbort = false;
 
         startSolvers();
         try {
-            // ── MODULE:FD_OPEN_DOWNLOADS ──
+            // ── MODULE:FD_OPEN_DOWNLOADS ── find the file in Downloads over WS
+            // (desktop.open.folder → match files[]), no DOM scrape.
             step(NODE.FD_OPEN_DOWNLOADS);
-            const folder = await SAI.downloadsWatcher.openFolder(30_000);
-            if (!folder) return { success: false, reason: 'downloads-folder-not-open' };
+            say('info', `looking for "${fileCondition}" in Downloads (WS)`);
+            const fileId = await findDownloadsFileId(fileCondition, say, 60_000);
+            if (!fileId) { say('warn', `file "${fileCondition}" not in Downloads`); return { success: true, didWork: false, retryable: true, reason: 'file-not-in-downloads' }; }
 
-            const raw = String(fileCondition || '').trim();
-            const isExtOnly = raw.startsWith('.');
-            const needle = raw.toLowerCase();
-            say('info', `looking for "${fileCondition}" in Downloads`);
-            const fileEl = await findFileEl(needle, isExtOnly, 60_000);
-            if (!fileEl) { say('warn', `file "${fileCondition}" not in Downloads`); return { success: true, didWork: false, reason: 'file-not-in-downloads' }; }
-
-            // ── MODULE:FD_SOLVE ──
+            // ── MODULE:FD_SOLVE ── open the file via a direct WS request, NOT a
+            // DOM double-click. A cor3.gg update made double-clicking a file open
+            // a "File Analysis" info window first (desktop.get.file.analysis →
+            // FileAnalysisProtocol) that must be dismissed with a "Decrypt"
+            // button — the minigame no longer mounts from the double-click. The
+            // raw open.file the helper sends still starts the minigame directly
+            // (verified live: no analysis window, IceWallBreak/SimpleDecrypt
+            // mounts), bypassing that step.
             step(NODE.FD_SOLVE);
-            fileEl.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, view: window }));
-            await dom.sleep(200);
-            fileEl.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+            if (typeof root.__cor3DesktopOpenFile !== 'function') { say('error', '__cor3DesktopOpenFile WS helper missing'); return { success: false, retryable: true, reason: 'open-file-helper-missing' }; }
+            root.__cor3DesktopOpenFile(fileId);
 
             const appearDeadline = Date.now() + 90_000;
             let appeared = false;
-            while (Date.now() < appearDeadline) {
+            while (Date.now() < appearDeadline && !root.__jobManagerAbort) {
                 if (findMinigame()) { appeared = true; break; }
                 await dom.sleep(250);
             }
-            if (!appeared) { say('warn', 'minigame did not appear within 90s'); return { success: false, reason: 'minigame-did-not-appear' }; }
+            if (root.__jobManagerAbort) { say('warn', 'aborted by orchestrator before minigame opened'); return { success: false, retryable: true, reason: 'aborted' }; }
+            if (!appeared) { say('warn', 'minigame did not appear within 90s'); return { success: false, retryable: true, reason: 'minigame-did-not-appear' }; }
 
             say('info', 'minigame open — waiting for solver to finish');
-            while (findMinigame()) await dom.sleep(200);
+            // Bounded by the shared abort flag: on STOP / FLOW_TIMEOUT the
+            // orchestrator posts FLOW_ABORT (→ __jobManagerAbort), so this can
+            // never spin forever on a minigame the solver fails to close (which
+            // would otherwise hang the flow and leave `busy` stuck true).
+            while (findMinigame() && !root.__jobManagerAbort) await dom.sleep(200);
+            if (root.__jobManagerAbort) { say('warn', 'aborted by orchestrator during solve'); return { success: false, retryable: true, reason: 'aborted' }; }
 
             // ── MODULE:FD_COMPLETE ──
             step(NODE.FD_COMPLETE);
@@ -171,6 +199,7 @@
     }
 
     let busy = false;
+    let runningJobId = null;   // jobId of the in-flight flow (FLOW_ABORT matches on it)
 
     class FileDecryptionV2Flow extends Module {
         constructor() {
@@ -178,8 +207,8 @@
                 id: 'flow-v2-file-decryption',
                 name: 'Flow v2: File Decryption',
                 category: C.CATEGORY.GAME,
-                dependsOn: ['sai-navigator', 'loadout-panel'],
-                owns: { busTypes: [AJV2.FLOW_START, AJV2.FLOW_RESULT] },
+                dependsOn: ['loadout-panel'],
+                owns: { busTypes: [AJV2.FLOW_START, AJV2.FLOW_RESULT, AJV2.FLOW_ABORT] },
             });
         }
 
@@ -191,10 +220,13 @@
                 if (!env || env.jobType !== C.FLOW.FILE_DECRYPTION) return;  // not this flow's type
                 if (busy) {
                     this.warn(`FLOW_START ignored — a flow is already running (job ${env.jobId})`);
-                    Bus.window.post(AJV2.FLOW_RESULT, { jobId: env.jobId, marketId: env.marketId, success: false, reason: 'flow-busy' });
+                    // flow-busy is transient (the previous job is still solving):
+                    // tell the orchestrator to retry this job, NOT to bug it.
+                    Bus.window.post(AJV2.FLOW_RESULT, { jobId: env.jobId, marketId: env.marketId, success: false, retryable: true, reason: 'flow-busy' });
                     return;
                 }
                 busy = true;
+                runningJobId = env.jobId;
                 const say = (lvl, m, ctx) => { const f = this[lvl] || this.info; f.call(this, m, ctx); };
                 this.info(`FLOW_START file_decryption job=${env.jobId} file="${env.fileCondition}"`);
                 try {
@@ -206,6 +238,19 @@
                     Bus.window.post(AJV2.FLOW_RESULT, { jobId: env.jobId, marketId: env.marketId, success: false, reason: 'flow-crash' });
                 } finally {
                     busy = false;
+                    runningJobId = null;
+                }
+            }));
+
+            // Orchestrator cancel (STOP / FLOW_TIMEOUT): flip the shared abort
+            // flag so runFileDecryption bails out of its wait loops WITHOUT
+            // sending job.complete. The SAI/Downloads helpers gate their own
+            // loops on the same flag, so a parked openFolder/findFile unblocks
+            // too. runFileDecryption resets the flag to false on its next start.
+            this.track(Bus.window.on(AJV2.FLOW_ABORT, (env) => {
+                if (env && env.jobId === runningJobId) {
+                    root.__jobManagerAbort = true;
+                    this.warn(`FLOW_ABORT — aborting running job ${env.jobId}`);
                 }
             }));
         }

@@ -306,13 +306,17 @@
                     this._injectUi();
                 }
             }, 500);
-            // Re-anchor on window resize.
-            window.addEventListener('resize', this._reanchor.bind(this));
+            // Re-anchor on window resize. Keep a stable bound reference so
+            // stop()/reload can remove it — a fresh `.bind()` each start would
+            // be unremovable and leak one dead handler per reload.
+            this._onResize = () => this._reanchor();
+            window.addEventListener('resize', this._onResize);
         }
 
         async stop() {
             if (this._mountTimer) { clearInterval(this._mountTimer); this._mountTimer = null; }
             if (this._reanchorTimer) { clearInterval(this._reanchorTimer); this._reanchorTimer = null; }
+            if (this._onResize) { window.removeEventListener('resize', this._onResize); this._onResize = null; }
             document.getElementById(HOST_ID)?.remove();
             document.getElementById('cor3-loadout-panel-style')?.remove();
             this._injected = false;
@@ -638,18 +642,18 @@
             else if (p.kind === 'unequip-sw') success = !eqSw.has(p.id);
             else if (p.kind === 'equip-hw')   success = eqHw.has(p.id);
             else return;
+            // Only RESOLVE on success. A snapshot that doesn't yet reflect the
+            // mutation is NOT proof of failure — an unrelated/early loadout
+            // frame (concurrent refresh, native-UI change, the headless v2 flow
+            // driving the same helpers) can arrive before our change applies.
+            // Leave the pending mutation armed: the watchdog timer fires the
+            // no-reply toast if it never applies, and a later success snapshot
+            // resolves it. Clearing here on a mismatch fired a spurious
+            // "could not equip/swap" toast AND dropped reconciliation of the
+            // real success snapshot.
+            if (!success) return;
             if (this._pendingMutationTimer) { clearTimeout(this._pendingMutationTimer); this._pendingMutationTimer = null; }
             this._pendingMutation = null;
-            if (!success) {
-                const verbKey = p.kind === 'equip-sw' ? 'loadout.verb.equipSw'
-                              : p.kind === 'unequip-sw' ? 'loadout.verb.unequipSw'
-                              : 'loadout.verb.swapHw';
-                this._showToast(
-                    t('loadout.toast.couldNotVerb', { verb: t(verbKey) }),
-                    'err',
-                    t('loadout.toast.serverRejectedBody', { name: p.name })
-                );
-            }
         }
 
         // ─── Pre-flight resource check ────────────────────────────────
@@ -807,6 +811,74 @@
             return ready
                 ? { ok: true, status: plan.status === 'swap' ? 'swapped' : 'installed' }
                 : { ok: false, status: 'install-failed', reason: 'installed-but-ext-not-covered' };
+        }
+
+        // ─── HACK capability API (parallel to DECRYPT above) ──────────────
+        // Same shape, but the capability is HACK and the target is a server
+        // TYPE (e.g. "CEDRT private", from the server's serverTypeName) matched
+        // against spec.serverTypes. Used by the SAI Hack-Tool flow: equip a HACK
+        // software so the server's get.login.status hackTools[] populates.
+        // (hackPower-vs-serverDefenceRate is then resolved by the hack minigame's
+        // difficulty; ensureHack only guarantees a covering tool is equipped.)
+        _equippedHackTypes() {
+            const types = new Set();
+            for (const sw of (this._snapshot && this._snapshot.equippedSoftware) || []) {
+                for (const sp of (sw.specs || [])) {
+                    if (sp && sp.type === 'HACK' && Array.isArray(sp.serverTypes)) {
+                        for (const st of sp.serverTypes) if (typeof st === 'string') types.add(st.toLowerCase());
+                    }
+                }
+            }
+            return types;
+        }
+        _ownedHackSwFor(serverType) {
+            const st = String(serverType || '').toLowerCase();
+            const equipped = new Set(((this._snapshot && this._snapshot.equippedSoftware) || []).map((s) => s.id));
+            return ((this._snapshot && this._snapshot.ownedSoftware) || [])
+                .filter((sw) => !equipped.has(sw.id))
+                .filter((sw) => (sw.specs || []).some((sp) => sp && sp.type === 'HACK'
+                    && Array.isArray(sp.serverTypes) && sp.serverTypes.some((t) => String(t).toLowerCase() === st)))
+                .sort((a, b) => (Number(a.price) || 0) - (Number(b.price) || 0));
+        }
+        // Plan how to become able to hack a server of type `serverType`:
+        //   ready | install | swap | none | unknown  (same as apiPlanDecrypt).
+        apiPlanHack(serverType) {
+            if (!this._snapshot) return { status: 'unknown' };
+            if (this._equippedHackTypes().has(String(serverType || '').toLowerCase())) return { status: 'ready' };
+            const candidates = this._ownedHackSwFor(serverType);
+            if (candidates.length === 0) return { status: 'none' };
+            const feasible = candidates.find((sw) => this._checkInstallFeasibility(sw).length === 0);
+            if (feasible) return { status: 'install', sw: feasible };
+            return { status: 'swap', sw: candidates[0] };
+        }
+        // Make the loadout able to hack `serverType`. Resolves to
+        //   { ok:true,  status:'ready'|'installed'|'swapped' }
+        //   { ok:false, status, reason }
+        async apiEnsureHack(serverType, log) {
+            const say = typeof log === 'function' ? log : () => {};
+            const plan = this.apiPlanHack(serverType);
+            if (plan.status === 'ready')   { say('info', `loadout already hacks "${serverType}"`); return { ok: true, status: 'ready' }; }
+            if (plan.status === 'unknown') { say('warn', 'loadout snapshot not loaded yet'); return { ok: false, status: 'unknown', reason: 'no-loadout-snapshot' }; }
+            if (plan.status === 'none')    { say('warn', `no owned software can hack "${serverType}"`); return { ok: false, status: 'none', reason: `no-hack-software:${serverType}` }; }
+            if (typeof root.__cor3LoadoutEquipSoftware !== 'function') return { ok: false, status: 'no-helper', reason: 'equip-helper-missing' };
+
+            if (plan.status === 'swap') {
+                say('info', `freeing resources — unequipping all software to fit "${plan.sw.name}"`);
+                if (typeof root.__cor3LoadoutUnequipSoftware === 'function') {
+                    for (const sw of ((this._snapshot && this._snapshot.equippedSoftware) || []).slice()) {
+                        root.__cor3LoadoutUnequipSoftware(sw.id);
+                        await this._waitEquipped(sw.id, false, 6000);
+                    }
+                }
+            }
+            say('info', `installing "${plan.sw.name}" to hack "${serverType}"`);
+            root.__cor3LoadoutEquipSoftware(plan.sw.id);
+            const equipped = await this._waitEquipped(plan.sw.id, true, 8000);
+            if (!equipped) { say('error', `install of "${plan.sw.name}" did not take effect`); return { ok: false, status: 'install-failed', reason: 'install-not-applied' }; }
+            const ready = this._equippedHackTypes().has(String(serverType).toLowerCase());
+            return ready
+                ? { ok: true, status: plan.status === 'swap' ? 'swapped' : 'installed' }
+                : { ok: false, status: 'install-failed', reason: 'installed-but-type-not-covered' };
         }
 
         // ─── Capability chip click: equip cheapest available ──────────
@@ -1281,5 +1353,8 @@
         decryptExtensions: () => [...loadoutPanel._equippedDecryptExts()],
         planDecrypt: (ext) => loadoutPanel.apiPlanDecrypt(ext),
         ensureDecrypt: (ext, log) => loadoutPanel.apiEnsureDecrypt(ext, log),
+        hackServerTypes: () => [...loadoutPanel._equippedHackTypes()],
+        planHack: (serverType) => loadoutPanel.apiPlanHack(serverType),
+        ensureHack: (serverType, log) => loadoutPanel.apiEnsureHack(serverType, log),
     };
 })();

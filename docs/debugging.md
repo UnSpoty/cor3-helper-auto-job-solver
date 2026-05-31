@@ -39,7 +39,7 @@ Run any of these in the MCP browser console:
 | `window.COR3.Registry.list().length` | isolated **or** MAIN | how many modules registered (expect ~27 isolated, ~18 MAIN; the v2 `auto-jobs-v2-bridge` is a plain IIFE, not counted) |
 | `window.COR3.Registry.snapshot()` | either | full list with `{id, category, dependsOn, started, enabled}` |
 | `window.COR3.Registry.get('auto-jobs')?.started` | isolated | whether auto-jobs is currently active |
-| `Object.keys(window.COR3.game ?? {})` | MAIN | should print `['networkMap','serverConnect','sai','flows']` |
+| `Object.keys(window.COR3.game ?? {})` | MAIN | should print `['networkMap','serverConnect','sai','flows','loadout','desktop']` (`desktop` = the v2 window helper) |
 | `await chrome.storage.local.get('cor3_logs')` | isolated/popup | full per-module ring buffers |
 | `await chrome.storage.local.get(['autoJobsState','autoJobsQueue','buggedJobIds'])` | isolated/popup | auto-jobs (v1) runtime |
 | `await chrome.storage.local.get(['ajv2PipelineState','ajv2JobQueue','ajv2BuggedJobs'])` | isolated/popup | **Auto-Jobs v2** runtime: `ajv2PipelineState.node` = the live flowchart node; `ajv2JobQueue.jobs[].status` = `AVAILABLE`/`TAKEN` |

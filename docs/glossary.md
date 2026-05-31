@@ -215,5 +215,8 @@ Game events to listen on (in order of frequency):
 | `expeditions` | `get.active`, `get.config`, `get.mercenaries`, `get.archived`, `configure`, `launch`, `open.container`, `collect.all`, `respond.event`, `update` | `data/expeditions.js`, `data/decisions.js`, `data/mercenaries.js`, `data/merc-config.js`, `data/expedition-config.js`, `auto-send-merc.js` |
 | `market` | `get.options`, `job.take`, `job.complete` (or `job.completed`) | `data/market.js`, `data/dark-market.js`, `auto-jobs.js` |
 | `stash` | (room-based push) | `data/stash.js` |
-| `network-map` | `set.endpoint` | `data/dark-market.js` (unreachable detection) |
+| `network-map` | `set.endpoint`, `get.map`, `scan.server` | `data/dark-market.js` (unreachable detection); interceptor `computeNmGraph` → `NM_GRAPH`; v2 bridge connects via `__cor3SetEndpoint` (`set.endpoint`) |
+| `sai` | `get.login.status`, `login.with-access`, `hack.start` | v2 bridge SAI access (`saiAccess`): `__cor3SaiGetLoginStatus` (one-shot promise), `__cor3SaiLoginWithAccess`, `__cor3SaiHackStart`. Interceptor routes `get.login.status` to the one-shot and surfaces the `login.with-access` verdict on `MSG.JOB.LOG` |
+| `desktop` | `get.options`, `open.folder`, `open.file`, `get.file.analysis`, `update.file` | interceptor → `MSG.WS.DESKTOP_OPTIONS`/`_FOLDER`/`_FILE` (+ caches `__cor3DownloadFolderId`). v2 file-decryption finds the file via `open.folder` and opens it via `open.file` — the latter bypasses the new `get.file.analysis` info window (`FileAnalysisProtocolApplication`) that a DOM double-click now opens |
+| `minigames` | `start.minigame` (+ `open`/`finish`/`get.state`) | interceptor caches the launched game's meta in `__cor3LastMinigame` (notably `timerDurationMs`); the minigame itself runs on a separate Colyseus server (`svc-corie.cor3.gg/games/<room>`) |
 | `error` | `token-expired` | `auto-jobs.js`, interceptor close-and-retry logic |

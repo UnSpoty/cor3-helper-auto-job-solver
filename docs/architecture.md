@@ -99,15 +99,16 @@ The order matters: core primitives must exist before modules use them.
 18. src/modules/game/network-map.js
 19. src/modules/game/server-connect.js
 20. src/modules/game/sai-navigator.js
-21. src/modules/game/auto-jobs-v2-bridge.js  ← v2 NM context-menu endpoint (plain IIFE, not a Module)
-22. src/modules/game/loadout-panel.js        ← site-embedded loadout UI
-23. src/modules/game/flows/_shared.js
-24-32. src/modules/game/flows/*      ← 9 flow modules
-33. src/modules/solvers/decrypt.js
-34. src/modules/solvers/daily-ops.js    ← Game Center Daily Ops solver
-35. src/modules/solvers/ice-wall.js     ← SAI Porter-lite r4 ICE WALL solver
-36. src/modules/solvers/simple-decrypt.js
-37. src/entry/content-early.js       ← Registry.boot()
+21. src/modules/game/desktop-window.js       ← COR3.game.desktop window helper (plain IIFE, not a Module)
+22. src/modules/game/auto-jobs-v2-bridge.js  ← v2 NM context-menu endpoint (plain IIFE, not a Module)
+23. src/modules/game/loadout-panel.js        ← site-embedded loadout UI
+24. src/modules/game/flows/_shared.js
+25-33. src/modules/game/flows/*      ← 9 flow modules
+34. src/modules/solvers/decrypt.js
+35. src/modules/solvers/daily-ops.js    ← Game Center Daily Ops solver
+36. src/modules/solvers/ice-wall.js     ← SAI Porter-lite r4 ICE WALL solver
+37. src/modules/solvers/simple-decrypt.js
+38. src/entry/content-early.js       ← Registry.boot()
 ```
 
 ### Isolated content_scripts (`content_scripts[1]`, isolated world, `run_at: document_idle`)
@@ -218,8 +219,15 @@ pipeline diagram lives in [pipelines.md](pipelines.md).)
   REVERT_ENDPOINT_TO_HOME) — never v1 auto-jobs messages.
 - **MAIN-world bridge.** `src/modules/game/auto-jobs-v2-bridge.js` (a plain
   IIFE, not a Module) is the MAIN endpoint for the v2 Network-Map context menu
-  (Open SAI / Open Market), driving the generic `COR3.game.*` helpers. Phase 2's
-  job execution (`JOB_FLOW` → `flow-v2-*`) will extend this bridge.
+  (Open SAI / Open Market). It drives the flows through client functions + direct
+  WS rather than DOM coordinate clicks: `COR3.game.desktop`
+  (`src/modules/game/desktop-window.js`) opens the windows via React handlers,
+  `__cor3SetEndpoint` connects (`network-map.set.endpoint`), and its `saiAccess()`
+  gains server access via **Active Access** (`__cor3SaiGetLoginStatus` →
+  `__cor3SaiLoginWithAccess`) or, with no grant, by **hacking** the server
+  (`COR3.game.loadout.ensureHack` installs HACK software → click the hack-tool →
+  the standalone solver wins the minigame → use the granted access). Phase 2's job
+  execution (`JOB_FLOW` → `flow-v2-*`) will extend this bridge.
 
 ## Cross-world communication
 

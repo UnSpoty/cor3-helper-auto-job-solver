@@ -68,6 +68,7 @@
         "src/modules/game/network-map.js",
         "src/modules/game/server-connect.js",
         "src/modules/game/sai-navigator.js",
+        "src/modules/game/desktop-window.js",
         "src/modules/game/auto-jobs-v2-bridge.js",
         "src/modules/game/loadout-panel.js",
         "src/modules/game/flows/_shared.js",

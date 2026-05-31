@@ -20,8 +20,13 @@
 // flow-v2 module (FLOW_START) and parks on FLOW_RESULT — so the loop pauses for
 // that job's minigame, then goes to DELAY:30s and the next cycle handles the
 // next job. file_decryption is wired; other types are skipped until their
-// flow-v2 module lands. A flow that can't do the job (no decrypt capability /
-// file missing / timeout) is written to AJV2_BUGGED_JOBS (MARK_AS_BUGGED).
+// flow-v2 module lands. Failure handling splits by `retryable`: a job that is
+// genuinely undoable (no owned decrypt software, malformed job) is written to
+// AJV2_BUGGED_JOBS (MARK_AS_BUGGED) and stays there until the user clears it;
+// a TRANSIENT failure (orchestrator timeout, DOM/loadout not ready yet,
+// flow-busy, STOP) is skipped and retried next cycle — never bugged. On STOP
+// or timeout the orchestrator sends FLOW_ABORT so the MAIN flow stops instead
+// of completing the job in-game behind our back.
 //
 // Responsibilities:
 //   • Own START/STOP. The toggle is driven by AUTOJOBS_V2_SETTINGS.enabled
@@ -66,6 +71,7 @@
                         C.MSG.AUTOJOBS_V2.TOGGLE,
                         C.MSG.AUTOJOBS_V2.OPEN_SAI_ACTION,
                         C.MSG.AUTOJOBS_V2.OPEN_MARKET_ACTION,
+                        C.MSG.AUTOJOBS_V2.REFRESH_BOARD,
                         C.MSG.AUTOJOBS_V2.OPEN_SAI,
                         C.MSG.AUTOJOBS_V2.OPEN_MARKET,
                         C.MSG.GAME.REFRESH_MARKET,
@@ -76,11 +82,13 @@
                         C.MSG.AUTOJOBS_V2.FLOW_START,
                         C.MSG.AUTOJOBS_V2.FLOW_RESULT,
                         C.MSG.AUTOJOBS_V2.FLOW_STEP,
+                        C.MSG.AUTOJOBS_V2.FLOW_ABORT,
                     ],
                 },
             });
             this._running = false;
             this._runToken = 0;
+            this._refreshing = false;   // one-shot Jobs-panel board refresh in flight
             this._state = { running: false, cycle: 0, node: null, startedAt: null, updatedAt: null, error: null };
         }
 
@@ -107,6 +115,11 @@
             this.track(Bus.runtime.on(C.MSG.AUTOJOBS_V2.OPEN_SAI_ACTION, (payload) => this._forwardGameAction(C.MSG.AUTOJOBS_V2.OPEN_SAI, 'Open SAI', payload)));
             this.track(Bus.runtime.on(C.MSG.AUTOJOBS_V2.OPEN_MARKET_ACTION, (payload) => this._forwardGameAction(C.MSG.AUTOJOBS_V2.OPEN_MARKET, 'Open Market', payload)));
 
+            // Jobs panel "refresh" — rebuild the saved board once from the
+            // current markets. Always available (even while the loop is
+            // stopped); refused only while the loop runs.
+            this.track(Bus.runtime.on(C.MSG.AUTOJOBS_V2.REFRESH_BOARD, () => { this._refreshBoardOnce(); return { success: true }; }));
+
             const settings = await Store.sync.getOne(SS.AUTOJOBS_V2_SETTINGS, { enabled: false });
             this._applyEnabled(!!settings.enabled);
         }
@@ -124,8 +137,10 @@
                 return { success: false, reason: 'running' };
             }
             const serverName = (payload && payload.serverName) || null;
+            const serverId = (payload && payload.serverId) || null;
+            const serverType = (payload && payload.serverType) || null;
             this.info(`${label} → ${serverName || 'home'}`);
-            Bus.window.post(windowType, { serverName });
+            Bus.window.post(windowType, { serverName, serverId, serverType });
             return { success: true };
         }
 
@@ -267,7 +282,12 @@
         // skipped.
         async _runJobFlows(token, cycle, packet) {
             const p = pipeline();
-            const bugged = packet.buggedJobs || await Store.local.getOne(SL.AJV2_BUGGED_JOBS, {});
+            // CHECK_CONDITION (the sole predecessor of JOB_FLOW) always loads
+            // the bugged registry onto the packet. A missing one means the
+            // pipeline was wired wrong — fail loudly rather than silently
+            // re-fetch (v2 rule: no defensive defaults).
+            if (!packet.buggedJobs) throw new Error('JOB_FLOW: packet.buggedJobs missing (CHECK_CONDITION must run first)');
+            const bugged = packet.buggedJobs;
             const inProgress = packet.queue.filter((j) => j.status === 'TAKEN' && !bugged[j.id]);
             if (inProgress.length === 0) { this.debug('JOB_FLOW → no in-progress jobs to run'); return; }
 
@@ -293,39 +313,69 @@
             }, token);
             if (!this._alive(token)) return;
 
-            if (!result) { await this._markBugged(job, 'flow timed out — no FLOW_RESULT', token); return; }
+            // STOP cancelled the dispatch (the flow was aborted) — the job is
+            // untouched; don't bug it, it resumes when the loop restarts.
+            if (result.cancelled) { this.info(`JOB_FLOW → ${job.id} cancelled (loop stopped)`); return; }
+
             if (result.success && result.didWork) {
                 this.info(`JOB_FLOW → ${job.id} completed`);
-            } else if (result.success && !result.didWork) {
-                await this._markBugged(job, result.reason || 'nothing to do', token);
-            } else {
-                await this._markBugged(job, result.reason || 'flow failed', token);
+                return;
             }
+            // TRANSIENT failure (timeout, DOM/loadout not ready, flow-busy):
+            // skip and retry next cycle — do NOT bug. Bugged jobs are permanent
+            // until the user clears them (no TTL), so only a genuine "can't do
+            // this job" (retryable:false / absent) is written to the registry.
+            if (result.retryable) {
+                this.info(`JOB_FLOW → ${job.id} not done this cycle (${result.reason || 'transient'}) — will retry`);
+                return;
+            }
+            await this._markBugged(job, result.reason || 'flow failed', token);
             // One job done → return → DELAY:30s → next cycle handles the next.
         }
 
-        // Post FLOW_START to MAIN and resolve with the matching FLOW_RESULT, or
-        // null on timeout. While the flow runs, relay its FLOW_STEP messages
-        // into the live pipeline node so the Flow Map highlights the sub-step
-        // the MAIN flow is on. Cancellation is handled by the caller's _alive.
+        // Post FLOW_START to MAIN and resolve with the matching FLOW_RESULT.
+        // Always resolves an object (never null):
+        //   • the FLOW_RESULT envelope                         — the flow replied
+        //   • { success:false, retryable:true, reason:'flow timed out … ' } — timeout
+        //   • { cancelled:true }                               — STOP invalidated the run
+        // On timeout OR cancel it posts FLOW_ABORT so the MAIN flow stops
+        // (rather than running on and completing the job in-game after we've
+        // already given up), and tears down the FLOW_STEP/FLOW_RESULT
+        // subscriptions immediately — they live outside this.track(), so a
+        // `watch` interval drops them within 200ms of STOP instead of leaking
+        // for up to FLOW_TIMEOUT_MS. While the flow runs, FLOW_STEP messages
+        // are relayed into the live pipeline node so the Flow Map highlights
+        // the sub-step the MAIN flow is on.
         _dispatchFlow(payload, token) {
             return new Promise((resolve) => {
                 let settled = false;
-                const finish = (v) => {
+                const finish = (v, abort) => {
                     if (settled) return;
                     settled = true;
                     try { unsubResult(); } catch (_) { /* noop */ }
                     try { unsubStep(); } catch (_) { /* noop */ }
                     clearTimeout(timer);
+                    clearInterval(watch);
+                    if (abort) Bus.window.post(C.MSG.AUTOJOBS_V2.FLOW_ABORT, { jobId: payload.jobId });
                     resolve(v);
                 };
                 const unsubStep = Bus.window.on(C.MSG.AUTOJOBS_V2.FLOW_STEP, (env) => {
                     if (env && env.jobId === payload.jobId && env.node) this._setNode(env.node, token);
                 });
                 const unsubResult = Bus.window.on(C.MSG.AUTOJOBS_V2.FLOW_RESULT, (env) => {
-                    if (env && env.jobId === payload.jobId) finish(env);
+                    if (env && env.jobId === payload.jobId) finish(env, false);
                 });
-                const timer = setTimeout(() => finish(null), LOOP.FLOW_TIMEOUT_MS);
+                // STOP / reload → abort the MAIN flow, resolve as cancelled, and
+                // drop the subscriptions promptly.
+                const watch = setInterval(() => {
+                    if (!this._alive(token)) finish({ cancelled: true }, true);
+                }, 200);
+                // Hard ceiling → retryable timeout (abort + retry next cycle,
+                // not a permanent bug for a merely-slow minigame).
+                const timer = setTimeout(
+                    () => finish({ success: false, retryable: true, reason: 'flow timed out — no FLOW_RESULT' }, true),
+                    LOOP.FLOW_TIMEOUT_MS,
+                );
                 Bus.window.post(C.MSG.AUTOJOBS_V2.FLOW_START, payload);
             });
         }
@@ -338,14 +388,47 @@
             this.warn(`MARK_AS_BUGGED ${job.id}: ${reason}`);
         }
 
+        // One-shot board rebuild for the popup Jobs "refresh" button: run the
+        // read-only half of the pipeline (servers → access → markets → queue →
+        // condition) and republish AJV2_JOB_QUEUE, WITHOUT accepting or running
+        // any job. Refused while the loop runs (it already rebuilds each cycle)
+        // and debounced against itself. Does not touch the Flow-Map state.
+        async _refreshBoardOnce() {
+            if (this._running) { this.warn('Jobs refresh ignored — the pipeline is running (it rebuilds the board each cycle)'); return; }
+            if (this._refreshing) { this.debug('Jobs refresh already in progress'); return; }
+            const p = pipeline();
+            if (!p) { this.error('Jobs refresh — pipeline stages not loaded'); return; }
+            this._refreshing = true;
+            try {
+                const ctx = this._makeCtx(() => this._refreshing);
+                this.info('Jobs board refresh (one-shot) — rebuilding the queue from current markets');
+                let packet = p.createPacket(0);
+                packet = await p.stages.getServers.run(packet, ctx);
+                packet = await p.stages.checkAccess.run(packet, ctx);
+                packet = await p.stages.updateMarkets.run(packet, ctx);
+                packet = await p.stages.jobQueue.run(packet, ctx);
+                packet = await p.stages.checkCondition.run(packet, ctx);
+                this.info('Jobs board refresh done');
+            } catch (e) {
+                this.error('Jobs board refresh failed', { error: String(e && e.message || e) });
+            } finally {
+                this._refreshing = false;
+            }
+        }
+
         _ctx(token) {
+            // Lets long-running stages (JOB_ACCEPTION's paced accept batch) bail
+            // the instant STOP invalidates this run.
+            return this._makeCtx(() => this._alive(token));
+        }
+
+        // ctx shared by the cycle loop and the one-shot board refresh.
+        _makeCtx(alive) {
             return {
                 store: Store,
                 bus: Bus,
                 C,
-                // Lets long-running stages (JOB_ACCEPTION's paced accept batch)
-                // bail the instant STOP invalidates this run.
-                alive: () => this._alive(token),
+                alive,
                 log: {
                     debug: (m, c) => this.debug(m, c),
                     info: (m, c) => this.info(m, c),

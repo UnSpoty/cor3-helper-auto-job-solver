@@ -302,13 +302,18 @@ loadout:
    (an owned, resource-fitting software covers it) → equip it; `swap` (owned SW
    covers it but needs resources freed) → unequip everything, then equip; `none`
    → return `didWork:false` (→ bugged).
-3. Open the file from the on-screen **Downloads** folder (`COR3.game.sai.downloadsWatcher`).
+3. Find + open the file **purely over WS** (no DOM scrape): `__cor3DesktopOpenFolder`
+   (Downloads, id cached in `__cor3DownloadFolderId`) → match `files[]` by name/ext
+   → `__cor3DesktopOpenFile(fileId)`. The raw `open.file` is REQUIRED — a cor3.gg
+   update made a DOM double-click open a "File Analysis" info window
+   (`desktop.get.file.analysis` → `FileAnalysisProtocolApplication`) instead of the
+   minigame; WS `open.file` starts the minigame directly (verified live).
 4. Start the standalone solvers (`MSG.SOLVER.START_*`) and wait for the minigame
    (config-hack / ICE WALL / Simple Decrypt) to mount, then to close.
 5. Send `job.complete`; report `didWork:true`.
 
-> Status: written from the v1 reference + the loadout internals; **not yet
-> verified live in-browser** (DOM selectors + loadout swap need a real run).
+> Status: the WS file-find/open path + the direct minigame launch are verified
+> live; the full solve→complete cycle needs a run with the loaded extension.
 
 **Remaining types — TODO:** ip_injection/ip_cleanup (Transit Access),
 file_elimination (FILES), log_deletion/log_download (LOGS),
@@ -327,8 +332,9 @@ plus `CLOSE_SAI_TERMINAL`.
 | Job List | `ui/sections/auto-jobs-v2/job-list.js` | `render()`, `jobRow()` |
 | JOB_FLOW dispatch | `automation/auto-jobs-v2.js` | `_runJobFlows()`, `_dispatchFlow()`, `_markBugged()` |
 | file_decryption flow (MAIN) | `game/flows/auto-jobs-v2/file-decryption.js` | `runFileDecryption()` |
-| Loadout API (MAIN) | `game/loadout-panel.js` | `COR3.game.loadout.planDecrypt/ensureDecrypt` |
-| MAIN bridge | `game/auto-jobs-v2-bridge.js` | NM context-menu Open SAI / Open Market |
+| Loadout API (MAIN) | `game/loadout-panel.js` | `COR3.game.loadout.planDecrypt/ensureDecrypt` (DECRYPT/fileTypes) + `planHack/ensureHack` (HACK/serverTypes) |
+| Desktop window helper (MAIN) | `game/desktop-window.js` | `COR3.game.desktop.openApp/openAppAndWait/invokeReactClick/findClickableByText/selectServerTile/findPanelButton` |
+| MAIN bridge | `game/auto-jobs-v2-bridge.js` | Open SAI/Market — client-fn window-open + WS connect (`__cor3SetEndpoint`); `saiAccess()` = Active Access (`__cor3SaiGetLoginStatus`/`__cor3SaiLoginWithAccess`) OR hack (`ensureHack` → click hack-tool → solver → grant). No DOM coordinate clicks |
 
 ---
 
@@ -485,6 +491,8 @@ Helpers exposed:
 - `COR3.game.serverConnect.{connect, getSaiForServer}`
 - `COR3.game.sai.{findOrOpenSai, navigateToSection, waitForSaiContent, addIpViaModal, downloadsWatcher, find* row helpers, SEL}`
 - `COR3.game.flows.{isWatching, setWatching, sendDone, sendTimeout, userLog, startFlow}`
+- `COR3.game.desktop.{openApp, openAppAndWait, isAppOpen, invokeReactClick, findClickableByText, findServerTile, selectServerTile, findPanelButton, waitFor}` (v2 bridge — opens windows via React handlers, no DOM coordinate clicks)
+- `COR3.game.loadout.{getSnapshot, decryptExtensions, planDecrypt, ensureDecrypt, hackServerTypes, planHack, ensureHack}` (headless capability/install API for the v2 file-decryption flow + the bridge's Open-SAI hack path)
 
 ---
 
