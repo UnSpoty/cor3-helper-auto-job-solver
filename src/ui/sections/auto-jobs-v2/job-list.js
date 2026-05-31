@@ -10,6 +10,11 @@
 //     marketId, rewardCredits, eligible, skipReason }] }
 // `eligible` is null until CHECK_JOBS_CONDITION runs, then a bool.
 //
+// Also reads AJV2_PIPELINE_STATE.batch (the live JOB_FLOW batch:
+//   { label, serverId, serverName, jobIds, total, index, currentJobId, oneLogin })
+// to render a "running N jobs in one batch on <server>" banner and light up the
+// rows being executed together — so the user sees the per-server batching live.
+//
 // Exposes attach() on COR3.uiComponentsV2.jobList.
 
 (function () {
@@ -27,6 +32,12 @@
         return e;
     }
 
+    // Stable signature of a live-batch descriptor — used to skip re-renders on
+    // pipeline-state writes that don't change the batch (most node transitions).
+    function batchSig(b) {
+        return b ? `${b.serverId}|${b.currentJobId}|${b.index}|${b.total}|${(b.jobIds || []).join(',')}` : '';
+    }
+
     // Remove a job from the v2 bugged registry. The Job List subscribes to the
     // key, so the BUGGED flag clears the instant this resolves.
     async function unbugJob(jobId) {
@@ -37,15 +48,21 @@
         }
     }
 
-    function jobRow(job, bugInfo) {
+    function jobRow(job, bugInfo, batch) {
         const isBugged = !!bugInfo;
         const inProgress = !isBugged && job.status === 'TAKEN';
         const skipped = !isBugged && !inProgress && job.eligible === false;
         const pending = !isBugged && !inProgress && job.eligible == null;
+        // Live-batch membership (from AJV2_PIPELINE_STATE.batch): these TAKEN
+        // jobs are being run together this cycle; one is dispatching right now.
+        const inBatch = !!(batch && Array.isArray(batch.jobIds) && batch.jobIds.indexOf(job.id) !== -1);
+        const isRunning = !!(batch && batch.currentJobId === job.id);
 
         const row = el('div', 'ajv2-job'
             + (skipped ? ' is-skip' : '')
             + (inProgress ? ' is-active' : '')
+            + (inBatch ? ' is-batch' : '')
+            + (isRunning ? ' is-running' : '')
             + (isBugged ? ' is-bugged' : ''));
 
         const head = el('div', 'ajv2-job-head');
@@ -58,7 +75,12 @@
             unbug.addEventListener('click', (e) => { e.stopPropagation(); unbugJob(job.id); });
             head.appendChild(unbug);
         } else if (inProgress) {
-            head.appendChild(el('span', 'pill ok', 'in-progress'));
+            if (isRunning) {
+                head.appendChild(el('span', 'pill ajv2-batch-run', `running ▶ ${batch.index}/${batch.total}`));
+            } else {
+                head.appendChild(el('span', 'pill ok', 'in-progress'));
+                if (inBatch) head.appendChild(el('span', 'pill ajv2-batch', 'batch'));
+            }
         } else if (skipped) {
             const skip = el('span', 'pill ajv2-skip', 'SKIP');
             if (job.skipReason) skip.title = job.skipReason;
@@ -88,7 +110,7 @@
     // One market block: a clickable header (caret + name + status + count) and a
     // collapsible body of its jobs. `collapsed` is a shared Set of slot keys, so
     // the expand/collapse state survives the component's frequent re-renders.
-    function marketSection(market, jobs, bugged, collapsed) {
+    function marketSection(market, jobs, bugged, collapsed, batch) {
         const slot = market.slot;
         const isCollapsed = collapsed.has(slot);
         const sec = el('div', 'ajv2-market' + (market.reachable === false ? ' is-unreachable' : ''));
@@ -112,7 +134,7 @@
             const why = market.reachable === false ? (market.reason || 'unreachable') : 'No jobs.';
             bodyWrap.appendChild(el('div', 'muted xs ajv2-market-empty', why));
         } else {
-            for (const job of jobs) bodyWrap.appendChild(jobRow(job, bugged && bugged[job.id]));
+            for (const job of jobs) bodyWrap.appendChild(jobRow(job, bugged && bugged[job.id], batch));
         }
         sec.appendChild(bodyWrap);
 
@@ -145,6 +167,7 @@
         let switches = {};
         let overrides = {};
         let bugged = {};
+        let batch = null;   // AJV2_PIPELINE_STATE.batch — the live JOB_FLOW batch
 
         // Expand/collapse state per market slot — survives the frequent
         // re-renders (lives in this closure; resets when the popup reopens).
@@ -232,6 +255,23 @@
                     ? `${avail.length} available · ${eligible} eligible · ${skipped} skip${active}${buggedSuffix} · ${cyc}`
                     : `${avail.length} available${active}${buggedSuffix} · pending · ${cyc}`;
 
+            // Live-batch banner — only while JOB_FLOW is actively running a
+            // batch (the orchestrator clears AJV2_PIPELINE_STATE.batch at cycle
+            // start / on STOP). Shows the server + "one login" for SAI batches.
+            if (batch && batch.total) {
+                const banner = el('div', 'ajv2-batch-banner');
+                banner.appendChild(el('span', 'ajv2-batch-dot'));
+                const text = batch.serverId
+                    ? `Batch: ${batch.total} ${batch.total === 1 ? 'job' : 'jobs'} on ${batch.serverName || 'server'}`
+                    : `Running: ${batch.label || 'job'}`;
+                banner.appendChild(el('span', 'ajv2-batch-text', text));
+                const metaBits = [];
+                if (batch.oneLogin) metaBits.push('one login');
+                if (batch.index) metaBits.push(`${batch.index}/${batch.total}`);
+                if (metaBits.length) banner.appendChild(el('span', 'ajv2-batch-meta', metaBits.join(' · ')));
+                list.appendChild(banner);
+            }
+
             // Group the derived rows by their market slot.
             const bySlot = {};
             for (const j of rows) (bySlot[j.marketSlot] = bySlot[j.marketSlot] || []).push(j);
@@ -243,7 +283,7 @@
                 ? queue.markets
                 : Object.keys(bySlot).map((slot) => ({ slot, reachable: true, refreshed: true, jobCount: bySlot[slot].length }));
 
-            for (const m of markets) list.appendChild(marketSection(m, bySlot[m.slot] || [], bugged, collapsed));
+            for (const m of markets) list.appendChild(marketSection(m, bySlot[m.slot] || [], bugged, collapsed, batch));
         }
 
         // The display re-renders when the job board OR the switches/overrides
@@ -255,6 +295,15 @@
             if (changes[SL.AJV2_MASTER_SWITCHES]) { switches = changes[SL.AJV2_MASTER_SWITCHES].newValue || {}; dirty = true; }
             if (changes[SL.AJV2_SERVER_OVERRIDES]) { overrides = changes[SL.AJV2_SERVER_OVERRIDES].newValue || {}; dirty = true; }
             if (changes[SL.AJV2_BUGGED_JOBS]) { bugged = changes[SL.AJV2_BUGGED_JOBS].newValue || {}; dirty = true; }
+            // The live batch rides on the pipeline state (written every node
+            // transition); pull just its `batch` field. Re-render ONLY when the
+            // batch identity/progress actually changes — the state is written on
+            // every node transition, but the batch field changes far less often,
+            // so a signature gate avoids a re-render storm during a cycle.
+            if (changes[SL.AJV2_PIPELINE_STATE]) {
+                const nb = (changes[SL.AJV2_PIPELINE_STATE].newValue || {}).batch || null;
+                if (batchSig(nb) !== batchSig(batch)) { batch = nb; dirty = true; }
+            }
             if (dirty) render();
         });
         Promise.all([
@@ -262,7 +311,8 @@
             Store.local.getOne(SL.AJV2_MASTER_SWITCHES, {}),
             Store.local.getOne(SL.AJV2_SERVER_OVERRIDES, {}),
             Store.local.getOne(SL.AJV2_BUGGED_JOBS, {}),
-        ]).then(([q, s, o, b]) => { lastQueue = q; switches = s || {}; overrides = o || {}; bugged = b || {}; render(); });
+            Store.local.getOne(SL.AJV2_PIPELINE_STATE, null),
+        ]).then(([q, s, o, b, ps]) => { lastQueue = q; switches = s || {}; overrides = o || {}; bugged = b || {}; batch = (ps || {}).batch || null; render(); });
 
         return {
             destroy() {

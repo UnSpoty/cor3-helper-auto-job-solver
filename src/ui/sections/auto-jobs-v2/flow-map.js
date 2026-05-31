@@ -48,12 +48,13 @@
     // in-progress BUGGED? detour. All four decision/skip boxes share one row so
     // their branches are clean horizontals.
     const NODES = [
-        { id: NODE.START,           label: 'START',                       type: 'terminal', x: CX,    y: 40 },
-        { id: NODE.DELAY_INITIAL,   label: 'DELAY 10s',                   type: 'delay',    x: CX,    y: 108 },
-        { id: NODE.GET_SERVERS,     label: 'GET_SERVERS',                 type: 'module',   x: CX,    y: 180 },
-        { id: NODE.CHECK_ACCESS,    label: 'CHECK_SERVERS_ACCESABILITY',  type: 'module',   x: CX,    y: 252 },
-        { id: NODE.UPDATE_MARKETS,  label: 'UPDATE_MARKETS',              type: 'module',   x: CX,    y: 324 },
-        { id: NODE.JOB_QUEUE,       label: 'JOB_QUEUE',                   type: 'module',   x: CX,    y: 396 },
+        { id: NODE.START,           label: 'START',                       type: 'terminal', x: CX,    y: 36 },
+        { id: NODE.DELAY_INITIAL,   label: 'DELAY 10s',                   type: 'delay',    x: CX,    y: 96 },
+        { id: NODE.GET_SERVERS,     label: 'GET_SERVERS',                 type: 'module',   x: CX,    y: 156 },
+        { id: NODE.CHECK_ACCESS,    label: 'CHECK_SERVERS_ACCESABILITY',  type: 'module',   x: CX,    y: 216 },
+        { id: NODE.UPDATE_MARKETS,  label: 'UPDATE_MARKETS',              type: 'module',   x: CX,    y: 276 },
+        { id: NODE.JOB_QUEUE,       label: 'JOB_QUEUE',                   type: 'module',   x: CX,    y: 336 },
+        { id: NODE.READY_TO_COMPLETE, label: 'READY TO COMPLETE',         type: 'module',   x: CX,    y: 408 },
         { id: NODE.QUEUE_EMPTY,     label: 'QUEUE EMPTY?',                type: 'decision', x: CX,    y: ROW_DECISION },
         { id: NODE.HAVE_TASKS_IN_PROGRESS, label: 'IN PROGRESS?',         type: 'decision', x: COL_2, y: ROW_DECISION },
         { id: NODE.BUGGED_JOBS,     label: 'BUGGED?',                     type: 'decision', x: COL_3, y: ROW_DECISION },
@@ -96,7 +97,8 @@
         { from: NODE.GET_SERVERS,    to: NODE.CHECK_ACCESS,   kind: 'down' },
         { from: NODE.CHECK_ACCESS,   to: NODE.UPDATE_MARKETS, kind: 'down' },
         { from: NODE.UPDATE_MARKETS, to: NODE.JOB_QUEUE,      kind: 'down' },
-        { from: NODE.JOB_QUEUE,      to: NODE.QUEUE_EMPTY,    kind: 'down' },
+        { from: NODE.JOB_QUEUE,      to: NODE.READY_TO_COMPLETE, kind: 'down' },
+        { from: NODE.READY_TO_COMPLETE, to: NODE.QUEUE_EMPTY, kind: 'down' },
         { from: NODE.QUEUE_EMPTY,    to: NODE.DELAY_CYCLE,    kind: 'down',  label: 'YES' },
         { from: NODE.QUEUE_EMPTY,    to: NODE.HAVE_TASKS_IN_PROGRESS, kind: 'right', label: 'NO' },
         { from: NODE.HAVE_TASKS_IN_PROGRESS, to: NODE.CHECK_CONDITION, kind: 'down',  label: 'NO' },
@@ -121,6 +123,59 @@
 
         { from: NODE.DELAY_CYCLE,    to: NODE.GET_SERVERS,     kind: 'loop',  label: 'loop' },
     ];
+
+    // ── SAI flows — collapsed fan ────────────────────────────────────────────
+    // The 7 SAI mutation flows are structurally identical (ACCESS → action →
+    // COMPLETE), so they SHARE one ACCESS and one COMPLETE node with their 7
+    // distinct action nodes fanning between them — no repeated columns, one
+    // labelled edge off JOB_FLOW. The per-flow *_ACCESS / *_COMPLETE ids the
+    // flow modules emit alias onto SAI_ACCESS / SAI_COMPLETE for live highlight
+    // (NODE_ALIAS, used in setActive). decrypt_extract has a minigame so it
+    // keeps its own short lane, like file_decryption.
+    const SAI_ACCESS_X = 1150, FAN_X = 1430, SAI_COMPLETE_X = 1700;
+    // FAN_TOP/GAP chosen so the centre row (SAI_ACCESS/COMPLETE y) lands in a
+    // CLEAR horizontal band of the file_decryption column (between FD_CHECK_LOADOUT
+    // y=866 and FD_INSTALL_SW y=960), so the JOB_FLOW→SAI_ACCESS edge doesn't
+    // plough through an FD node on its way across.
+    const FAN_TOP = 720, FAN_GAP = 72;
+    const SAI_ACTIONS = [
+        { id: NODE.II_INJECT,   label: 'INJECT IPs' },
+        { id: NODE.IC_CLEANUP,  label: 'REMOVE IPs' },
+        { id: NODE.FE_DELETE,   label: 'DELETE FILE' },
+        { id: NODE.DD_DOWNLOAD, label: 'DOWNLOAD' },
+        { id: NODE.FU_UPLOAD,   label: 'UPLOAD' },
+        { id: NODE.LG_DOWNLOAD, label: 'DOWNLOAD LOG' },
+        { id: NODE.LD_DELETE,   label: 'DELETE LOG' },
+    ];
+    const FAN_MID = FAN_TOP + Math.floor((SAI_ACTIONS.length - 1) / 2) * FAN_GAP;   // centre row
+    NODES.push({ id: NODE.SAI_ACCESS,   label: 'SAI ACCESS', type: 'module', x: SAI_ACCESS_X,   y: FAN_MID });
+    NODES.push({ id: NODE.SAI_COMPLETE, label: 'COMPLETE',   type: 'module', x: SAI_COMPLETE_X, y: FAN_MID });
+    SAI_ACTIONS.forEach((a, i) => NODES.push({ id: a.id, label: a.label, type: 'module', x: FAN_X, y: FAN_TOP + i * FAN_GAP }));
+    EDGES.push({ from: NODE.JOB_FLOW, to: NODE.SAI_ACCESS, kind: 'right', viaX: 575, label: 'SAI ops' });
+    SAI_ACTIONS.forEach((a) => {
+        EDGES.push({ from: NODE.SAI_ACCESS, to: a.id, kind: 'right' });
+        EDGES.push({ from: a.id, to: NODE.SAI_COMPLETE, kind: 'right' });
+    });
+    EDGES.push({ from: NODE.SAI_COMPLETE, to: NODE.DELAY_CYCLE, kind: 'merge', route: { dropX: SAI_COMPLETE_X, turnY: 1234, enterX: 252 } });
+
+    // Per-flow ACCESS/COMPLETE step ids → the shared display nodes.
+    const NODE_ALIAS = {};
+    [NODE.II_ACCESS, NODE.IC_ACCESS, NODE.FE_ACCESS, NODE.DD_ACCESS, NODE.FU_ACCESS, NODE.LG_ACCESS, NODE.LD_ACCESS]
+        .forEach((id) => { NODE_ALIAS[id] = NODE.SAI_ACCESS; });
+    [NODE.II_COMPLETE, NODE.IC_COMPLETE, NODE.FE_COMPLETE, NODE.DD_COMPLETE, NODE.FU_COMPLETE, NODE.LG_COMPLETE, NODE.LD_COMPLETE]
+        .forEach((id) => { NODE_ALIAS[id] = NODE.SAI_COMPLETE; });
+
+    // decrypt_extract — own lane (SAI download + decrypt minigame), like FD.
+    const DE_X = 1980;
+    NODES.push({ id: NODE.DE_ACCESS,   label: 'ACCESS',       type: 'module', x: DE_X, y: 640 });
+    NODES.push({ id: NODE.DE_DOWNLOAD, label: 'SAI DOWNLOAD', type: 'module', x: DE_X, y: 736 });
+    NODES.push({ id: NODE.DE_SOLVE,    label: 'SOLVE',        type: 'module', x: DE_X, y: 832 });
+    NODES.push({ id: NODE.DE_COMPLETE, label: 'COMPLETE',     type: 'module', x: DE_X, y: 928 });
+    EDGES.push({ from: NODE.JOB_FLOW,    to: NODE.DE_ACCESS,   kind: 'right', viaX: 560, label: 'decrypt_extract' });
+    EDGES.push({ from: NODE.DE_ACCESS,   to: NODE.DE_DOWNLOAD, kind: 'down' });
+    EDGES.push({ from: NODE.DE_DOWNLOAD, to: NODE.DE_SOLVE,    kind: 'down' });
+    EDGES.push({ from: NODE.DE_SOLVE,    to: NODE.DE_COMPLETE, kind: 'down' });
+    EDGES.push({ from: NODE.DE_COMPLETE, to: NODE.DELAY_CYCLE, kind: 'merge', route: { dropX: DE_X, turnY: 1244, enterX: 264 } });
 
     // DELAY node → its total duration, so the map can run a local countdown
     // while the orchestrator sleeps (no storage writes happen mid-delay).
@@ -202,8 +257,11 @@
             case 'right': {
                 const p0 = A.right, p1 = B.left;
                 if (Math.abs(p0.y - p1.y) < 0.5) return [p0, p1];
-                const midX = (p0.x + p1.x) / 2;
-                return [p0, { x: midX, y: p0.y }, { x: midX, y: p1.y }, p1];
+                // `viaX` forces the vertical jog at a fixed early x (instead of
+                // the midpoint) so a far-right target's edge can rise/drop out of
+                // JOB_FLOW before the file_decryption column, not plough through it.
+                const jogX = (edge.viaX != null) ? edge.viaX : (p0.x + p1.x) / 2;
+                return [p0, { x: jogX, y: p0.y }, { x: jogX, y: p1.y }, p1];
             }
             case 'merge': {
                 if (edge.route) {
@@ -242,7 +300,12 @@
         const A = anchors(a), B = anchors(b);
         switch (edge.kind) {
             case 'down':  return { x: A.bottom.x + 12, y: (A.bottom.y + B.top.y) / 2 };
-            case 'right': return { x: (A.right.x + B.left.x) / 2, y: A.right.y - 7 };
+            case 'right':
+                // viaX edges jog early — label by the vertical jog so the two
+                // JOB_FLOW branch labels ('SAI ops' / 'decrypt_extract') don't
+                // collide out over the columns.
+                if (edge.viaX != null) return { x: edge.viaX + 10, y: (A.right.y + B.left.y) / 2 };
+                return { x: (A.right.x + B.left.x) / 2, y: A.right.y - 7 };
             case 'merge':
                 // Only BUGGED? → CHECK_CONDITION (no route) carries a label;
                 // the routed DELAY merges have none.
@@ -427,19 +490,31 @@
         fitBtn.addEventListener('click', fit);
 
         // ── Highlight ──────────────────────────────────────────────────────
-        // Drive purely by the active node id (the graph is cyclic, so there is
-        // no single "path taken" to colour). The active node pulses; the edges
-        // leading INTO it light up.
+        // Drive by the active node id, lighting ONLY the single edge we actually
+        // traversed: the previous active node → the current one. The graph is
+        // cyclic and DELAY_CYCLE is the convergence of MANY merge edges, so we
+        // must NOT light every edge that ENDS at the current node — that would
+        // make it look like we came from every block at once. We remember the
+        // previous (alias-resolved) active id across calls and light just
+        // `prevActive -> aid`. If that pair isn't a defined edge (a jump, or the
+        // first activation), no edge lights — only the node pulses.
+        let prevActive = null;
         function setActive(activeId) {
+            // The 7 SAI flows share ACCESS/COMPLETE display nodes: map a per-flow
+            // *_ACCESS / *_COMPLETE step onto the shared node so it lights up.
+            const aid = (activeId && NODE_ALIAS[activeId]) || activeId;
             for (const [id, g] of nodeEls) {
-                g.classList.toggle('is-active', id === activeId);
+                g.classList.toggle('is-active', id === aid);
             }
+            // Light only the single traversed edge prevActive -> aid (both ends
+            // already alias-resolved: aid here, prevActive when it was stored).
+            const activeKey = (aid != null && prevActive != null) ? `${prevActive}->${aid}` : null;
             for (const [key, path] of edgeEls) {
-                const toId = key.split('->')[1];
-                const on = activeId != null && toId === activeId;
+                const on = activeKey != null && key === activeKey;
                 path.classList.toggle('is-active', on);
                 path.setAttribute('marker-end', on ? 'url(#fm-arrow-active)' : 'url(#fm-arrow)');
             }
+            prevActive = aid;
         }
 
         // DELAY countdown — runs locally between storage writes (the
@@ -481,7 +556,11 @@
             setActive(state.node || null);
             if (state.node && DELAY_MS[state.node]) startDelayAnim(state.node, state.updatedAt);
             else stopDelayAnim();
-            const n = state.node ? byId.get(state.node) : null;
+            // Resolve per-flow step ids (ii-access, ic-complete, …) through the
+            // same NODE_ALIAS the highlight uses — they aren't in NODES, so a raw
+            // byId.get would miss and show the bare id in the status readout.
+            const resolvedId = state.node ? (NODE_ALIAS[state.node] || state.node) : null;
+            const n = resolvedId ? byId.get(resolvedId) : null;
             const label = n ? n.label : (state.node || '—');
             const cyc = state.cycle ? ` · cycle ${state.cycle}` : '';
             status.textContent = state.error ? `error: ${state.error}` : `${label}${cyc}`;

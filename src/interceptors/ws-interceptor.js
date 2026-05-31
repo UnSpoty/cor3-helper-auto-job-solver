@@ -463,7 +463,7 @@
             if (payload.event.action === 'set.endpoint') {
                 if (payload.data && Array.isArray(payload.data.servers)) {
                     const ep = payload.data.servers.find((s) => s && s.isEndpoint === true);
-                    if (ep && ep.id) currentEndpoint = ep.id;
+                    if (ep && ep.id) setCurrentEndpoint(ep.id);
                 }
                 if (payload.error && payload.error.message === 'no-path-to-server') {
                     console.log('[COR3] no-path-to-server for', payload.error.serverId);
@@ -499,7 +499,12 @@
         //   • login.with-access — the server's verdict on our login. The bridge
         //     only logged that the request was SENT, so surface the real
         //     success/failure here (on MSG.JOB.LOG, which the v2 bridge mirrors).
-        // Other sai actions (transit / files) have no consumer here yet.
+        //   • get.summary / get.transit / get.files / get.logs — the SAI tab
+        //     reads, relayed to MSG.WS.SAI_* so an Auto-Jobs v2 flow can awaitBus
+        //     the reply (no DOM scrape). Wire shapes in tmp_research/sai-wire-capture.md.
+        //   • transit.add/remove · file.download/delete · log.download/delete —
+        //     mutation verdicts, relayed on a single MSG.WS.SAI_ACTION channel
+        //     tagged with `action` (the flow filters on it).
         if (eventName === 'sai' && payload && payload.event) {
             const action = payload.event.action;
             if (action === 'get.login.status' && payload.data) {
@@ -509,6 +514,18 @@
             } else if (action === 'login.with-access') {
                 if (payload.error) post(MSG.JOB.LOG, { msg: `[sai] login.with-access failed: ${(payload.error && (payload.error.message || payload.error.key)) || 'error'}`, level: 'warn' });
                 else if (payload.data && payload.data.success) post(MSG.JOB.LOG, { msg: '[sai] login.with-access → success', level: 'info' });
+            } else if (action === 'get.summary') {
+                post(MSG.WS.SAI_SUMMARY, { data: payload.data || null, error: payload.error || null });
+            } else if (action === 'get.transit') {
+                post(MSG.WS.SAI_TRANSIT, { data: payload.data || null, error: payload.error || null });
+            } else if (action === 'get.files') {
+                post(MSG.WS.SAI_FILES, { data: payload.data || null, error: payload.error || null });
+            } else if (action === 'get.logs') {
+                post(MSG.WS.SAI_LOGS, { data: payload.data || null, error: payload.error || null });
+            } else if (action === 'transit.add' || action === 'transit.remove'
+                || action === 'file.download' || action === 'file.delete' || action === 'file.upload'
+                || action === 'log.download' || action === 'log.delete') {
+                post(MSG.WS.SAI_ACTION, { action, data: payload.data || null, error: payload.error || null });
             }
             return;
         }
@@ -1186,6 +1203,62 @@
         return wsSendRpc('sai', 'hack.start', { serverId });
     };
 
+    // SAI subsystem ops (transit / files / logs) for the Auto-Jobs v2 flows.
+    // Each is the WS request the in-game SAI terminal sends when you open a tab
+    // or click a row — captured live (tmp_research/sai-wire-capture.md). The
+    // reads' replies are relayed to MSG.WS.SAI_* (the flow awaitBus's them); the
+    // mutations' verdicts land on MSG.WS.SAI_ACTION. All require the SAI session
+    // to be logged in (login.with-access) on `serverId` first. Fire-and-forget
+    // (return the wsSendRpc bool) — the flow reads the reply off the bus.
+    root.__cor3SaiGetSummary = function (serverId) {
+        if (!serverId) { console.warn('[COR3] __cor3SaiGetSummary: missing serverId'); return false; }
+        return wsSendRpc('sai', 'get.summary', { serverId });
+    };
+    root.__cor3SaiGetTransit = function (serverId) {
+        if (!serverId) { console.warn('[COR3] __cor3SaiGetTransit: missing serverId'); return false; }
+        return wsSendRpc('sai', 'get.transit', { serverId });
+    };
+    root.__cor3SaiTransitAdd = function (serverId, ip, description, accessTimeframe) {
+        if (!serverId || !ip) { console.warn('[COR3] __cor3SaiTransitAdd: missing serverId/ip'); return false; }
+        return wsSendRpc('sai', 'transit.add', { serverId, ip, description: description || '', accessTimeframe: accessTimeframe || null });
+    };
+    root.__cor3SaiTransitRemove = function (serverId, ip) {
+        if (!serverId || !ip) { console.warn('[COR3] __cor3SaiTransitRemove: missing serverId/ip'); return false; }
+        return wsSendRpc('sai', 'transit.remove', { serverId, ip });
+    };
+    root.__cor3SaiGetFiles = function (serverId) {
+        if (!serverId) { console.warn('[COR3] __cor3SaiGetFiles: missing serverId'); return false; }
+        return wsSendRpc('sai', 'get.files', { serverId });
+    };
+    root.__cor3SaiFileDownload = function (serverId, fileId) {
+        if (!serverId || !fileId) { console.warn('[COR3] __cor3SaiFileDownload: missing serverId/fileId'); return false; }
+        return wsSendRpc('sai', 'file.download', { serverId, fileId });
+    };
+    root.__cor3SaiFileDelete = function (serverId, fileId) {
+        if (!serverId || !fileId) { console.warn('[COR3] __cor3SaiFileDelete: missing serverId/fileId'); return false; }
+        return wsSendRpc('sai', 'file.delete', { serverId, fileId });
+    };
+    root.__cor3SaiGetLogs = function (serverId) {
+        if (!serverId) { console.warn('[COR3] __cor3SaiGetLogs: missing serverId'); return false; }
+        return wsSendRpc('sai', 'get.logs', { serverId });
+    };
+    root.__cor3SaiLogDownload = function (serverId, seq) {
+        if (!serverId || seq == null) { console.warn('[COR3] __cor3SaiLogDownload: missing serverId/seq'); return false; }
+        return wsSendRpc('sai', 'log.download', { serverId, seq });
+    };
+    root.__cor3SaiLogDelete = function (serverId, seq) {
+        if (!serverId || seq == null) { console.warn('[COR3] __cor3SaiLogDelete: missing serverId/seq'); return false; }
+        return wsSendRpc('sai', 'log.delete', { serverId, seq });
+    };
+    // data_upload / file_upload — push a Downloads file to the server. The
+    // payload shape is the best-guess {serverId, fileId} (fileId = the player's
+    // Downloads file id) — NOT yet captured live (the SAI Files tab needs a
+    // LOAD/upload tool equipped). Verify live before relying on it.
+    root.__cor3SaiFileUpload = function (serverId, fileId) {
+        if (!serverId || !fileId) { console.warn('[COR3] __cor3SaiFileUpload: missing serverId/fileId'); return false; }
+        return wsSendRpc('sai', 'file.upload', { serverId, fileId });
+    };
+
     root.__cor3SellItem = function (itemId, quantity) {
         const qty = quantity || 1;
         wsSendRpc('stash', 'sell.item', { itemId, quantity: qty });
@@ -1224,9 +1297,23 @@
     // This lets fetchRemoteMarketSequence revert to whatever the user was on
     // before our preflight, instead of always slamming them back to HOME.
     let currentEndpoint = HOME_SERVER_ID;
+    // Monotonic counter bumped on every CHANGE of currentEndpoint (ours OR the
+    // game's; optimistic-outbound OR server-corrected). The v2 SAI session-reuse
+    // guard reads it: a remote-market refresh (auto-refresh) flips the endpoint
+    // off a server and back, which tears down that server's SAI login even
+    // though the endpoint mirror reads back as the same id — the epoch having
+    // changed is the signal that the cached session is stale and must re-login.
+    let endpointEpoch = 0;
+    function setCurrentEndpoint(sid) {
+        if (typeof sid !== 'string' || sid === currentEndpoint) return;
+        currentEndpoint = sid;
+        endpointEpoch++;
+    }
     // Expose for diagnostic logging from sibling modules (server-connect dbg
-    // line). Read-only mirror; the let above remains the source of truth.
+    // line) + the v2 session-reuse guard. Read-only mirrors; the lets above
+    // remain the source of truth.
     Object.defineProperty(root, '__cor3CurrentEndpoint', { get: () => currentEndpoint, configurable: true });
+    Object.defineProperty(root, '__cor3EndpointEpoch', { get: () => endpointEpoch, configurable: true });
 
     // get.jobs response carries no marketId echo, so we FIFO-attribute by
     // request order. Entries auto-expire after 30 s to prevent the queue
@@ -1292,7 +1379,7 @@
         const ev = decodeOutboundEvent(rawData);
         if (!ev || ev.name !== 'network-map' || ev.action !== 'set.endpoint') return;
         const sid = ev.data && ev.data.serverId;
-        if (typeof sid === 'string') currentEndpoint = sid;
+        setCurrentEndpoint(sid);
     }
 
     function sendGetJobs(marketId) {

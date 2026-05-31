@@ -52,6 +52,22 @@
             DESKTOP_FOLDER: 'COR3_WS_DESKTOP_FOLDER',
             DESKTOP_FILE: 'COR3_WS_DESKTOP_FILE',
             DESKTOP_OPTIONS: 'COR3_WS_DESKTOP_OPTIONS',
+            // SAI (Server Admin Interface) subsystem replies. Posted by the WS
+            // interceptor's `sai` inbound route in response to the __cor3Sai*
+            // read helpers, so an Auto-Jobs v2 flow can awaitBus the reply
+            // instead of scraping the SAI terminal DOM. Reply data shapes
+            // (captured live, see tmp_research/sai-wire-capture.md):
+            //   SAI_SUMMARY  ← get.summary
+            //   SAI_TRANSIT  ← get.transit  { serverId, ips:[{ip,description,source}], … }
+            //   SAI_FILES    ← get.files    { serverId, files:[{fileId,name,…}], … }
+            //   SAI_LOGS     ← get.logs     { serverId, logs:[{seq,message,…}], … }
+            //   SAI_ACTION   ← transit.add/remove · file.download/delete · log.download/delete
+            //                  { action, data, error } — the mutation's verdict.
+            SAI_SUMMARY: 'COR3_WS_SAI_SUMMARY',
+            SAI_TRANSIT: 'COR3_WS_SAI_TRANSIT',
+            SAI_FILES: 'COR3_WS_SAI_FILES',
+            SAI_LOGS: 'COR3_WS_SAI_LOGS',
+            SAI_ACTION: 'COR3_WS_SAI_ACTION',
             EXPEDITION_LAUNCHED: 'COR3_WS_EXPEDITION_LAUNCHED',
             EXPEDITION_LAUNCH_ERROR: 'COR3_WS_EXPEDITION_LAUNCH_ERROR',
             EXPEDITION_RETRY_LAUNCH: 'COR3_WS_EXPEDITION_RETRY_LAUNCH',
@@ -125,6 +141,14 @@
             // before the flow even gets to run.
             ICE_WALL_BUSY: 'COR3_ICE_WALL_BUSY',
             STOP_ICE_WALL: 'COR3_STOP_ICE_WALL',
+            // ICE WALL learned click-DB sync. The MAIN solver learns, per shape,
+            // which cell to click (brute-forced once, then reused). MAIN can't
+            // touch chrome.storage, so the isolated auto-ice-wall module persists
+            // it: solver → ICE_WALL_DB_REQUEST → bridge replies ICE_WALL_DB; on a
+            // new learn the solver → ICE_WALL_LEARN → bridge writes storage.
+            ICE_WALL_DB_REQUEST: 'COR3_ICE_WALL_DB_REQUEST',
+            ICE_WALL_DB: 'COR3_ICE_WALL_DB',
+            ICE_WALL_LEARN: 'COR3_ICE_WALL_LEARN',
             // Simple Decrypt — one-click "Decrypt" minigame. MAIN watches
             // for [data-sentry-component="SimpleDecryptApplication"], clicks
             // the Decrypt button, then polls progress until the app
@@ -351,6 +375,10 @@
         // disabled market are accepted; a disabled type is rejected everywhere).
         // Absent / undefined === enabled (the default is "everything on").
         AJV2_MASTER_SWITCHES: 'ajv2MasterSwitches',
+        // ICE WALL solver's learned shape→click-cell database (persisted by the
+        // isolated auto-ice-wall bridge on behalf of the MAIN solver).
+        // Shape: { [shapeKey]: { cells:[{dc,dr,mirror,revealed,g}], click:{dc,dr,mirror}, learnedAt, hits } }
+        ICE_WALL_CLICK_DB: 'iceWallClickDb',
 
         // Solver runtime
         DAILY_HACK_LOG: 'dailyHackLog',
@@ -502,6 +530,7 @@
             CHECK_ACCESS: 'check-access',
             UPDATE_MARKETS: 'update-markets',
             JOB_QUEUE: 'job-queue',
+            READY_TO_COMPLETE: 'ready-to-complete',  // complete TAKEN jobs the game reports canComplete=true (solved but not yet claimed)
             QUEUE_EMPTY: 'queue-empty',     // decision: is the queue empty?
             HAVE_TASKS_IN_PROGRESS: 'have-tasks-in-progress', // decision: any TAKEN job?
             BUGGED_JOBS: 'bugged-jobs',    // decision: is the in-progress job bugged?
@@ -518,6 +547,34 @@
             FD_OPEN_DOWNLOADS: 'fd-open-downloads',
             FD_SOLVE: 'fd-solve',
             FD_COMPLETE: 'fd-complete',
+            // ── SAI sub-flows. Each flow-v2 module posts its current step via
+            // MSG.AUTOJOBS_V2.FLOW_STEP; the orchestrator relays it into
+            // AJV2_PIPELINE_STATE so the Flow Map lights it. All SAI flows share
+            // the shape: <P>_ACCESS (connect + grant/hack login, pure WS) →
+            // <P>_<ACTION> (the get.* + mutate.* WS loop) → <P>_COMPLETE
+            // (job.complete). decrypt_extract adds <P>_SOLVE (the minigame).
+            // The Flow Map collapses the 7 identical SAI mutation flows onto ONE
+            // shared ACCESS + COMPLETE with a fan of action nodes; SAI_ACCESS /
+            // SAI_COMPLETE are those shared display nodes (the per-flow *_ACCESS /
+            // *_COMPLETE ids below alias onto them in flow-map.js).
+            SAI_ACCESS: 'sai-access',
+            SAI_COMPLETE: 'sai-complete',
+            // ip_injection
+            II_ACCESS: 'ii-access', II_INJECT: 'ii-inject', II_COMPLETE: 'ii-complete',
+            // ip_cleanup
+            IC_ACCESS: 'ic-access', IC_CLEANUP: 'ic-cleanup', IC_COMPLETE: 'ic-complete',
+            // file_elimination
+            FE_ACCESS: 'fe-access', FE_DELETE: 'fe-delete', FE_COMPLETE: 'fe-complete',
+            // data_download
+            DD_ACCESS: 'dd-access', DD_DOWNLOAD: 'dd-download', DD_COMPLETE: 'dd-complete',
+            // file_upload (= data_upload)
+            FU_ACCESS: 'fu-access', FU_UPLOAD: 'fu-upload', FU_COMPLETE: 'fu-complete',
+            // log_download
+            LG_ACCESS: 'lg-access', LG_DOWNLOAD: 'lg-download', LG_COMPLETE: 'lg-complete',
+            // log_deletion
+            LD_ACCESS: 'ld-access', LD_DELETE: 'ld-delete', LD_COMPLETE: 'ld-complete',
+            // decrypt_extract (SAI download + minigame solve)
+            DE_ACCESS: 'de-access', DE_DOWNLOAD: 'de-download', DE_SOLVE: 'de-solve', DE_COMPLETE: 'de-complete',
             MARK_AS_BUGGED: 'mark-as-bugged',      // job can't be done → written to AJV2_BUGGED_JOBS
             DELAY_CYCLE: 'delay-cycle',
         },

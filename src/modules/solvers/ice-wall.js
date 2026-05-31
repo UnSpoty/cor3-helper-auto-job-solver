@@ -247,6 +247,89 @@
         return map;
     }
 
+    // ─── Learned shape → click-cell DB ───────────────────────────────────
+    // Built up over rounds; persisted by the isolated auto-ice-wall bridge (MAIN
+    // can't touch chrome.storage). Canonical, position-independent key for a
+    // TARGET shape: each cell relative to the topmost-leftmost cell + its mirror
+    // + a revealed/placeholder flag — deliberately NOT the glyph icons (the
+    // click cell is geometry-determined, so same-shape-different-icons collapse
+    // to ONE entry; see the `key` line). The learned value is the click cell's
+    // offset from that origin, so a recurring shape at ANY board position reuses
+    // the cell the brute-force found instead of re-brute-forcing.
+    function canonicalShape(targetCells) {
+        if (!targetCells || !targetCells.length) return null;
+        const origin = targetCells.reduce((a, b) => (b.row < a.row || (b.row === a.row && b.col < a.col)) ? b : a);
+        const rel = targetCells.map((c) => ({
+            dc: c.col - origin.col, dr: c.row - origin.row, mirror: !!c.mirror,
+            revealed: c.state === 'revealed', g: c.state === 'revealed' ? c.sig : null,
+        })).sort((a, b) => a.dr - b.dr || a.dc - b.dc || (a.mirror ? 1 : 0) - (b.mirror ? 1 : 0));
+        // Key on GEOMETRY + revealed/placeholder layout ONLY — NOT the glyph
+        // icons. The correct click cell is determined by the shape's
+        // arrangement, not by which icons fill it (confirmed: same-geometry
+        // shapes with different glyphs share the same click cell). Including the
+        // glyph sig bloated the DB with one entry per icon-combination of the
+        // same pattern. (The matcher still uses sigs to locate the board match;
+        // that's separate from this click-offset key.)
+        const key = rel.map((r) => `${r.dr},${r.dc},${r.mirror ? 1 : 0},${r.revealed ? 'R' : '_'}`).join(';');
+        return { origin, rel, key };
+    }
+    // Target-grid coords of the learned click cell for the current target shape,
+    // or null if the shape isn't in the DB yet.
+    function learnedClickFor() {
+        const db = root.__iceWallClickDB;
+        if (!db) return null;
+        const shape = canonicalShape(readTargetCells());
+        if (!shape) return null;
+        const entry = db[shape.key];
+        if (!entry || !entry.click) return null;
+        return { tCol: shape.origin.col + entry.click.dc, tRow: shape.origin.row + entry.click.dr, mirror: !!entry.click.mirror };
+    }
+    // Record (+ persist) that clicking `clickedCell` solved the SOLVED target
+    // shape. clickedCell carries its TARGET coords (tCol/tRow). `solvedShape` MUST
+    // be the shape snapshotted BEFORE the click — by the time the counter advances
+    // the live target preview has swapped to the NEXT shape, so re-reading it here
+    // would key the entry on the wrong shape (corrupting the DB). Callers pass the
+    // pre-click snapshot; the canonicalShape(readTargetCells()) fallback is only
+    // for safety if a caller omits it.
+    function learnClick(clickedCell, solvedShape) {
+        if (!clickedCell || clickedCell.tCol == null) return;
+        const shape = solvedShape || canonicalShape(readTargetCells());
+        if (!shape) return;
+        const click = { dc: clickedCell.tCol - shape.origin.col, dr: clickedCell.tRow - shape.origin.row, mirror: !!clickedCell.mirror };
+        const db = root.__iceWallClickDB || (root.__iceWallClickDB = {});
+        const prev = db[shape.key];
+        const entry = { cells: shape.rel, click, learnedAt: Date.now(), hits: ((prev && prev.hits) || 0) + 1 };
+        db[shape.key] = entry;
+        try { Bus.window.post(MSG.SOLVER.ICE_WALL_LEARN, { key: shape.key, entry }); } catch (_) { /* noop */ }
+    }
+
+    // The REVEALED (clickable) board cells of a confirmed candidate shape,
+    // ordered: LEARNED cell first (instant for known shapes), then
+    // pickClickTarget's guess, then bottom-left. The game completes the cycle
+    // only on the SPECIFIC cell it treats as the shape's selection anchor —
+    // NOT always the centroid — so solveRound tries these in order until the
+    // counter ticks, learning the winner. Finds the right cell for ANY shape
+    // without a per-shape override map.
+    function candidateClickCells(cand) {
+        const boardMap = makeBoardMap(readBoardCells());
+        const cells = [];
+        for (const c of cand.cells) {
+            const bc = boardMap.get(`${c.col},${c.row},${c.mirror}`);
+            if (bc && bc.state === 'revealed') cells.push({ col: c.col, row: c.row, mirror: c.mirror, isClick: c.isClick, tCol: c.tCol, tRow: c.tRow, group: bc.group });
+        }
+        const learned = learnedClickFor();
+        const isLearned = (x) => !!learned && x.tCol === learned.tCol && x.tRow === learned.tRow && (!!x.mirror === !!learned.mirror);
+        cells.sort((a, b) => {
+            const lc = (isLearned(b) ? 1 : 0) - (isLearned(a) ? 1 : 0);  // learned cell first
+            if (lc) return lc;
+            const ic = (b.isClick ? 1 : 0) - (a.isClick ? 1 : 0);        // then pickClickTarget guess
+            if (ic) return ic;
+            if (a.row !== b.row) return b.row - a.row;                   // then bottom-most
+            return a.col - b.col;                                       // then left-most
+        });
+        return cells;
+    }
+
     // ─── Candidate matching ──────────────────────────────────────────────
 
     /**
@@ -310,7 +393,7 @@
                 const cc = cand.col + (t.col - targetAnchor.col);
                 const cr = cand.row + (t.row - targetAnchor.row);
                 const bc = boardMap.get(`${cc},${cr},${t.mirror}`);
-                cells.push({ col: cc, row: cr, mirror: t.mirror, isClick: t === targetClick });
+                cells.push({ col: cc, row: cr, mirror: t.mirror, isClick: t === targetClick, tCol: t.col, tRow: t.row });
 
                 if (!bc) { mismatch++; continue; }
 
@@ -398,7 +481,7 @@
                 const cc = cand.col + (t.col - targetAnchor.col);
                 const cr = cand.row + (t.row - targetAnchor.row);
                 const bc = boardMap.get(`${cc},${cr},${t.mirror}`);
-                cells.push({ col: cc, row: cr, mirror: t.mirror, isClick: t === targetClick });
+                cells.push({ col: cc, row: cr, mirror: t.mirror, isClick: t === targetClick, tCol: t.col, tRow: t.row });
                 if (!bc) { eliminated = true; break; }
                 if (t.state !== 'revealed') {
                     if (bc.state === 'revealed') { eliminated = true; break; }
@@ -548,14 +631,24 @@
         const layer = getLayer('noise');
         if (!layer) return;
 
+        // Key by glyph signature AND orientation (the cell `mirror` — up vs
+        // down / scale(1,-1)). Glyph rotation/flip is NOT in the path transform
+        // (verified live: paths carry transform=null); the up/down orientation
+        // is the cell mirror, and an up-triangle and its flipped down-triangle
+        // share the SAME `d` (same sig). Greying by sig ALONE therefore left a
+        // board glyph that has a target ICON but the WRONG orientation
+        // un-dimmed — the user-reported "same shape, wrong angle, not marked
+        // wrong" bug. Including mirror greys those too. (The matcher already
+        // keys on sig+mirror, so this only aligns the noise overlay with it.)
+        const orientKey = (c) => c.sig + '|' + (c.mirror ? 1 : 0);
         const targetSigs = new Set();
         for (const t of readTargetCells()) {
-            if (t.state === 'revealed') targetSigs.add(t.sig);
+            if (t.state === 'revealed') targetSigs.add(orientKey(t));
         }
         const noiseCells = [];
         if (targetSigs.size > 0) {
             for (const b of readBoardCells()) {
-                if (b.state === 'revealed' && !targetSigs.has(b.sig)) {
+                if (b.state === 'revealed' && !targetSigs.has(orientKey(b))) {
                     noiseCells.push(b);
                 }
             }
@@ -802,15 +895,36 @@
      * Returns true if the counter advanced (round complete), false on
      * retry exhaustion / timeout / app close / abort.
      */
+    const countRevealed = () => readBoardCells().reduce((n, c) => n + (c.state === 'revealed' ? 1 : 0), 0);
+
     async function solveRound(mod) {
         const excludeKeys = new Set();
         const roundStart = Date.now();
+        // Exclusions are only valid for the board state they were made on. An
+        // anchor whose click failed while the board was still SPARSE is almost
+        // always failing because the shape's true selection-anchor cell hadn't
+        // been revealed yet (candidateClickCells can only click revealed cells).
+        // If we keep that anchor excluded, it stays barred even after it reveals
+        // into the unique full match — the solver then sits idle on an empty
+        // overlay until the timer kills the round (observed live: a perfect 5/5
+        // match at one offset, never clicked, counter stuck 0/3). So: whenever
+        // the board reveals NEW cells, drop all exclusions and re-evaluate with
+        // the fresh information. On a STABLE (fully-revealed) board the exclude
+        // mechanism still works normally — only new reveals reset it.
+        let excludeRevCount = countRevealed();
 
         for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
             if (root.__iceWallAbort) return false;
             if (!document.querySelector(SEL.APP)) return false;
             const counter = readCounter();
             if (counter && counter.current >= counter.total) return true;
+
+            const revNow = countRevealed();
+            if (revNow > excludeRevCount) {
+                if (excludeKeys.size) mod.debug(`board revealed ${revNow - excludeRevCount} new cell(s) — clearing ${excludeKeys.size} stale exclusion(s)`);
+                excludeKeys.clear();
+                excludeRevCount = revNow;
+            }
 
             const remaining = Math.max(2000, ROUND_MAX_MS - (Date.now() - roundStart));
             const result = await waitForCandidate(
@@ -856,23 +970,41 @@
             }
             best = refreshed; // refresh realMatch / unknown with latest state
 
-            const counterCur = readCounter();
-            mod.info(`commit (${reason}): anchor=(${best.col},${best.row}) click=(${best.clickCol},${best.clickRow}) realMatch=${best.realMatch}/${best.revealedTotal} unknown=${best.unknown} (target ${best.total}) attempt=${attempt + 1}/${MAX_RETRIES}`);
+            mod.info(`commit (${reason}): anchor=(${best.col},${best.row}) shape=${best.cells.length} cells realMatch=${best.realMatch}/${best.revealedTotal} unknown=${best.unknown} (target ${best.total}) attempt=${attempt + 1}/${MAX_RETRIES}`);
             drawCandidateOverlay(best, true);
-            await attemptClick(best.clickGroup, mod);
 
-            const ticked = await dom.waitFor(() => {
-                const cc = readCounter();
-                return cc && counterCur && cc.current > counterCur.current ? cc : null;
-            }, { timeout: 4000 });
-
-            if (ticked) {
-                mod.info(`counter advanced: ${ticked.current}/${ticked.total}`);
-                clearOverlay();
-                return true;
+            // Try each REVEALED cell of the confirmed shape as the click target
+            // (pickClickTarget's guess first, then bottom-left), until the
+            // counter advances. The game completes the cycle only on the cell it
+            // uses as the shape's selection anchor — not always the centroid —
+            // so brute-forcing the shape's own cells lands the right one for any
+            // shape. Only if NO cell of the shape advances do we treat it as a
+            // wrong shape and exclude the anchor.
+            const clickCells = candidateClickCells(best);
+            // Snapshot the CURRENT (about-to-be-solved) target shape NOW, before any
+            // click advances the counter and swaps the preview to the next shape —
+            // learnClick must key on this, not the post-advance live target.
+            const solvedShape = canonicalShape(readTargetCells());
+            let advanced = null;
+            for (const cell of clickCells) {
+                if (root.__iceWallAbort) return false;
+                if (!document.querySelector(SEL.APP)) return false;
+                const before = readCounter();
+                mod.debug(`try click cell (${cell.col},${cell.row})${cell.isClick ? ' [pick]' : ''}`);
+                await attemptClick(cell.group, mod);
+                advanced = await dom.waitFor(() => {
+                    const cc = readCounter();
+                    return cc && before && cc.current > before.current ? cc : null;
+                }, { timeout: 3000 });
+                if (advanced) {
+                    mod.info(`counter advanced via cell (${cell.col},${cell.row})${cell.isClick ? '' : ' [learned]'}: ${advanced.current}/${advanced.total}`);
+                    learnClick(cell, solvedShape);   // remember this shape→cell so it's instant next time
+                    clearOverlay();
+                    return true;
+                }
             }
 
-            mod.warn(`false positive at anchor (${best.col},${best.row}) — excluding & retrying (${attempt + 1}/${MAX_RETRIES})`);
+            mod.warn(`no cell of shape at (${best.col},${best.row}) advanced (${clickCells.length} tried) — excluding & re-searching (${attempt + 1}/${MAX_RETRIES})`);
             excludeKeys.add(`${best.col},${best.row}`);
             drawRejectedOverlay(excludeKeys);
         }
@@ -953,6 +1085,16 @@
             });
         }
         async start() {
+            // Load the learned click DB from the isolated bridge (which owns the
+            // chrome.storage copy). Request it once now; also accept pushes.
+            this.track(Bus.window.on(MSG.SOLVER.ICE_WALL_DB, (env) => {
+                if (env && env.db && typeof env.db === 'object') {
+                    root.__iceWallClickDB = env.db;
+                    this.debug(`ice-wall click DB loaded (${Object.keys(env.db).length} shape(s))`);
+                }
+            }));
+            Bus.window.post(MSG.SOLVER.ICE_WALL_DB_REQUEST, null);
+
             this.track(Bus.window.on(MSG.SOLVER.START_ICE_WALL, () => {
                 if (root.__iceWallActive && !root.__iceWallAbort) {
                     this.debug('start ignored — already active');

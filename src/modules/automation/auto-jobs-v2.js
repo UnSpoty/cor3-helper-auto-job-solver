@@ -16,11 +16,14 @@
 //                       │                            → JOB_FLOW            │
 //                       └──────────────── DELAY:30s ←─────────────────────┘  (loop)
 //
-// JOB_FLOW dispatches ONE in-progress (TAKEN) job per cycle to its MAIN-world
-// flow-v2 module (FLOW_START) and parks on FLOW_RESULT — so the loop pauses for
-// that job's minigame, then goes to DELAY:30s and the next cycle handles the
-// next job. file_decryption is wired; other types are skipped until their
-// flow-v2 module lands. Failure handling splits by `retryable`: a job that is
+// JOB_FLOW dispatches a BATCH of in-progress (TAKEN) jobs per cycle, then parks
+// on each one's FLOW_RESULT in turn — so the loop pauses for each minigame,
+// then goes to DELAY:30s. The batch is chosen to minimise cycles + logins:
+// file_decryption FIRST (every TAKEN one — local minigames, no server), else
+// every wired SAI job that targets ONE server (the busiest), run back-to-back
+// so that server is connected + logged into ONCE (the SAI flows share the login
+// via the per-batch session, keyed `${cycle}:${serverId}`). Failure handling
+// is per job and splits by `retryable`: a job that is
 // genuinely undoable (no owned decrypt software, malformed job) is written to
 // AJV2_BUGGED_JOBS (MARK_AS_BUGGED) and stays there until the user clears it;
 // a TRANSIENT failure (orchestrator timeout, DOM/loadout not ready yet,
@@ -89,7 +92,7 @@
             this._running = false;
             this._runToken = 0;
             this._refreshing = false;   // one-shot Jobs-panel board refresh in flight
-            this._state = { running: false, cycle: 0, node: null, startedAt: null, updatedAt: null, error: null };
+            this._state = { running: false, cycle: 0, node: null, startedAt: null, updatedAt: null, error: null, batch: null };
         }
 
         async start() {
@@ -165,7 +168,7 @@
             this._running = false;
             this._runToken++;  // invalidates any in-flight sleep / cycle
             this.info('STOP — pipeline loop cancelled');
-            this._writeState({ running: false, node: null });
+            this._writeState({ running: false, node: null, batch: null });
         }
 
         _alive(token) { return this._running && token === this._runToken; }
@@ -210,7 +213,7 @@
             const ctx = this._ctx(token);
             let packet = p.createPacket(cycle);
 
-            await this._setNode(NODE.GET_SERVERS, token, { cycle, error: null });
+            await this._setNode(NODE.GET_SERVERS, token, { cycle, error: null, batch: null });
             packet = await p.stages.getServers.run(packet, ctx);
             if (!this._alive(token)) return;
 
@@ -224,6 +227,17 @@
 
             await this._setNode(NODE.JOB_QUEUE, token, { cycle });
             packet = await p.stages.jobQueue.run(packet, ctx);
+            if (!this._alive(token)) return;
+
+            // READY_TO_COMPLETE — claim every in-progress (TAKEN) job the game
+            // now reports as finishable (raw.canComplete === true), e.g. a
+            // file_decryption whose file is already decrypted but still sitting
+            // TAKEN until job.complete is sent. Done BEFORE the in-progress /
+            // JOB_FLOW branch so the orchestrator never re-dispatches (and
+            // re-opens) an already-solved job — re-opening a decrypted file
+            // mounts no minigame and hangs the flow.
+            await this._setNode(NODE.READY_TO_COMPLETE, token, { cycle });
+            await this._completeReadyJobs(token, packet);
             if (!this._alive(token)) return;
 
             await this._setNode(NODE.QUEUE_EMPTY, token, { cycle });
@@ -274,12 +288,43 @@
             await this._runJobFlows(token, cycle, packet);
         }
 
-        // Run exactly ONE in-progress (TAKEN) job this cycle, then fall through
-        // to DELAY:30s — the next cycle picks up the next one. (One job per
-        // cycle: solve → complete → wait, rather than draining all accepted
-        // jobs in a single JOB_FLOW pass.) Bugged jobs were filtered before
-        // JOB:SKIP; we re-check here so a job bugged earlier this cycle is
-        // skipped.
+        // Claim every in-progress (TAKEN) job the game reports as finishable
+        // (raw.canComplete === true). A solved file_decryption sits TAKEN with
+        // canComplete:true (its file isDecrypted) until job.complete is sent;
+        // ditto any flow whose action landed but whose own complete raced ahead
+        // of the server flipping canComplete. We send job.complete here (the
+        // generic MSG.GAME.COMPLETE_JOB → __cor3CompleteJob, endpoint flip+revert
+        // handled by the interceptor) WITHOUT re-running the flow. Verified live:
+        // job.complete on a canComplete job returns {status:'ok'} and it leaves
+        // TAKEN. Fire-and-forget + self-healing: a complete that fails leaves the
+        // job canComplete:true → retried next cycle.
+        async _completeReadyJobs(token, packet) {
+            if (!packet.queue) return;
+            const ready = packet.queue.filter((j) => j.status === 'TAKEN' && j.raw && j.raw.canComplete === true);
+            if (ready.length === 0) { this.debug('READY_TO_COMPLETE → none'); return; }
+            this.info(`READY_TO_COMPLETE → completing ${ready.length} finished job(s)`);
+            for (let i = 0; i < ready.length; i++) {
+                if (!this._alive(token)) return;
+                const job = ready[i];
+                if (!job.marketId) { this.warn(`READY_TO_COMPLETE: job ${job.id} has no marketId — cannot complete`); continue; }
+                Bus.window.post(C.MSG.GAME.COMPLETE_JOB, { jobId: job.id, marketId: job.marketId });
+                this.info(`READY_TO_COMPLETE · complete ${job.id} (${job.type || '?'}) @ ${job.marketSlot}`);
+                // Pace the completes (each remote-market one does a set.endpoint
+                // flip+revert in the interceptor); skip the wait after the last.
+                if (i < ready.length - 1) await new Promise((r) => setTimeout(r, LOOP.ACCEPT_PACING_MS));
+            }
+            // A remote-market complete may have left the endpoint on DARK/SRM.
+            Bus.window.post(C.MSG.GAME.REVERT_ENDPOINT_TO_HOME, null);
+        }
+
+        // Run THIS cycle's BATCH of in-progress (TAKEN) jobs back-to-back, then
+        // fall through to DELAY:30s. The batch (see _selectBatch) is either every
+        // TAKEN file_decryption (absolute priority — local minigames, no login)
+        // or every wired SAI job on ONE server. Running a server's jobs in a
+        // single pass means it is connected + logged into ONCE (the flows share
+        // the login via the per-batch session token), saving cycles AND logins.
+        // Bugged jobs were filtered before JOB:SKIP; we re-check here so a job
+        // bugged earlier this cycle is skipped.
         async _runJobFlows(token, cycle, packet) {
             const p = pipeline();
             // CHECK_CONDITION (the sole predecessor of JOB_FLOW) always loads
@@ -288,49 +333,259 @@
             // re-fetch (v2 rule: no defensive defaults).
             if (!packet.buggedJobs) throw new Error('JOB_FLOW: packet.buggedJobs missing (CHECK_CONDITION must run first)');
             const bugged = packet.buggedJobs;
-            const inProgress = packet.queue.filter((j) => j.status === 'TAKEN' && !bugged[j.id]);
+            // Exclude jobs the game already reports finishable (raw.canComplete):
+            // READY_TO_COMPLETE (run earlier this cycle) fired their job.complete
+            // but does NOT mutate packet.queue, so without this guard _selectBatch
+            // could re-dispatch a just-completed file_decryption and re-open its
+            // already-decrypted file (no minigame → wasted ~90s).
+            const inProgress = packet.queue.filter((j) =>
+                j.status === 'TAKEN' && !bugged[j.id] && !(j.raw && j.raw.canComplete === true));
             if (inProgress.length === 0) { this.debug('JOB_FLOW → no in-progress jobs to run'); return; }
 
-            // Pick the first in-progress job of a supported type. (Only
-            // file_decryption is wired so far.)
-            const job = inProgress.find((j) => j.type === C.FLOW.FILE_DECRYPTION);
-            if (!job) {
-                this.info(`JOB_FLOW → ${inProgress.length} in-progress job(s), none of a supported type yet — skipping`);
+            const batch = this._selectBatch(inProgress, p);
+            if (batch.jobs.length === 0) {
+                this.info(`JOB_FLOW → ${inProgress.length} in-progress job(s), none of a wired type yet — skipping`);
                 return;
             }
-            this.info(`JOB_FLOW → running 1 of ${inProgress.length} in-progress job(s) this cycle`);
+            // batchKey scopes the SAI login reuse: every SAI job in this batch
+            // shares ONE server, so the first establishes access and the rest
+            // reuse it. The file_decryption pick carries no key (no SAI login).
+            // Keyed by run-token + cycle so the next cycle (or a STOP→restart,
+            // which bumps the token) re-authenticates from scratch.
+            const batchKey = batch.serverId ? `${token}:${cycle}:${batch.serverId}` : null;
+            // SAI batch (serverId set): DEFER each job's job.complete to AFTER all
+            // actions. job.complete flips the endpoint to the market home and back,
+            // which tears down the shared SAI session — so completing mid-batch
+            // would log us out before the next job's WS action. Instead the flows
+            // only ACT (their complete() is a no-op while deferComplete is set), the
+            // endpoint stays on the server for the whole batch (ONE login), and the
+            // orchestrator completes the actioned jobs in one pass at the end.
+            const deferComplete = !!batch.serverId;
+            const toComplete = [];
+            this.info(`JOB_FLOW → batch of ${batch.jobs.length} ${batch.label} (of ${inProgress.length} in-progress this cycle)`);
 
-            const fileCondition = p.fileConditionForDecrypt(job.raw);
-            if (!fileCondition) { await this._markBugged(job, 'no file condition in job', token); return; }
+            // Publish the live batch onto AJV2_PIPELINE_STATE so the Jobs UI can
+            // show "running N jobs in one batch on <server>" and which one is
+            // live. `index` / `currentJobId` are bumped per job below; the whole
+            // descriptor is cleared at GET_SERVERS (next cycle) and on STOP.
+            const bd = {
+                label: batch.label,
+                serverId: batch.serverId,
+                serverName: (batch.jobs[0] && batch.jobs[0].serverName) || null,
+                jobIds: batch.jobs.map((j) => j.id),
+                total: batch.jobs.length,
+                index: 0,
+                currentJobId: null,
+                oneLogin: !!batch.serverId,
+            };
+            await this._setBatch(bd, token);
 
-            this.info(`JOB_FLOW → dispatch file_decryption ${job.id} "${fileCondition}"`);
-            // NOTE: the payload field is `jobType`, NOT `type` — Bus.window
-            // builds the envelope as Object.assign({type}, payload), so a
-            // payload key named `type` would clobber the Bus message type and
-            // the message would never reach the flow's listener.
-            const result = await this._dispatchFlow({
-                jobId: job.id, marketId: job.marketId, jobType: job.type, fileCondition,
-            }, token);
+            for (let i = 0; i < batch.jobs.length; i++) {
+                if (!this._alive(token)) return;
+                const job = batch.jobs[i];
+                bd.index = i + 1;
+                bd.currentJobId = job.id;
+                await this._setBatch(Object.assign({}, bd), token);
+
+                // Build the type-specific FLOW_START payload — the target server +
+                // the entities to act on, read from the TAKEN job's condition
+                // details. A null payload means the job carries no resolvable
+                // target → it genuinely can't be done → bug it (and move on to
+                // the next job in the batch).
+                const payload = this._buildFlowPayload(job, packet, batchKey);
+                if (!payload) { await this._markBugged(job, 'could not resolve flow target from job conditions', token); continue; }
+                if (deferComplete) payload.deferComplete = true;
+
+                this.info(`JOB_FLOW → dispatch ${job.type} ${job.id} (${i + 1}/${batch.jobs.length})`, { target: this._payloadSummary(payload) });
+                // NOTE: the payload field is `jobType`, NOT `type` — Bus.window
+                // builds the envelope as Object.assign({type}, payload), so a
+                // payload key named `type` would clobber the Bus message type and
+                // the message would never reach the flow's listener.
+                const result = await this._dispatchFlow(payload, token);
+                if (!this._alive(token)) return;
+
+                // STOP cancelled the dispatch (the flow was aborted) — the job is
+                // untouched; don't bug it, and abandon the rest of the batch (it
+                // resumes when the loop restarts). Skip the deferred completes too:
+                // a cancelled batch's actions may be half-done, and READY_TO_COMPLETE
+                // will finish anything the game now reports canComplete next cycle.
+                if (result.cancelled) { this.info(`JOB_FLOW → ${job.id} cancelled (loop stopped)`); return; }
+
+                if (result.success && result.didWork) {
+                    // Action landed. Deferred → queue the complete for the end of
+                    // the batch; immediate → the flow already completed it.
+                    if (deferComplete) {
+                        if (job.marketId) {
+                            toComplete.push(job);
+                            this.info(`JOB_FLOW → ${job.id} actioned (complete deferred)`);
+                        } else {
+                            // Actioned but no marketId to job.complete with → it can
+                            // be neither completed nor caught by READY_TO_COMPLETE
+                            // (which also needs marketId). Bug it loudly rather than
+                            // silently re-action it every cycle.
+                            await this._markBugged(job, 'actioned but job has no marketId to complete', token);
+                        }
+                    } else {
+                        this.info(`JOB_FLOW → ${job.id} completed`);
+                    }
+                    continue;
+                }
+                // TRANSIENT failure (timeout, DOM/loadout not ready, flow-busy):
+                // skip and retry next cycle — do NOT bug. Bugged jobs are permanent
+                // until the user clears them (no TTL), so only a genuine "can't do
+                // this job" (retryable:false / absent) is written to the registry.
+                if (result.retryable) { this.info(`JOB_FLOW → ${job.id} not done this cycle (${result.reason || 'transient'}) — will retry`); continue; }
+                await this._markBugged(job, result.reason || 'flow failed', token);
+            }
+
+            // SAI batch end: all actions done, the shared SAI session is no longer
+            // needed → complete the actioned jobs now (each complete-flip is safe
+            // here — nothing else reads the server afterwards).
+            if (deferComplete && toComplete.length) await this._completeBatchJobs(toComplete, token);
+            // Batch done → clear the live-batch banner (the next cycle's
+            // GET_SERVERS also clears it, this just drops it immediately so the
+            // DELAY:30s window shows no stale batch).
+            await this._writeState({ batch: null });
+            // Whole batch attempted → return → DELAY:30s → next cycle picks the
+            // next batch (next server, or the remaining file_decryption).
+        }
+
+        // Publish the live batch descriptor onto AJV2_PIPELINE_STATE (read by the
+        // Jobs UI). Gated on _alive so a STOP mid-batch doesn't resurrect it after
+        // _stopLoop cleared it.
+        async _setBatch(batch, token) {
             if (!this._alive(token)) return;
+            await this._writeState({ batch });
+        }
 
-            // STOP cancelled the dispatch (the flow was aborted) — the job is
-            // untouched; don't bug it, it resumes when the loop restarts.
-            if (result.cancelled) { this.info(`JOB_FLOW → ${job.id} cancelled (loop stopped)`); return; }
+        // Complete the SAI jobs whose action landed this batch (their flow's
+        // own complete() was deferred). Same generic path as READY_TO_COMPLETE:
+        // MSG.GAME.COMPLETE_JOB → __cor3CompleteJob (the interceptor does the
+        // endpoint flip+send+revert), paced, then revert to HOME. Self-healing:
+        // a complete that fails leaves the job TAKEN → next cycle READY_TO_COMPLETE
+        // (which runs before JOB_FLOW) catches it once the game flips canComplete.
+        async _completeBatchJobs(jobs, token) {
+            this.info(`JOB_FLOW → completing ${jobs.length} actioned SAI job(s)`);
+            for (let i = 0; i < jobs.length; i++) {
+                if (!this._alive(token)) return;
+                const job = jobs[i];
+                Bus.window.post(C.MSG.GAME.COMPLETE_JOB, { jobId: job.id, marketId: job.marketId });
+                this.info(`JOB_FLOW · complete ${job.id} (${job.type || '?'}) @ ${job.marketSlot}`);
+                if (i < jobs.length - 1) await new Promise((r) => setTimeout(r, LOOP.ACCEPT_PACING_MS));
+            }
+            Bus.window.post(C.MSG.GAME.REVERT_ENDPOINT_TO_HOME, null);
+        }
 
-            if (result.success && result.didWork) {
-                this.info(`JOB_FLOW → ${job.id} completed`);
-                return;
+        // Choose the set of in-progress jobs to run THIS cycle, back-to-back:
+        //   • file_decryption FIRST, ONE per cycle (local minigames, nothing to
+        //     batch); absolute priority drains decrypts before any SAI type,
+        //     matching JOB_ACCEPTION's decrypt-first acceptance.
+        //   • else every wired SAI job on ONE server (the one with the most
+        //     in-progress jobs) — so it is logged into once and all its jobs run
+        //     in a single pass.
+        // Returns { jobs, serverId, label }; serverId is null for the
+        // file_decryption pick (no SAI login → no batchKey). WIRED_FLOW_TYPES is
+        // the same gate JOB_ACCEPTION uses, so a TAKEN job of an unwired type is
+        // left for a later build, never stranded.
+        _selectBatch(inProgress, p) {
+            // file_decryption keeps ABSOLUTE priority but runs ONE per cycle: each
+            // is a separate local minigame (no server / no SAI login to share), so
+            // there is nothing to batch. Draining one per cycle (until none remain)
+            // before any SAI job is the established decrypt-first behaviour.
+            const decryption = inProgress.find((j) => j.type === C.FLOW.FILE_DECRYPTION);
+            if (decryption) return { jobs: [decryption], serverId: null, label: 'file_decryption (1/cycle)' };
+
+            const wired = inProgress.filter((j) => p.WIRED_FLOW_TYPES.has(j.type));
+            if (wired.length === 0) return { jobs: [], serverId: null, label: '' };
+
+            // Group the wired SAI jobs by their target server (conditions
+            // .serverConfigId), pick the biggest group.
+            const byServer = new Map();
+            for (const j of wired) {
+                const sid = p.serverConfigId(j.raw);
+                if (!sid) continue;   // unresolvable target — handled below
+                if (!byServer.has(sid)) byServer.set(sid, []);
+                byServer.get(sid).push(j);
             }
-            // TRANSIENT failure (timeout, DOM/loadout not ready, flow-busy):
-            // skip and retry next cycle — do NOT bug. Bugged jobs are permanent
-            // until the user clears them (no TTL), so only a genuine "can't do
-            // this job" (retryable:false / absent) is written to the registry.
-            if (result.retryable) {
-                this.info(`JOB_FLOW → ${job.id} not done this cycle (${result.reason || 'transient'}) — will retry`);
-                return;
+            if (byServer.size === 0) {
+                // No wired job resolved a server (malformed targets) — dispatch them
+                // anyway so _buildFlowPayload returns null → each is bugged once.
+                return { jobs: wired, serverId: null, label: 'unresolved SAI job(s)' };
             }
-            await this._markBugged(job, result.reason || 'flow failed', token);
-            // One job done → return → DELAY:30s → next cycle handles the next.
+            let best = null;
+            for (const [sid, jobs] of byServer) if (!best || jobs.length > best.jobs.length) best = { sid, jobs };
+            const name = best.jobs[0].serverName || best.sid;
+            return { jobs: best.jobs, serverId: best.sid, label: `SAI job(s) on "${name}"` };
+        }
+
+        // Build the per-type FLOW_START payload for a TAKEN job. file_decryption
+        // works on the LOCAL Downloads (no server) and carries `fileCondition`;
+        // every SAI flow carries { serverId, serverType, serverName } + the
+        // resolved target (ips / fileNames / logSeqs+logNames). serverId is the
+        // job's conditions.serverConfigId (== relatedServers[0].id, verified
+        // live); serverType is looked up in the NM graph for the hack path.
+        // batchKey (passed by JOB_FLOW for SAI batches) rides along so the flow's
+        // ensureAccess reuses one login across the server's batch; file_decryption
+        // carries none (no SAI login). Returns null when the target can't be
+        // resolved → the caller bugs it.
+        _buildFlowPayload(job, packet, batchKey) {
+            const p = pipeline();
+            const base = { jobId: job.id, marketId: job.marketId, jobType: job.type };
+
+            if (job.type === C.FLOW.FILE_DECRYPTION) {
+                const fileCondition = p.fileConditionForDecrypt(job.raw);
+                return fileCondition ? Object.assign(base, { fileCondition }) : null;
+            }
+
+            // SAI flows — resolve the target server (serverId + type/name).
+            const serverId = p.serverConfigId(job.raw);
+            if (!serverId) return null;
+            const srv = (packet.servers || []).find((s) => s && s.id === serverId) || null;
+            const sai = {
+                serverId,
+                serverType: srv ? (srv.serverTypeName || null) : null,
+                // NM_GRAPH server objects expose `name` (NOT `serverName`); the
+                // old `srv.serverName` was always undefined, silently relying on
+                // the job.serverName fallback. Read the right field so the NM
+                // lookup actually covers a job whose own serverName is missing.
+                serverName: (srv && srv.name) || job.serverName || null,
+                batchKey: batchKey || null,
+            };
+
+            switch (job.type) {
+                case C.FLOW.IP_INJECTION:
+                case C.FLOW.IP_CLEANUP: {
+                    const ips = p.ipsForJob(job.raw);
+                    return ips.length ? Object.assign(base, sai, { ips }) : null;
+                }
+                case C.FLOW.FILE_ELIMINATION:
+                case C.FLOW.DATA_DOWNLOAD:
+                case C.FLOW.FILE_UPLOAD:
+                case C.FLOW.DECRYPT_EXTRACT: {
+                    const fileNames = p.fileNamesForJob(job.raw);
+                    return fileNames.length ? Object.assign(base, sai, { fileNames }) : null;
+                }
+                case C.FLOW.LOG_DELETION:
+                case C.FLOW.LOG_DOWNLOAD: {
+                    const logSeqs = p.logSeqsForJob(job.raw);
+                    const logNames = p.logNamesForJob(job.raw);
+                    return (logSeqs.length || logNames.length) ? Object.assign(base, sai, { logSeqs, logNames }) : null;
+                }
+                default:
+                    return null;
+            }
+        }
+
+        // Compact, log-friendly view of a FLOW_START payload (avoid dumping big
+        // arrays / the raw job into the Activity Log).
+        _payloadSummary(payload) {
+            const s = { server: payload.serverName || null };
+            if (payload.fileCondition) s.fileCondition = payload.fileCondition;
+            if (Array.isArray(payload.ips)) s.ips = payload.ips.length;
+            if (Array.isArray(payload.fileNames)) s.fileNames = payload.fileNames;
+            if (Array.isArray(payload.logSeqs)) s.logSeqs = payload.logSeqs;
+            if (Array.isArray(payload.logNames) && payload.logNames.length) s.logNames = payload.logNames;
+            return s;
         }
 
         // Post FLOW_START to MAIN and resolve with the matching FLOW_RESULT.

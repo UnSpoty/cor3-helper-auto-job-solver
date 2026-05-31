@@ -138,11 +138,27 @@
         return null;
     }
 
-    // Job types whose MAIN-world flow-v2 module is wired (Phase 2). Only these
-    // are accepted off the board: accepting a type with no flow — including a
+    // Job types whose MAIN-world flow-v2 module is wired. Only these are
+    // accepted off the board: accepting a type with no flow — including a
     // null/unrecognised type — would consume a market slot that then sits
     // TAKEN forever (the orchestrator can neither complete nor recover it).
-    const WIRED_FLOW_TYPES = new Set([C.FLOW.FILE_DECRYPTION]);
+    // file_upload is DELIBERATELY excluded: its file.upload wire is a best-guess
+    // never captured live (tmp_research/sai-wire-capture.md), and a wrong wire
+    // that the server silently no-ops would let the flow "complete" a job the
+    // game never marks finishable → an unbounded re-dispatch loop. Keep
+    // file_upload jobs unaccepted (visible on the board) until the wire is
+    // verified live; the flow-v2-file-upload module stays registered, just not
+    // dispatched. Re-add C.FLOW.FILE_UPLOAD here once verified.
+    const WIRED_FLOW_TYPES = new Set([
+        C.FLOW.FILE_DECRYPTION,
+        C.FLOW.IP_INJECTION,
+        C.FLOW.IP_CLEANUP,
+        C.FLOW.FILE_ELIMINATION,
+        C.FLOW.DATA_DOWNLOAD,
+        C.FLOW.LOG_DOWNLOAD,
+        C.FLOW.LOG_DELETION,
+        C.FLOW.DECRYPT_EXTRACT,
+    ]);
 
     function jobServer(job) {
         const rs = job && job.relatedServers;
@@ -169,6 +185,59 @@
             }
         }
         return null;
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // SAI-flow target resolvers. The target (which IPs / files / logs) lives in
+    // the PRIMARY condition item's `details`, which is null on AVAILABLE board
+    // jobs and POPULATES only once the job is TAKEN (verified live — see
+    // tmp_research/sai-wire-capture.md). Shapes (live ip_cleanup + v1
+    // resolveJobParams): ip_* → details.ips[]; file_* → details.fileNames[] |
+    // fileName | files[].name (by NAME — the flow maps name→fileId via get.files);
+    // log_* → details.logSeqs[] (int) and/or logNames[] | logName.
+    // v2-owned parsing, NOT a v1 port. Each returns a de-duped array (possibly
+    // empty → the orchestrator bugs the job: no resolvable target).
+    function conditionItems(rawJob) {
+        return (rawJob && rawJob.conditions && Array.isArray(rawJob.conditions.items)) ? rawJob.conditions.items : [];
+    }
+    // serverId for SAI ops == conditions.serverConfigId (== relatedServers[0].id, verified live).
+    function serverConfigId(rawJob) {
+        return (rawJob && rawJob.conditions && rawJob.conditions.serverConfigId) || null;
+    }
+    function ipsForJob(rawJob) {
+        const out = [];
+        for (const it of conditionItems(rawJob)) {
+            const d = (it && it.details) || {};
+            if (Array.isArray(d.ips)) for (const ip of d.ips) if (typeof ip === 'string' && ip) out.push(ip);
+        }
+        return [...new Set(out)];
+    }
+    function fileNamesForJob(rawJob) {
+        const out = [];
+        for (const it of conditionItems(rawJob)) {
+            const d = (it && it.details) || {};
+            if (Array.isArray(d.fileNames)) for (const n of d.fileNames) if (typeof n === 'string' && n) out.push(n);
+            if (typeof d.fileName === 'string' && d.fileName) out.push(d.fileName);
+            if (Array.isArray(d.files)) for (const f of d.files) if (f && typeof f.name === 'string' && f.name) out.push(f.name);
+        }
+        return [...new Set(out)];
+    }
+    function logSeqsForJob(rawJob) {
+        const out = [];
+        for (const it of conditionItems(rawJob)) {
+            const d = (it && it.details) || {};
+            if (Array.isArray(d.logSeqs)) for (const s of d.logSeqs) if (Number.isInteger(s)) out.push(s);
+        }
+        return [...new Set(out)];
+    }
+    function logNamesForJob(rawJob) {
+        const out = [];
+        for (const it of conditionItems(rawJob)) {
+            const d = (it && it.details) || {};
+            if (Array.isArray(d.logNames)) for (const n of d.logNames) if (typeof n === 'string' && n) out.push(n);
+            if (typeof d.logName === 'string' && d.logName) out.push(d.logName);
+        }
+        return [...new Set(out)];
     }
 
     // Plain cancellable pause used to pace ACCEPT_JOB posts. Resolves early
@@ -544,8 +613,24 @@
                 eligibleSet.has(j.id) && j.status === 'AVAILABLE' && WIRED_FLOW_TYPES.has(j.type));
 
             const decryption = acceptable.filter((j) => j.type === C.FLOW.FILE_DECRYPTION);
-            const toAccept = decryption.length > 0 ? decryption : acceptable;
-            const mode = decryption.length > 0 ? 'file_decryption (all markets)' : 'other types';
+            // ABSOLUTE file_decryption priority: while ANY file_decryption is
+            // still AVAILABLE on the board OR TAKEN (accepted but not yet
+            // solved), we accept ONLY the AVAILABLE file_decryption and NOTHING
+            // else. That set may be empty (all already TAKEN) — then we accept
+            // nothing this cycle and wait for the in-progress decryptions to be
+            // solved + completed. Only once no file_decryption remains anywhere
+            // in the queue do we accept the other-type jobs.
+            // A BUGGED file_decryption is excluded: a decrypt with no owned
+            // covering software is accepted, bugged, and then sits TAKEN in the
+            // market forever (v2 never dismisses). Without this exclusion it
+            // would keep decryptionPending permanently true and STARVE every SAI
+            // job type from acceptance for the rest of the session.
+            const bugged = packet.buggedJobs || {};
+            const decryptionPending = packet.queue.some((j) =>
+                j.type === C.FLOW.FILE_DECRYPTION && !bugged[j.id]
+                && (j.status === 'AVAILABLE' || j.status === 'TAKEN'));
+            const toAccept = decryptionPending ? decryption : acceptable;
+            const mode = decryptionPending ? 'file_decryption (all markets)' : 'other types';
 
             packet.accepted = [];
             if (toAccept.length === 0) {
@@ -591,6 +676,12 @@
         detectJobType,
         jobServer,
         fileConditionForDecrypt,
+        // SAI-flow target resolvers (read from the TAKEN job's condition details).
+        serverConfigId,
+        ipsForJob,
+        fileNamesForJob,
+        logSeqsForJob,
+        logNamesForJob,
         stages: { getServers, checkAccess, updateMarkets, jobQueue, buggedJobs, checkCondition, jobAcception },
     };
 })();

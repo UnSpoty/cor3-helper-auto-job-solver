@@ -1,10 +1,11 @@
 // Auto-Jobs v2 "Download Log" bundle builder.
 //
-// Minimal: header (build/web/ext versions) + v2 settings + v2 logger
-// entries (module id `auto-jobs-v2` or `flow-v2-*`). No state/queue/
-// reachability dumps — v2 has no runtime that would write them.
-// No SERVER_PRIORITIES / NM_GRAPH — those are shared with v1 and would
-// leak v1's configuration into a "v2-only" download.
+// Bundle: header (build/web/ext versions) + v2 settings + v2 RUNTIME STATE
+// (pipeline node, job-queue board, bugged registry + reasons, master switches,
+// server overrides — all v2-owned keys the orchestrator/flows write) + v2
+// logger entries (module id `auto-jobs-v2` or `flow-v2-*`). No SERVER_PRIORITIES
+// / NM_GRAPH — those are shared with v1 and would leak v1's configuration into
+// a "v2-only" download.
 
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
@@ -21,7 +22,11 @@
     async function buildDebugBundle() {
         const sl = C.STORAGE_LOCAL;
         const ss = C.STORAGE_SYNC;
-        const local = await Store.local.get([sl.WEB_VERSION, sl.SYSTEM_VERSION]);
+        const local = await Store.local.get([
+            sl.WEB_VERSION, sl.SYSTEM_VERSION,
+            sl.AJV2_PIPELINE_STATE, sl.AJV2_JOB_QUEUE, sl.AJV2_BUGGED_JOBS,
+            sl.AJV2_MASTER_SWITCHES, sl.AJV2_SERVER_OVERRIDES,
+        ]);
         const sync  = await Store.sync.get([ss.AUTOJOBS_V2_SETTINGS]);
 
         const lines = [];
@@ -39,17 +44,70 @@
         const v2settings = sync[ss.AUTOJOBS_V2_SETTINGS];
         lines.push('  ' + (v2settings === undefined ? '(ABSENT — never written)' : JSON.stringify(v2settings)));
         lines.push('');
+
+        // ── Runtime state (v2-owned keys the orchestrator + flows write) ──
+        lines.push('─── Runtime state (v2) ───');
+
+        const ps = local[sl.AJV2_PIPELINE_STATE];
+        lines.push('Pipeline (AJV2_PIPELINE_STATE):');
+        lines.push('  ' + (ps
+            ? `running=${!!ps.running} node=${ps.node || '—'} cycle=${ps.cycle != null ? ps.cycle : '—'} error=${ps.error || '—'} updatedAt=${fmtTs(ps.updatedAt)}`
+            : '(none — orchestrator has not run this session)'));
+
+        const bugged = local[sl.AJV2_BUGGED_JOBS];
+        const buggedKeys = (bugged && typeof bugged === 'object') ? Object.keys(bugged) : [];
+        lines.push(`Bugged jobs (AJV2_BUGGED_JOBS): ${buggedKeys.length}`);
+        if (!buggedKeys.length) lines.push('  (none)');
+        else for (const id of buggedKeys) {
+            const b = bugged[id] || {};
+            lines.push(`  ${id} — ${b.reason || '?'} (since ${fmtTs(b.since)})`);
+        }
+
+        const q = local[sl.AJV2_JOB_QUEUE];
+        lines.push('Job queue (AJV2_JOB_QUEUE):');
+        if (!q || !Array.isArray(q.jobs)) {
+            lines.push('  (none — JOB_QUEUE has not been built this session)');
+        } else {
+            lines.push(`  cycle=${q.cycle != null ? q.cycle : '—'} computedAt=${fmtTs(q.computedAt)} jobs=${q.jobs.length}`);
+            if (Array.isArray(q.markets)) for (const m of q.markets) {
+                lines.push(`  market ${m.slot}: reachable=${!!m.reachable} avail=${m.jobCount} taken=${m.takenCount}${m.reason ? ` (${m.reason})` : ''}`);
+            }
+            for (const j of q.jobs) {
+                const elig = j.eligible === true ? 'eligible' : (j.eligible === false ? 'SKIP' : 'pending');
+                const reason = j.skipReason ? ` — ${j.skipReason}` : '';
+                lines.push(`    [${j.status || '?'}] ${j.name || '?'} <${j.type || 'unrecognised'}> @${j.marketSlot || '?'} srv=${j.serverName || '—'} → ${elig}${reason}`);
+            }
+        }
+
+        const ms = local[sl.AJV2_MASTER_SWITCHES];
+        lines.push('Master switches (AJV2_MASTER_SWITCHES):');
+        lines.push('  ' + (ms === undefined ? '(ABSENT — never written)' : JSON.stringify(ms)));
+
+        const so = local[sl.AJV2_SERVER_OVERRIDES];
+        const soKeys = (so && typeof so === 'object') ? Object.keys(so) : [];
+        lines.push(`Server overrides (AJV2_SERVER_OVERRIDES): ${soKeys.length}`);
+        if (soKeys.length) lines.push('  ' + JSON.stringify(so));
+
+        lines.push('');
         lines.push('─── Logs (v2 only) ───');
 
         try {
-            const all = (Logger && typeof Logger.getAll === 'function') ? await Logger.getAll() : null;
+            // Read straight from chrome.storage.local 'cor3_logs' — the SAME
+            // source the on-screen Activity Log uses (log-viewer.js). The popup's
+            // in-memory Logger.getAll() buffer is stale here: the popup is a
+            // separate context from the content scripts that WRITE these logs,
+            // and ensureBuffer() snapshots storage once then never re-reads it,
+            // so Logger.getAll() froze the export at the first download.
+            const all = (await Store.local.getOne(C.STORAGE_LOCAL.LOGS, {})) || {};
             if (all && typeof all === 'object') {
                 const moduleIds = Object.keys(all).filter((id) => RELEVANT_MODULE_PATTERN.test(id)).sort();
                 if (!moduleIds.length) {
                     lines.push('(no v2 log entries yet — no module is writing under the auto-jobs-v2 id)');
                 }
                 for (const id of moduleIds) {
-                    const entries = all[id] || [];
+                    const entries = Array.isArray(all[id])
+                        ? all[id].slice().sort((a, b) => (a.ts || 0) - (b.ts || 0))
+                        : [];
                     if (!entries.length) continue;
                     lines.push('');
                     lines.push(`── ${id} (${entries.length} entries) ──`);
@@ -59,7 +117,7 @@
                     }
                 }
             } else {
-                lines.push('(Logger.getAll() unavailable in this context)');
+                lines.push('(cor3_logs unavailable in this context)');
             }
         } catch (err) {
             lines.push(`(failed to read logs: ${String(err && err.message || err)})`);

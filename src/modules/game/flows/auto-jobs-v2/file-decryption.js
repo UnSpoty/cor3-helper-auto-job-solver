@@ -107,7 +107,10 @@
     }
 
     const SOLVER_START = [MSG.SOLVER.START_DECRYPT, MSG.SOLVER.START_ICE_WALL, MSG.SOLVER.START_SIMPLE_DECRYPT];
-    const SOLVER_STOP = [MSG.SOLVER.STOP_DECRYPT, MSG.SOLVER.STOP_ICE_WALL, MSG.SOLVER.STOP_SIMPLE_DECRYPT];
+    // NOTE: STOP_ICE_WALL is intentionally NOT stopped here — the ICE WALL solver
+    // is a standalone always-on watcher (auto-ice-wall, default on) so it also
+    // works outside Auto-Jobs; stopping it after a flow would kill that watcher.
+    const SOLVER_STOP = [MSG.SOLVER.STOP_DECRYPT, MSG.SOLVER.STOP_SIMPLE_DECRYPT];
     function startSolvers() { for (const m of SOLVER_START) Bus.window.post(m, null); }
     function stopSolvers() { for (const m of SOLVER_STOP) Bus.window.post(m, null); }
 
@@ -145,9 +148,10 @@
             return { success: true, didWork: false, retryable, reason: cap.reason };
         }
 
-        // Runtime flag the standalone solvers gate their loops on; v1 may have
-        // left it set. (Runtime flag, not v1 storage/messages.)
-        root.__jobManagerAbort = false;
+        // v2-private abort flag (NOT v1's shared __jobManagerAbort) — reset at the
+        // start of each flow; FLOW_ABORT sets it true. Kept separate from v1 so a
+        // concurrent v1 flow can't clear our abort, nor we theirs.
+        root.__cor3AbortV2 = false;
 
         startSolvers();
         try {
@@ -172,20 +176,20 @@
 
             const appearDeadline = Date.now() + 90_000;
             let appeared = false;
-            while (Date.now() < appearDeadline && !root.__jobManagerAbort) {
+            while (Date.now() < appearDeadline && !root.__cor3AbortV2) {
                 if (findMinigame()) { appeared = true; break; }
                 await dom.sleep(250);
             }
-            if (root.__jobManagerAbort) { say('warn', 'aborted by orchestrator before minigame opened'); return { success: false, retryable: true, reason: 'aborted' }; }
+            if (root.__cor3AbortV2) { say('warn', 'aborted by orchestrator before minigame opened'); return { success: false, retryable: true, reason: 'aborted' }; }
             if (!appeared) { say('warn', 'minigame did not appear within 90s'); return { success: false, retryable: true, reason: 'minigame-did-not-appear' }; }
 
             say('info', 'minigame open — waiting for solver to finish');
-            // Bounded by the shared abort flag: on STOP / FLOW_TIMEOUT the
-            // orchestrator posts FLOW_ABORT (→ __jobManagerAbort), so this can
+            // Bounded by the v2 abort flag: on STOP / FLOW_TIMEOUT the
+            // orchestrator posts FLOW_ABORT (→ __cor3AbortV2), so this can
             // never spin forever on a minigame the solver fails to close (which
             // would otherwise hang the flow and leave `busy` stuck true).
-            while (findMinigame() && !root.__jobManagerAbort) await dom.sleep(200);
-            if (root.__jobManagerAbort) { say('warn', 'aborted by orchestrator during solve'); return { success: false, retryable: true, reason: 'aborted' }; }
+            while (findMinigame() && !root.__cor3AbortV2) await dom.sleep(200);
+            if (root.__cor3AbortV2) { say('warn', 'aborted by orchestrator during solve'); return { success: false, retryable: true, reason: 'aborted' }; }
 
             // ── MODULE:FD_COMPLETE ──
             step(NODE.FD_COMPLETE);
@@ -249,7 +253,7 @@
             // too. runFileDecryption resets the flag to false on its next start.
             this.track(Bus.window.on(AJV2.FLOW_ABORT, (env) => {
                 if (env && env.jobId === runningJobId) {
-                    root.__jobManagerAbort = true;
+                    root.__cor3AbortV2 = true;
                     this.warn(`FLOW_ABORT — aborting running job ${env.jobId}`);
                 }
             }));

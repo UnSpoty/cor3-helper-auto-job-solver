@@ -267,18 +267,46 @@ START → DELAY:10s → ┌─ GET_SERVERS → CHECK_SERVERS_ACCESABILITY
 
 ### Phase 2 — `JOB_FLOW` (MAIN world, in progress)
 
-After JOB_ACCEPTION the orchestrator runs `_runJobFlows()`: it takes ONE
-in-progress (TAKEN, non-bugged) job of a supported type, dispatches it to a MAIN
-flow-v2 module and **parks on the result** — so the v2 loop is paused for the
-duration of that minigame (the "JOB-FLOW must stop during Decrypt" rule). Then
-it falls through to DELAY:30s and the next cycle handles the next job (one job
-per cycle: solve → complete → wait).
+After JOB_ACCEPTION the orchestrator runs `_runJobFlows()`: it selects THIS
+cycle's **batch** of in-progress (TAKEN, non-bugged) jobs (`_selectBatch`),
+dispatches them to their MAIN flow-v2 modules one at a time and **parks on each
+result** — so the v2 loop is paused for the duration of each minigame (the
+"JOB-FLOW must stop during Decrypt" rule). Then it falls through to DELAY:30s and
+the next cycle picks the next batch.
+
+**Batch selection (`_selectBatch`) — minimise cycles + logins:**
+
+- **`file_decryption` FIRST, one per cycle.** Absolute priority drains every
+  TAKEN decrypt (one at a time — each is a separate local minigame, nothing to
+  batch and no SAI login to share) before any SAI type, mirroring
+  JOB_ACCEPTION's decrypt-first acceptance.
+- **else every wired SAI job on ONE server** — grouped by `conditions.serverConfigId`,
+  the busiest server wins. All its jobs run back-to-back so the server is
+  connected + logged into **once**.
+
+**One login per server.** Each SAI job in a batch is tagged with the same
+`batchKey` (`${runToken}:${cycle}:${serverId}`). `_sai-flow.js` `ensureAccess`
+establishes access (login-with-grant, or hack) on the FIRST job and every later
+job of the batch **reuses that session** (`root.__cor3SaiSession`) instead of
+re-connecting + re-logging — gated on the live endpoint still pointing at the
+server. A failed access is cached too, so an un-enterable server is not re-hacked
+once per job.
+
+**Completes are DEFERRED to the end of an SAI batch.** `job.complete` flips the
+endpoint to the market home and back, which tears down the shared SAI session —
+so completing mid-batch would log us out before the next job's WS action. While
+`deferComplete` is set the flows only ACT (their `complete()` is a no-op); the
+endpoint stays on the server for the whole batch, and the orchestrator sends
+`job.complete` for every actioned job in one pass at the end (`_completeBatchJobs`),
+then reverts to HOME. (READY_TO_COMPLETE, which runs before JOB_FLOW, is the
+self-healing net for any complete that fails.) The `file_decryption` pick is NOT
+deferred — it has no SAI session, so its flow completes itself as before.
 
 **Dispatch protocol** (v2-only, never the v1 `MSG.JOB.*` channel):
 
 ```
-orchestrator (isolated) ──FLOW_START { jobId, marketId, type, fileCondition }──▶ flow-v2 module (MAIN)
-orchestrator (isolated) ◀──FLOW_RESULT { jobId, marketId, success, didWork, reason }── flow-v2 module (MAIN)
+orchestrator (isolated) ──FLOW_START { jobId, marketId, jobType, serverId, serverType, serverName, batchKey, deferComplete, <targets> }──▶ flow-v2 module (MAIN)
+orchestrator (isolated) ◀──FLOW_RESULT { jobId, marketId, success, didWork, retryable, reason }── flow-v2 module (MAIN)
 ```
 
 - `success:true, didWork:true`  → flow sent `job.complete` (`MSG.GAME.COMPLETE_JOB`).
@@ -330,7 +358,7 @@ plus `CLOSE_SAI_TERMINAL`.
 | Node ids / cadence | `shared/constants.js` | `AJV2.NODE`, `AJV2.LOOP` |
 | Flow Map | `ui/sections/auto-jobs-v2/flow-map.js` | `NODES`, `EDGES`, `edgePoints()` |
 | Job List | `ui/sections/auto-jobs-v2/job-list.js` | `render()`, `jobRow()` |
-| JOB_FLOW dispatch | `automation/auto-jobs-v2.js` | `_runJobFlows()`, `_dispatchFlow()`, `_markBugged()` |
+| JOB_FLOW dispatch | `automation/auto-jobs-v2.js` | `_runJobFlows()`, `_selectBatch()`, `_dispatchFlow()`, `_completeBatchJobs()`, `_markBugged()` |
 | file_decryption flow (MAIN) | `game/flows/auto-jobs-v2/file-decryption.js` | `runFileDecryption()` |
 | Loadout API (MAIN) | `game/loadout-panel.js` | `COR3.game.loadout.planDecrypt/ensureDecrypt` (DECRYPT/fileTypes) + `planHack/ensureHack` (HACK/serverTypes) |
 | Desktop window helper (MAIN) | `game/desktop-window.js` | `COR3.game.desktop.openApp/openAppAndWait/invokeReactClick/findClickableByText/selectServerTile/findPanelButton` |

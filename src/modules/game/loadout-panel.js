@@ -783,14 +783,31 @@
             }
             return this._isEquipped(id) === want;
         }
+        // Ensure the loadout snapshot is loaded — the headless plan/ensure API
+        // needs it. If it isn't in yet (the user never opened the Loadout panel
+        // this session), REQUEST it over WS (join-room loadout → loadout/get.options
+        // → MSG.WS.LOADOUT → this._snapshot) and wait, instead of bailing with
+        // 'no-loadout-snapshot'. So ensureDecrypt/ensureHack — and thus the v2
+        // flows + the SAI bridge — work without manually warming the panel.
+        async _ensureSnapshot(timeoutMs, log) {
+            if (this._snapshot) return true;
+            const say = typeof log === 'function' ? log : () => {};
+            if (typeof root.__cor3RequestLoadout !== 'function') return false;
+            say('info', 'loadout snapshot not loaded — requesting it over WS');
+            root.__cor3RequestLoadout();
+            const end = Date.now() + (timeoutMs || 8000);
+            while (Date.now() < end && !this._snapshot) await dom.sleep(250);
+            return !!this._snapshot;
+        }
         // Make the loadout able to decrypt `ext`. Resolves to
         //   { ok:true,  status:'ready'|'installed'|'swapped' }
         //   { ok:false, status, reason }
         async apiEnsureDecrypt(ext, log) {
             const say = typeof log === 'function' ? log : () => {};
+            await this._ensureSnapshot(8000, say);   // auto-fetch the snapshot if not warmed yet
             const plan = this.apiPlanDecrypt(ext);
             if (plan.status === 'ready')   { say('info', `loadout already decrypts ${ext}`); return { ok: true, status: 'ready' }; }
-            if (plan.status === 'unknown') { say('warn', 'loadout snapshot not loaded yet'); return { ok: false, status: 'unknown', reason: 'no-loadout-snapshot' }; }
+            if (plan.status === 'unknown') { say('warn', 'loadout snapshot still not loaded after request'); return { ok: false, status: 'unknown', reason: 'no-loadout-snapshot' }; }
             if (plan.status === 'none')    { say('warn', `no owned software can decrypt ${ext}`); return { ok: false, status: 'none', reason: `no-decrypt-software:${ext}` }; }
             if (typeof root.__cor3LoadoutEquipSoftware !== 'function') return { ok: false, status: 'no-helper', reason: 'equip-helper-missing' };
 
@@ -856,9 +873,10 @@
         //   { ok:false, status, reason }
         async apiEnsureHack(serverType, log) {
             const say = typeof log === 'function' ? log : () => {};
+            await this._ensureSnapshot(8000, say);   // auto-fetch the snapshot if not warmed yet
             const plan = this.apiPlanHack(serverType);
             if (plan.status === 'ready')   { say('info', `loadout already hacks "${serverType}"`); return { ok: true, status: 'ready' }; }
-            if (plan.status === 'unknown') { say('warn', 'loadout snapshot not loaded yet'); return { ok: false, status: 'unknown', reason: 'no-loadout-snapshot' }; }
+            if (plan.status === 'unknown') { say('warn', 'loadout snapshot still not loaded after request'); return { ok: false, status: 'unknown', reason: 'no-loadout-snapshot' }; }
             if (plan.status === 'none')    { say('warn', `no owned software can hack "${serverType}"`); return { ok: false, status: 'none', reason: `no-hack-software:${serverType}` }; }
             if (typeof root.__cor3LoadoutEquipSoftware !== 'function') return { ok: false, status: 'no-helper', reason: 'equip-helper-missing' };
 

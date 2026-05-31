@@ -219,7 +219,7 @@
         // ─── Auto solvers (build-once; user-driven toggles) ───────────
         container.appendChild(el('div', 'section-title', t('overview.autoSolvers')));
         container.appendChild(buildToggleCard(t('overview.autoDecrypt'), C.STORAGE_SYNC.AUTO_DECRYPT_ENABLED, autoDecrypt));
-        container.appendChild(buildToggleCard(t('overview.autoIceWall'), C.STORAGE_SYNC.AUTO_ICE_WALL_ENABLED, autoIceWall));
+        container.appendChild(buildToggleCard(t('overview.autoIceWall'), C.STORAGE_SYNC.AUTO_ICE_WALL_ENABLED, autoIceWall, buildIceWallDbButton()));
         container.appendChild(buildToggleCard(t('overview.autoSimpleDecrypt'), C.STORAGE_SYNC.AUTO_SIMPLE_DECRYPT_ENABLED, autoSimpleDecrypt));
 
         // ─── Game appearance (build-once; user-driven toggles) ────────
@@ -378,10 +378,11 @@
     // appearance / solver toggles (they're user-driven in this section),
     // so the checkbox state captured at build() time stays correct for
     // the popup's lifetime.
-    function buildToggleCard(label, key, currentValue) {
+    function buildToggleCard(label, key, currentValue, extra) {
         const row = el('div', 'card');
         const cardRow = el('div', 'card-row');
         cardRow.appendChild(el('span', 'card-label', escape(label)));
+        if (extra) cardRow.appendChild(extra);   // optional control (e.g. a button) before the switch
         const sw = el('label', 'switch');
         const inp = document.createElement('input');
         inp.type = 'checkbox';
@@ -400,6 +401,118 @@
             sendToContent('settingChanged', { key, value });
         });
         return row;
+    }
+
+    // ─── ICE WALL learned-shapes viewer (read-only) ──────────────────────
+    // A small button next to the Auto ICE WALL toggle that opens a modal
+    // listing the shapes the solver has learned a click-cell for (it builds
+    // this DB live while solving). Read-only + a "clear base" action.
+    function buildIceWallDbButton() {
+        const btn = el('button', 'btn small', 'База');
+        btn.title = 'Learned ICE WALL shapes';
+        btn.style.marginLeft = 'auto';
+        btn.style.marginRight = '8px';
+        btn.addEventListener('click', openIceWallDbModal);
+        return btn;
+    }
+
+    // Mini SVG of a learned shape (reuses the game's triangle geometry). The
+    // learned click cell is filled red; revealed cells cyan, placeholders dim.
+    function renderIceWallShape(entry) {
+        const ns = 'http://www.w3.org/2000/svg';
+        const COL = 31.5, ROW = 54;
+        const TRI = 'M60.6914 53.0305 H1.73242 L31.21 1.99927 Z';
+        const X0 = 1.73, X1 = 60.69, Y0 = 1.99, Y1 = 53.03;   // TRI path extents
+        const cells = Array.isArray(entry.cells) ? entry.cells : [];
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const c of cells) {
+            const tx = c.dc * COL, ty = c.dr * ROW;
+            const yLo = c.mirror ? (ty - Y1) : (ty + Y0);
+            const yHi = c.mirror ? (ty - Y0) : (ty + Y1);
+            minX = Math.min(minX, tx + X0); maxX = Math.max(maxX, tx + X1);
+            minY = Math.min(minY, yLo);     maxY = Math.max(maxY, yHi);
+        }
+        if (!isFinite(minX)) { minX = 0; minY = 0; maxX = X1; maxY = Y1; }
+        const pad = 6;
+        const svg = document.createElementNS(ns, 'svg');
+        svg.setAttribute('viewBox', `${minX - pad} ${minY - pad} ${(maxX - minX) + 2 * pad} ${(maxY - minY) + 2 * pad}`);
+        svg.setAttribute('width', '116'); svg.setAttribute('height', '104');
+        const click = entry.click || {};
+        for (const c of cells) {
+            const isClick = (c.dc === click.dc && c.dr === click.dr && (!!c.mirror === !!click.mirror));
+            const p = document.createElementNS(ns, 'path');
+            p.setAttribute('d', TRI);
+            p.setAttribute('transform', `translate(${c.dc * COL}, ${c.dr * ROW})${c.mirror ? ' scale(1,-1)' : ''}`);
+            p.setAttribute('fill', isClick ? '#FF3333' : (c.revealed ? '#76C1D1' : '#21505e'));
+            p.setAttribute('fill-opacity', isClick ? '0.85' : (c.revealed ? '0.5' : '0.3'));
+            p.setAttribute('stroke', isClick ? '#FFFFFF' : '#3a6b78');
+            p.setAttribute('stroke-width', '2');
+            svg.appendChild(p);
+        }
+        return svg;
+    }
+
+    async function openIceWallDbModal() {
+        const prev = document.getElementById('ice-wall-db-modal');
+        if (prev) prev.remove();
+        const overlay = el('div');
+        overlay.id = 'ice-wall-db-modal';
+        Object.assign(overlay.style, {
+            position: 'fixed', inset: '0', background: 'rgba(0,0,0,0.6)', zIndex: '9999',
+            display: 'flex', alignItems: 'flex-start', justifyContent: 'center', overflow: 'auto', padding: '16px',
+        });
+        const panel = el('div', 'card');
+        Object.assign(panel.style, { maxWidth: '540px', width: '100%', maxHeight: '90vh', overflow: 'auto' });
+        const head = el('div', 'card-row');
+        head.appendChild(el('span', 'card-label', 'ICE WALL — learned shapes'));
+        const closeBtn = el('button', 'btn small', '✕');
+        closeBtn.style.marginLeft = 'auto';
+        head.appendChild(closeBtn);
+        panel.appendChild(head);
+        const body = el('div');
+        panel.appendChild(body);
+        const foot = el('div', 'card-row');
+        const count = el('span', 'muted xs');
+        const clearBtn = el('button', 'btn small', 'Clear base');
+        clearBtn.style.marginLeft = 'auto';
+        foot.appendChild(count);
+        foot.appendChild(clearBtn);
+        panel.appendChild(foot);
+        overlay.appendChild(panel);
+        document.body.appendChild(overlay);
+
+        const close = () => overlay.remove();
+        closeBtn.addEventListener('click', close);
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+
+        async function render() {
+            const db = (await Store.local.getOne(C.STORAGE_LOCAL.ICE_WALL_CLICK_DB, {})) || {};
+            const entries = Object.keys(db).map((k) => db[k]).sort((a, b) => (b.hits || 0) - (a.hits || 0));
+            count.textContent = `${entries.length} shape(s) · red = click cell`;
+            body.innerHTML = '';
+            if (!entries.length) {
+                body.appendChild(el('div', 'muted xs', 'No shapes learned yet — solve some ICE WALL puzzles with the solver on.'));
+                return;
+            }
+            const grid = el('div');
+            Object.assign(grid.style, { display: 'flex', flexWrap: 'wrap', gap: '10px', marginTop: '8px' });
+            for (const entry of entries) {
+                const item = el('div', 'card');
+                Object.assign(item.style, { padding: '6px', width: '132px', textAlign: 'center' });
+                item.appendChild(renderIceWallShape(entry));
+                item.appendChild(el('div', 'muted xs', `hits ${entry.hits || 0}`));
+                grid.appendChild(item);
+            }
+            body.appendChild(grid);
+        }
+        clearBtn.addEventListener('click', async () => {
+            // Clears storage; auto-ice-wall watches this key and pushes the empty
+            // DB to the live MAIN solver (ICE_WALL_DB), so the clear takes effect
+            // immediately, not only on the solver's next start.
+            await Store.local.setOne(C.STORAGE_LOCAL.ICE_WALL_CLICK_DB, {});
+            render();
+        });
+        render();
     }
 
     // ─── Targeted refreshes ───────────────────────────────────────────────
