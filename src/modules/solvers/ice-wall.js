@@ -286,7 +286,11 @@
         for (const t of revealedTargets) sigCounts.set(t.sig, (sigCounts.get(t.sig) || 0) + 1);
         const targetAnchor =
             revealedTargets.find((t) => sigCounts.get(t.sig) === 1) || revealedTargets[0];
-        const targetClick = pickClickTarget(targetCells);
+        // Click target must be a REVEALED cell: picking over ALL target cells
+        // (incl. placeholders) could land on a cell whose mapped board offset is
+        // still empty/unrevealed, so the click misfires, the counter never
+        // advances, and a correct match is wrongly discarded.
+        const targetClick = pickClickTarget(revealedTargets);
 
         const boardCells = readBoardCells();
         const boardMap = makeBoardMap(boardCells);
@@ -370,7 +374,11 @@
         for (const t of revealedTargets) sigCounts.set(t.sig, (sigCounts.get(t.sig) || 0) + 1);
         const targetAnchor =
             revealedTargets.find((t) => sigCounts.get(t.sig) === 1) || revealedTargets[0];
-        const targetClick = pickClickTarget(targetCells);
+        // Click target must be a REVEALED cell: picking over ALL target cells
+        // (incl. placeholders) could land on a cell whose mapped board offset is
+        // still empty/unrevealed, so the click misfires, the counter never
+        // advances, and a correct match is wrongly discarded.
+        const targetClick = pickClickTarget(revealedTargets);
 
         const boardCells = readBoardCells();
         const boardMap = makeBoardMap(boardCells);

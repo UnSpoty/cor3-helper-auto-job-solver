@@ -109,11 +109,15 @@
             const available = mercs.filter((m) => m.status === 'AVAILABLE' && configs[m.id]);
             if (available.length > 0) {
                 available.sort((a, b) => {
-                    const costA = (configs[a.id] && configs[a.id].totalCost) || Infinity;
-                    const costB = (configs[b.id] && configs[b.id].totalCost) || Infinity;
+                    // Number.isFinite, not `|| Infinity`: a configured totalCost
+                    // of 0 (the cheapest) must sort first, not be coerced to the
+                    // most expensive. configs[*.id] is truthy (line-109 filter).
+                    const ca = configs[a.id], cb = configs[b.id];
+                    const costA = Number.isFinite(ca.totalCost) ? ca.totalCost : Infinity;
+                    const costB = Number.isFinite(cb.totalCost) ? cb.totalCost : Infinity;
                     if (costA !== costB) return costA - costB;
-                    const riskA = (configs[a.id] && configs[a.id].riskScore) || 0;
-                    const riskB = (configs[b.id] && configs[b.id].riskScore) || 0;
+                    const riskA = Number.isFinite(ca.riskScore) ? ca.riskScore : 0;
+                    const riskB = Number.isFinite(cb.riskScore) ? cb.riskScore : 0;
                     return riskA - riskB;
                 });
                 mercId = available[0].id;

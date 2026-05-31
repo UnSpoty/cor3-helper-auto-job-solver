@@ -128,11 +128,19 @@
                 if (changes[C.STORAGE_SYNC.ALARMS]) {
                     alarms = changes[C.STORAGE_SYNC.ALARMS].newValue || [];
                     triggered = {};
+                    // Silence any running continuous beep — the alarm that
+                    // started it may have just been deleted/disabled/edited.
+                    // tick() re-starts it within 1s if one is still due.
+                    stopContinuous();
                     this.debug(`alarms updated: ${alarms.length}`);
                 }
             }));
             tickIntervalId = setInterval(() => tick(this), 1000);
             this.track(() => { if (tickIntervalId) { clearInterval(tickIntervalId); tickIntervalId = null; } });
+            // Stop the continuous beep on module stop/reload — its interval is
+            // otherwise unreachable (a fresh start can't see the old id) and
+            // would keep beeping for the page lifetime.
+            this.track(() => stopContinuous());
 
             // chrome.runtime listeners for popup test/stop
             this.track(root.COR3.Bus.runtime.on('testAlarm', (payload) => {

@@ -11,7 +11,12 @@
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
     const { Module, Bus, Store, Registry, constants: C } = root.COR3;
 
-    const chosen = new Set();
+    // messageId -> last auto-pick attempt ts. A Map (not a Set) so a dropped
+    // RESPOND_DECISION can be retried after a cooldown, and so entries are
+    // pruned once their decision is gone (the old Set blacklisted a messageId
+    // forever and grew unbounded for the page lifetime).
+    const chosen = new Map();
+    const RETRY_AFTER_MS = 15_000;
 
     async function getSettings() {
         const enabled = await Store.sync.getOne(C.STORAGE_SYNC.AUTO_CHOOSE_ENABLED, false);
@@ -32,9 +37,18 @@
         const decisions = (await Store.local.getOne(C.STORAGE_LOCAL.DECISIONS, [])) || [];
         if (decisions.length === 0) return;
 
+        // Prune attempts for decisions that are gone (resolved/expired) so the
+        // map can't grow unbounded for the page lifetime.
+        const present = new Set(decisions.map((d) => d.messageId));
+        for (const id of [...chosen.keys()]) if (!present.has(id)) chosen.delete(id);
+
         for (const d of decisions) {
             if (d.isResolved || !d.decisionDeadline || !Array.isArray(d.decisionOptions)) continue;
-            if (chosen.has(d.messageId)) continue;
+            // Skip only if we attempted recently — a dropped/failed
+            // RESPOND_DECISION is retried after RETRY_AFTER_MS rather than being
+            // blacklisted forever.
+            const last = chosen.get(d.messageId);
+            if (last != null && (Date.now() - last) < RETRY_AFTER_MS) continue;
             const remaining = new Date(d.decisionDeadline).getTime() - Date.now();
             if (remaining <= 0) continue;
             if (remaining > 60_000) continue;
@@ -46,7 +60,7 @@
             }
             if (!best) continue;
 
-            chosen.add(d.messageId);
+            chosen.set(d.messageId, Date.now());
             mod.info(`auto-choosing "${best.label}" score=${bestS.toFixed(2)} threshold=${threshold}`);
             Bus.window.post(C.MSG.GAME.RESPOND_DECISION, {
                 expeditionId: d.expeditionId,

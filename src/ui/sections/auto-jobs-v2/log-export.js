@@ -33,7 +33,11 @@
         lines.push(`WebVersion: ${local[sl.WEB_VERSION] || '?'}     SystemVersion: ${local[sl.SYSTEM_VERSION] || '?'}`);
         lines.push('');
         lines.push('Settings v2:');
-        lines.push('  ' + JSON.stringify(sync[ss.AUTOJOBS_V2_SETTINGS] || { enabled: false }));
+        // Print the raw stored value. An ABSENT marker (not a fabricated
+        // `{enabled:false}`) so a debug reader can tell "never written" from
+        // "explicitly disabled".
+        const v2settings = sync[ss.AUTOJOBS_V2_SETTINGS];
+        lines.push('  ' + (v2settings === undefined ? '(ABSENT — never written)' : JSON.stringify(v2settings)));
         lines.push('');
         lines.push('─── Logs (v2 only) ───');
 

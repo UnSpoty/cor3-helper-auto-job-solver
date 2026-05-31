@@ -138,6 +138,12 @@
         return null;
     }
 
+    // Job types whose MAIN-world flow-v2 module is wired (Phase 2). Only these
+    // are accepted off the board: accepting a type with no flow — including a
+    // null/unrecognised type — would consume a market slot that then sits
+    // TAKEN forever (the orchestrator can neither complete nor recover it).
+    const WIRED_FLOW_TYPES = new Set([C.FLOW.FILE_DECRYPTION]);
+
     function jobServer(job) {
         const rs = job && job.relatedServers;
         if (Array.isArray(rs) && rs[0]) return rs[0].serverName || rs[0].name || null;
@@ -314,16 +320,32 @@
                 const envelope = await ctx.store.local.getOne(m.storageKey, null);
                 const available = (envelope && Array.isArray(envelope.jobs)) ? envelope.jobs : [];
                 const recent = (envelope && Array.isArray(envelope.recentJobs)) ? envelope.recentJobs : [];
-                const marketId = (envelope && envelope.marketId) || null;
+                // marketId is required to accept any of this market's jobs. Read
+                // it directly (no `|| null` masking) and fail loudly if a
+                // reachable market's envelope lacks it — otherwise every job
+                // here would be silently unacceptable down at JOB_ACCEPTION.
+                const marketId = envelope ? envelope.marketId : null;
+                if (marketId == null) {
+                    ctx.log.error(`UPDATE_MARKETS · ${m.label}: reachable market has no marketId in its envelope — its jobs cannot be accepted this cycle`);
+                }
 
-                for (const job of available) rawJobs.push({ job, slot: m.slot, marketId, status: 'AVAILABLE' });
+                // De-dup by job id across the AVAILABLE board and the TAKEN
+                // recentJobs: right after an accept the game can momentarily
+                // list the same job in both. The TAKEN entry wins (newer,
+                // in-progress state) so the queue never carries a duplicate
+                // that JOB_ACCEPTION would re-accept.
+                const byId = new Map();
+                for (const job of available) {
+                    if (job && job.id != null) byId.set(job.id, { job, slot: m.slot, marketId, status: 'AVAILABLE' });
+                }
                 let takenCount = 0;
                 for (const job of recent) {
-                    if (job && job.status === 'TAKEN') {
-                        rawJobs.push({ job, slot: m.slot, marketId, status: 'TAKEN' });
+                    if (job && job.status === 'TAKEN' && job.id != null) {
+                        byId.set(job.id, { job, slot: m.slot, marketId, status: 'TAKEN' });
                         takenCount++;
                     }
                 }
+                for (const entry of byId.values()) rawJobs.push(entry);
 
                 markets.push({ slot: m.slot, reachable: true, refreshed, jobCount: available.length, takenCount, marketId, reason: null });
                 ctx.log.debug(`UPDATE_MARKETS · ${m.label}: ${available.length} available, ${takenCount} in-progress${refreshed ? '' : ' (stale)'}`);
@@ -348,7 +370,10 @@
 
             const queue = packet.rawJobs.map(({ job, slot, marketId, status }) => ({
                 id: job.id,
-                name: job.name || job.category || 'Unknown',
+                // Prefer name, else category — both real game fields. No
+                // 'Unknown' fabrication (that hid jobs with no name behind a
+                // fake label); the UI shows its own placeholder if absent.
+                name: job.name || job.category,
                 type: detectJobType(job),
                 // Source-derived status stamped by UPDATE_MARKETS: 'AVAILABLE'
                 // (from the board — an acceptance candidate) or 'TAKEN' (from
@@ -437,6 +462,16 @@
             const evaluations = {};
             const eligible = [];
             for (const job of packet.queue) {
+                // Eligibility is an ACCEPTANCE verdict — it only applies to
+                // AVAILABLE board jobs. TAKEN (in-progress) jobs are routed by
+                // _runJobFlows purely on status+bugged+type, never on
+                // eligible/skipReason, so evaluating them here would only stamp
+                // misleading "eligible:false / market disabled" verdicts into
+                // the shared queue snapshot. Leave them pending.
+                if (job.status !== 'AVAILABLE') {
+                    evaluations[job.id] = { eligible: null, skipReason: null };
+                    continue;
+                }
                 // ── DATA reasons (pipeline-only inputs, baked onto the job) ──
                 const dataReasons = [];
                 if (job.serverName) {
@@ -502,7 +537,11 @@
             if (!packet.eligible) throw new Error('JOB_ACCEPTION: packet.eligible missing (CHECK_CONDITION must run first)');
 
             const eligibleSet = new Set(packet.eligible);
-            const acceptable = packet.queue.filter((j) => eligibleSet.has(j.id) && j.status === 'AVAILABLE');
+            // Only accept jobs whose flow-v2 module is wired (WIRED_FLOW_TYPES);
+            // a null/unwired type that slips through eligibility would be taken
+            // and then sit TAKEN forever (no flow can complete it).
+            const acceptable = packet.queue.filter((j) =>
+                eligibleSet.has(j.id) && j.status === 'AVAILABLE' && WIRED_FLOW_TYPES.has(j.type));
 
             const decryption = acceptable.filter((j) => j.type === C.FLOW.FILE_DECRYPTION);
             const toAccept = decryption.length > 0 ? decryption : acceptable;
@@ -548,6 +587,7 @@
         createPacket,
         stamp,
         MARKET_SLOTS,
+        WIRED_FLOW_TYPES,
         detectJobType,
         jobServer,
         fileConditionForDecrypt,

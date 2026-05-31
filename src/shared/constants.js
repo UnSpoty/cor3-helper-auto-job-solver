@@ -97,6 +97,11 @@
             // (used by auto-jobs at end of a bulk-accept batch that may
             // have left endpoint on DARK/SRM after a remote-market accept).
             REVERT_ENDPOINT_TO_HOME: 'COR3_REVERT_ENDPOINT_TO_HOME',
+            // chrome.runtime action (popup → content script) asking the page
+            // to force a Network Map rescan. Shared read-only channel: v1
+            // auto-jobs listens for it; the v2 / v1 Network Map Refresh
+            // buttons fire it. Plain string (not a COR3_* window type).
+            RESCAN_NETWORK_MAP: 'rescanNetworkMap',
         },
 
         // Solver lifecycle (MAIN ↔ isolated)
@@ -185,6 +190,12 @@
             OPEN_SAI_ACTION: 'ajv2OpenSai',
             OPEN_MARKET_ACTION: 'ajv2OpenMarket',
 
+            // popup Jobs panel → orchestrator: rebuild the saved job board ONCE
+            // from the current markets (the orchestrator runs the read-only
+            // half of the pipeline and republishes AJV2_JOB_QUEUE). Refused
+            // while the loop runs (it already rebuilds the board each cycle).
+            REFRESH_BOARD: 'ajv2RefreshBoard',
+
             // isolated → MAIN window messages. Handled by the MAIN-world v2
             // bridge, which calls the generic COR3.game helpers
             // (serverConnect.connect / networkMap.openServerMarket).
@@ -192,7 +203,7 @@
             OPEN_MARKET: 'COR3_AJV2_OPEN_MARKET',
 
             // JOB_FLOW dispatch (isolated orchestrator → MAIN flow-v2 module).
-            // Payload: { jobId, marketId, jobType, fileCondition, fileId, serverName }.
+            // Payload: { jobId, marketId, jobType, fileCondition }.
             // (Field is `jobType`, NOT `type` — Bus.window builds the envelope as
             //  Object.assign({type}, payload), so a payload `type` would clobber
             //  the Bus message id and the message would never be delivered.)
@@ -200,17 +211,27 @@
             // replies with FLOW_RESULT. These are v2-only — they never overlap
             // the v1 MSG.JOB.* channel.
             FLOW_START: 'COR3_AJV2_FLOW_START',
+            // Orchestrator → MAIN flow: cancel the in-flight job (STOP pressed
+            // or FLOW_TIMEOUT_MS elapsed). Payload: { jobId }. The flow flips
+            // its abort flag, bails out of its wait loops WITHOUT sending
+            // job.complete, and stops being "busy" so the next FLOW_START runs.
+            FLOW_ABORT: 'COR3_AJV2_FLOW_ABORT',
             // MAIN flow-v2 → isolated orchestrator: "I'm now on sub-step <node>".
             // Payload: { jobId, node } where node ∈ AJV2.NODE.*. The orchestrator
             // relays it to AJV2_PIPELINE_STATE so the Flow Map highlights the
             // live sub-step inside JOB_FLOW.
             FLOW_STEP: 'COR3_AJV2_FLOW_STEP',
             // MAIN flow-v2 → isolated orchestrator. Payload:
-            //   { jobId, marketId, success, didWork, reason }
-            //   success:true,didWork:true  → flow completed the job (job.complete sent)
-            //   success:true,didWork:false → nothing to do / can't (e.g. no decrypt
-            //                                 capability) → orchestrator MARKs bugged
-            //   success:false              → runtime failure/timeout → MARK bugged
+            //   { jobId, marketId, success, didWork, reason, retryable }
+            //   success:true,didWork:true   → flow completed the job (job.complete sent)
+            //   success:true,didWork:false  → genuinely undoable (e.g. no owned
+            //                                  decrypt software) → MARK bugged
+            //   success:false               → failure. `retryable:true` flags a
+            //                                  TRANSIENT condition (env/timing/DOM
+            //                                  not ready, flow-busy, abort) — the
+            //                                  orchestrator SKIPs and retries it
+            //                                  next cycle (NOT bugged). Absent or
+            //                                  retryable:false → MARK bugged.
             FLOW_RESULT: 'COR3_AJV2_FLOW_RESULT',
         },
     };

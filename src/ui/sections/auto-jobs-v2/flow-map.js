@@ -37,6 +37,8 @@
     const COL_4 = 900;      // JOB:SKIP
     const LOOP_X = 46;      // far-left lane for the loop-back edge
     const ROW_DECISION = 486;  // top decision row (all four diamonds/skip)
+    const ROW_DELAY = 1260;    // bottom convergence row — DELAY_CYCLE (the cycle wait)
+    const RETURN_X = 985;      // far-right return lane: JOB:SKIP routes around MARK_AS_BUGGED
 
     // type: 'terminal' | 'delay' | 'module' | 'decision'
     // x/y are box CENTRES.
@@ -70,13 +72,24 @@
         { id: NODE.FD_SOLVE,          label: 'SOLVE MINIGAME',  type: 'module',   x: COL_3, y: 1104 },
         { id: NODE.FD_COMPLETE,       label: 'COMPLETE JOB',    type: 'module',   x: COL_3, y: 1176 },
 
-        { id: NODE.DELAY_CYCLE,     label: 'DELAY 30s',                   type: 'delay',    x: CX,    y: 1260 },
+        { id: NODE.DELAY_CYCLE,     label: 'DELAY 30s',                   type: 'delay',    x: CX,    y: ROW_DELAY },
     ];
 
     // All edges route orthogonally (right-angle elbows, rounded corners).
     // kind: 'down' (A.bottom → B.top), 'right' (A.right → B.left),
-    //       'merge' (elbow into B; `enter` = 'right' into B's right side, or
-    //       'top' across then down into B's top), 'loop' (far-left lane).
+    //       'merge', 'loop' (far-left lane).
+    //
+    // A 'merge' edge converging into DELAY_CYCLE carries a hand-placed `route`
+    // { dropX, turnY, enterX, exitRight? }: the branch drops straight out of
+    // its block down to `turnY` (a LOW rail just above DELAY, so no line floats
+    // sideways under the source box), jogs across to `enterX` on DELAY's top
+    // edge, then descends into the top. turnY/enterX are staggered per branch
+    // so the four converging arrows enter at distinct points and never share a
+    // segment — leftmost entry turns highest, giving a clean non-crossing fan.
+    // `exitRight` sends JOB:SKIP out its right side into the RETURN_X lane so it
+    // clears the MARK_AS_BUGGED box stacked directly below it. A 'merge' edge
+    // WITHOUT a route (BUGGED? → CHECK_CONDITION) keeps the old elbow into B's
+    // right side.
     const EDGES = [
         { from: NODE.START,          to: NODE.DELAY_INITIAL,  kind: 'down' },
         { from: NODE.DELAY_INITIAL,  to: NODE.GET_SERVERS,    kind: 'down' },
@@ -90,10 +103,10 @@
         { from: NODE.HAVE_TASKS_IN_PROGRESS, to: NODE.BUGGED_JOBS,     kind: 'right', label: 'YES' },
         { from: NODE.BUGGED_JOBS,    to: NODE.JOB_SKIP,        kind: 'right', label: 'YES' },
         { from: NODE.BUGGED_JOBS,    to: NODE.CHECK_CONDITION, kind: 'merge', enter: 'right', label: 'NO' },
-        { from: NODE.JOB_SKIP,       to: NODE.DELAY_CYCLE,     kind: 'merge', enter: 'right' },
+        { from: NODE.JOB_SKIP,       to: NODE.DELAY_CYCLE,     kind: 'merge', route: { exitRight: true, dropX: RETURN_X, turnY: 1238, enterX: 260 } },
         { from: NODE.CHECK_CONDITION, to: NODE.JOB_ACCEPTION,  kind: 'down' },
         { from: NODE.JOB_ACCEPTION,  to: NODE.JOB_FLOW,        kind: 'down' },
-        { from: NODE.JOB_FLOW,       to: NODE.DELAY_CYCLE,     kind: 'merge', enter: 'top' },
+        { from: NODE.JOB_FLOW,       to: NODE.DELAY_CYCLE,     kind: 'merge', route: { dropX: COL_2, turnY: 1196, enterX: 204 } },
 
         // JOB_FLOW : file_decryption sub-flow.
         { from: NODE.JOB_FLOW,         to: NODE.FD_READ_FORMAT,    kind: 'right', label: 'file_decryption' },
@@ -103,8 +116,8 @@
         { from: NODE.FD_INSTALL_SW,    to: NODE.FD_OPEN_DOWNLOADS, kind: 'down' },
         { from: NODE.FD_OPEN_DOWNLOADS, to: NODE.FD_SOLVE,         kind: 'down' },
         { from: NODE.FD_SOLVE,         to: NODE.FD_COMPLETE,       kind: 'down' },
-        { from: NODE.FD_COMPLETE,      to: NODE.DELAY_CYCLE,       kind: 'merge', enter: 'top' },
-        { from: NODE.MARK_AS_BUGGED,   to: NODE.DELAY_CYCLE,       kind: 'merge', enter: 'right' },
+        { from: NODE.FD_COMPLETE,      to: NODE.DELAY_CYCLE,       kind: 'merge', route: { dropX: COL_3, turnY: 1210, enterX: 220 } },
+        { from: NODE.MARK_AS_BUGGED,   to: NODE.DELAY_CYCLE,       kind: 'merge', route: { dropX: COL_4, turnY: 1224, enterX: 244 } },
 
         { from: NODE.DELAY_CYCLE,    to: NODE.GET_SERVERS,     kind: 'loop',  label: 'loop' },
     ];
@@ -193,11 +206,21 @@
                 return [p0, { x: midX, y: p0.y }, { x: midX, y: p1.y }, p1];
             }
             case 'merge': {
-                if (edge.enter === 'top') {
-                    // Across at A's bottom-y to B's column, then down into B.top.
-                    return [A.bottom, { x: B.top.x, y: A.bottom.y }, B.top];
+                if (edge.route) {
+                    // Converge into DELAY's top: drop straight out of the block,
+                    // make the single horizontal jog LOW (at turnY, just above
+                    // DELAY), then descend into the top at enterX. See EDGES.
+                    const r = edge.route;
+                    const start = r.exitRight ? A.right : A.bottom;
+                    const pts = [start];
+                    if (Math.abs(r.dropX - start.x) > 0.5) pts.push({ x: r.dropX, y: start.y });
+                    pts.push({ x: r.dropX, y: r.turnY });
+                    pts.push({ x: r.enterX, y: r.turnY });
+                    pts.push({ x: r.enterX, y: B.top.y });
+                    return pts;
                 }
-                // 'right': down to B's centre-y, then across into B's right side.
+                // No route (BUGGED? → CHECK_CONDITION): down to B's centre-y,
+                // then across into B's right side.
                 return [A.bottom, { x: A.bottom.x, y: B.right.y }, B.right];
             }
             case 'loop': {
@@ -221,7 +244,8 @@
             case 'down':  return { x: A.bottom.x + 12, y: (A.bottom.y + B.top.y) / 2 };
             case 'right': return { x: (A.right.x + B.left.x) / 2, y: A.right.y - 7 };
             case 'merge':
-                if (edge.enter === 'top') return { x: (A.bottom.x + B.top.x) / 2, y: A.bottom.y - 7 };
+                // Only BUGGED? → CHECK_CONDITION (no route) carries a label;
+                // the routed DELAY merges have none.
                 return { x: A.bottom.x + 12, y: (A.bottom.y + B.right.y) / 2 };
             case 'loop':  return { x: LOOP_X + 8, y: (A.left.y + B.left.y) / 2 };
             default:      return null;
@@ -280,6 +304,7 @@
             maxX = Math.max(maxX, n.x + w / 2);
             maxY = Math.max(maxY, n.y + h / 2);
         }
+        maxX = Math.max(maxX, RETURN_X);  // include the JOB:SKIP return lane
         const PAD = 36;
         const worldW = maxX + PAD;
         const worldH = maxY + PAD;
@@ -390,91 +415,16 @@
         }
         camera.appendChild(nodesG);
 
-        // ── Camera (pan / wheel-zoom / fit) — mirrors network-map ──────────
-        const cam = { x: 0, y: 0, zoom: 1 };
-        const ZOOM_MIN = 0.2, ZOOM_MAX = 3;
-
-        function applyCamera() {
-            const z = Number.isFinite(cam.zoom) && cam.zoom > 0 ? cam.zoom : 1;
-            const x = Number.isFinite(cam.x) ? cam.x : 0;
-            const y = Number.isFinite(cam.y) ? cam.y : 0;
-            cam.zoom = z; cam.x = x; cam.y = y;
-            camera.setAttribute('transform', `translate(${x}, ${y}) scale(${z})`);
-            const gridUnit = 70 * z;
-            const gridSub = 35 * z;
-            gridLayer.style.backgroundPosition = `${x}px ${y}px, ${x + gridSub}px ${y + gridSub}px, ${x}px ${y}px, ${x}px ${y}px, ${x}px ${y}px, ${x}px ${y}px`;
-            gridLayer.style.backgroundSize = `${gridUnit}px ${gridUnit}px, ${gridUnit}px ${gridUnit}px, ${gridUnit}px ${gridUnit}px, ${gridUnit}px ${gridUnit}px, ${gridSub}px ${gridSub}px, ${gridSub}px ${gridSub}px`;
-            zoomLabel.textContent = Math.round(z * 100) + '%';
-        }
-
-        function fit() {
-            const rect = svg.getBoundingClientRect();
-            if (rect.width <= 0 || rect.height <= 0 || worldW <= 0 || worldH <= 0) {
-                cam.x = 0; cam.y = 0; cam.zoom = 1;
-                applyCamera();
-                return;
-            }
-            const sx = rect.width / worldW;
-            const sy = rect.height / worldH;
-            const z = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Math.min(sx, sy)));
-            cam.zoom = z;
-            cam.x = (rect.width - worldW * z) / 2;
-            cam.y = (rect.height - worldH * z) / 2;
-            applyCamera();
-        }
-
-        let dragging = null;
-        svg.addEventListener('pointerdown', (e) => {
-            if (e.button !== 0) return;
-            const tag = (e.target.tagName || '').toLowerCase();
-            if (tag === 'button') return;
-            dragging = { startX: e.clientX, startY: e.clientY, camX: cam.x, camY: cam.y };
-            try { svg.setPointerCapture(e.pointerId); } catch (_) {}
-            svg.classList.add('nm-grabbing');
-            e.preventDefault();
+        // ── Camera (pan / wheel-zoom / fit) via the shared controller ──────
+        // The Flow Map world is fixed (hand-placed nodes), so getWorld returns
+        // the constant bounds. Fits to min(sx,sy) clamped to [0.2, 3].
+        const panZoom = root.COR3.panZoom.create({
+            svg, camera, canvasHost, gridLayer, zoomLabel,
+            getWorld: () => ({ worldW, worldH }),
+            zoomMin: 0.2, zoomMax: 3, fitMin: 0.2, fitMax: 3,
         });
-        svg.addEventListener('pointermove', (e) => {
-            if (!dragging) return;
-            cam.x = dragging.camX + (e.clientX - dragging.startX);
-            cam.y = dragging.camY + (e.clientY - dragging.startY);
-            applyCamera();
-        });
-        function endDrag(e) {
-            if (!dragging) return;
-            try { svg.releasePointerCapture(e.pointerId); } catch (_) {}
-            dragging = null;
-            svg.classList.remove('nm-grabbing');
-        }
-        svg.addEventListener('pointerup', endDrag);
-        svg.addEventListener('pointercancel', endDrag);
-
-        function onWheel(e) {
-            const rect = svg.getBoundingClientRect();
-            if (e.clientX < rect.left || e.clientX > rect.right ||
-                e.clientY < rect.top || e.clientY > rect.bottom) return;
-            e.preventDefault();
-            e.stopPropagation();
-            const mx = e.clientX - rect.left;
-            const my = e.clientY - rect.top;
-            const factor = e.deltaY < 0 ? 1.12 : (1 / 1.12);
-            const newZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, cam.zoom * factor));
-            const worldX = (mx - cam.x) / cam.zoom;
-            const worldY = (my - cam.y) / cam.zoom;
-            cam.zoom = newZoom;
-            cam.x = mx - worldX * newZoom;
-            cam.y = my - worldY * newZoom;
-            applyCamera();
-        }
-        canvasHost.addEventListener('wheel', onWheel, { passive: false, capture: true });
-
-        fitBtn.addEventListener('click', () => fit());
-
-        let resizeTimer = null;
-        const resizeObs = ('ResizeObserver' in window) ? new ResizeObserver(() => {
-            if (resizeTimer) clearTimeout(resizeTimer);
-            resizeTimer = setTimeout(() => fit(), 150);
-        }) : null;
-        if (resizeObs) resizeObs.observe(canvasHost);
+        const fit = () => panZoom.fit();
+        fitBtn.addEventListener('click', fit);
 
         // ── Highlight ──────────────────────────────────────────────────────
         // Drive purely by the active node id (the graph is cyclic, so there is
@@ -549,9 +499,7 @@
             destroy() {
                 if (typeof localUnsub === 'function') localUnsub();
                 if (delayTimer) clearInterval(delayTimer);
-                if (resizeObs) resizeObs.disconnect();
-                if (resizeTimer) clearTimeout(resizeTimer);
-                canvasHost.removeEventListener('wheel', onWheel, { capture: true });
+                panZoom.destroy();
                 container.innerHTML = '';
             },
             setActive,

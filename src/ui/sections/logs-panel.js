@@ -38,6 +38,10 @@
         const stream = el('div', 'log-stream');
         container.appendChild(stream);
 
+        // Tear down a previous viewer first — re-activating the Logs tab (or a
+        // language change) re-runs render(), and each new logViewer subscribes
+        // to storage; without destroying the old one its listener leaks.
+        if (container._logViewer) { try { container._logViewer.destroy(); } catch (_) { /* noop */ } }
         const viewer = uiComponents.logViewer.attach(stream, {});
 
         toolbar.querySelector('#log-mod').addEventListener('change', (e) => viewer.setFilter({ module: e.target.value }));

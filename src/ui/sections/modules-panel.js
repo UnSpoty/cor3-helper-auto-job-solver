@@ -91,13 +91,17 @@
     }
 
     let unsub = null;
+    function subscribe(container) {
+        if (unsub) return;   // idempotent — mount AND activate may call this
+        unsub = Store.sync.onChanged((changes) => {
+            if (changes[C.STORAGE_SYNC.MODULES] && container.classList.contains('active')) render(container);
+        });
+    }
     root.COR3.ui.modules = {
-        mount(container) {
-            unsub = Store.sync.onChanged((changes) => {
-                if (changes[C.STORAGE_SYNC.MODULES] && container.classList.contains('active')) render(container);
-            });
-            render(container);
-        },
-        activate(container) { render(container); },
+        mount(container) { subscribe(container); render(container); },
+        activate(container) { subscribe(container); render(container); },
+        // Tear the subscription down on tab switch so it doesn't live for the
+        // whole popup lifetime; re-subscribed on the next mount/activate.
+        deactivate() { if (typeof unsub === 'function') { unsub(); unsub = null; } },
     };
 })();

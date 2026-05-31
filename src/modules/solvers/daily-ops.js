@@ -347,7 +347,12 @@
         await dom.sleep(400);
         pulses = readPulses();
         const re = chooseEncoding(pulses);
-        let code = re.code && !re.code.includes('?') ? re.code : pick.code;
+        // Only adopt the decode-screen re-decode when its encoding AGREES with
+        // the one picked in the preview (whose UI option is already selected);
+        // otherwise the typed digits would be decoded under a scheme that
+        // doesn't match the chosen option and the submit is rejected. Fall back
+        // to the preview's own code.
+        let code = (re.encoding === pick.encoding && re.code && !re.code.includes('?')) ? re.code : pick.code;
         if (!code || code.includes('?')) {
             mod.error(`could not decode pulses cleanly: ${pulses.join('')}`);
             logUi('decode failed');

@@ -675,6 +675,8 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
     align-items: center;
     margin-bottom: 6px;
 }
+.ajv2-jobs-head-right { display: flex; align-items: center; gap: 8px; }
+.ajv2-jobs-refresh { padding: 1px 8px; line-height: 1.5; }
 .ajv2-jobs-list {
     display: flex;
     flex-direction: column;
@@ -706,6 +708,14 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
     gap: 6px;
     padding-bottom: 2px;
     border-bottom: 1px solid var(--os-color-border-secondary);
+    cursor: pointer;
+    user-select: none;
+}
+.ajv2-market-head:hover .ajv2-market-name { color: var(--os-color-text); }
+.ajv2-market-caret {
+    width: 10px;
+    font-size: 10px;
+    color: var(--os-color-text-tertiary);
 }
 .ajv2-market-name {
     font-size: 11px;
@@ -716,6 +726,8 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
 }
 .ajv2-market-count { margin-left: auto; }
 .ajv2-market-empty { padding: 2px 2px 4px; }
+.ajv2-market-jobs { display: flex; flex-direction: column; gap: 6px; }
+.ajv2-market-jobs.collapsed { display: none; }
 
 .network-map-wrap {
     background: var(--os-color-bg-card);
@@ -732,7 +744,7 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
 .nm-ctx-menu {
     position: absolute;
     z-index: 20;
-    min-width: 168px;
+    width: 286px;
     max-height: 90%;
     overflow-y: auto;
     padding: 4px;
@@ -767,7 +779,6 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
 .nm-ctx-item:hover:not(:disabled) { background: var(--os-color-primary-surface); }
 .nm-ctx-item:disabled { opacity: 0.4; cursor: not-allowed; }
 .nm-ctx-item.nm-ctx-toggle.is-on { color: var(--os-color-primary-hex); font-weight: 600; }
-.nm-ctx-item.nm-ctx-type { font-size: 10px; padding: 4px 7px 4px 10px; text-transform: capitalize; }
 .nm-ctx-divider { height: 1px; background: var(--os-color-border-secondary); margin: 3px 0; }
 .nm-ctx-sub {
     font-size: 9px;
@@ -776,6 +787,17 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
     color: var(--os-color-text-tertiary);
     padding: 4px 6px 2px;
 }
+/* Per-server job-type chips — reuse the Master Switches chip look
+   (green = runs here / grey = muted here), just denser inside the menu. */
+.nm-ctx-chips { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 4px 3px; }
+.nm-ctx-chips .ajv2-ms-chip { font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 4px; }
+.nm-ctx-reset {
+    margin-top: 3px;
+    font-size: 10px;
+    color: var(--os-color-text-tertiary);
+    text-align: center;
+}
+.nm-ctx-reset:hover:not(:disabled) { color: var(--os-color-text); }
 
 .network-map-canvas {
     position: relative;
@@ -937,6 +959,19 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
    it outward. The base transform attribute pins each bracket to its
    corner before CSS adds the outward nudge. */
 .nm-corner { transform-box: fill-box; }
+
+/* Selected node (left-click) — persistent cyan highlight, brackets popped
+   out like hover/active but with a brighter card outline so it reads as
+   "this one is selected" distinctly from a passing hover. */
+.nm-node.is-selected .nm-card { stroke: var(--os-color-primary-hex); stroke-opacity: 1; stroke-width: 2; }
+/* K/D keeps its red !important border; the cyan label + popped brackets still
+   mark it as selected. */
+.nm-node.is-selected .nm-name { fill: var(--os-color-primary-hex); }
+.nm-node.is-selected .nm-corner { opacity: 1; }
+.nm-node.is-selected .nm-corner-tl { transform: translate(-4px, -4px); }
+.nm-node.is-selected .nm-corner-tr { transform: translate(4px, -4px); }
+.nm-node.is-selected .nm-corner-bl { transform: translate(-4px, 4px); }
+.nm-node.is-selected .nm-corner-br { transform: translate(4px, 4px); }
 
 /* K/D corner badge */
 .nm-kd-bg       { fill: var(--os-color-danger); }

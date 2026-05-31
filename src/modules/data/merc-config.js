@@ -21,19 +21,25 @@
         }
 
         async start() {
-            this.track(Bus.window.on(C.MSG.WS.MERC_CONFIGURE, async (env) => {
+            // Serialize the read-modify-write of the shared MERC_CONFIG map:
+            // concurrent MERC_CONFIGURE events that each read-then-write would
+            // otherwise interleave and clobber one another, losing configs.
+            let writeChain = Promise.resolve();
+            this.track(Bus.window.on(C.MSG.WS.MERC_CONFIGURE, (env) => {
                 if (!env.mercenaryId || !env.data) return;
-                const configs = (await Store.local.getOne(C.STORAGE_LOCAL.MERC_CONFIG, {})) || {};
-                configs[env.mercenaryId] = env.data;
-                await Store.local.set({
-                    [C.STORAGE_LOCAL.MERC_CONFIG]: configs,
-                    [C.STORAGE_LOCAL.MERC_CONFIG_AT]: Date.now(),
-                });
-                this.debug('merc config', {
-                    mercId: env.mercenaryId,
-                    cost: env.data && env.data.totalCost,
-                    risk: env.data && env.data.riskScore,
-                });
+                writeChain = writeChain.then(async () => {
+                    const configs = (await Store.local.getOne(C.STORAGE_LOCAL.MERC_CONFIG, {})) || {};
+                    configs[env.mercenaryId] = env.data;
+                    await Store.local.set({
+                        [C.STORAGE_LOCAL.MERC_CONFIG]: configs,
+                        [C.STORAGE_LOCAL.MERC_CONFIG_AT]: Date.now(),
+                    });
+                    this.debug('merc config', {
+                        mercId: env.mercenaryId,
+                        cost: env.data && env.data.totalCost,
+                        risk: env.data && env.data.riskScore,
+                    });
+                }).catch((e) => this.warn('merc config write failed', { error: String(e) }));
             }));
         }
     }

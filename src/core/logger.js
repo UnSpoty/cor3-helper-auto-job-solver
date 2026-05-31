@@ -103,9 +103,11 @@
     }
 
     function ingestLocal(moduleId, entry) {
-        // Lazy buffer init — fire-and-forget; use a minimal local fallback meanwhile
+        // Lazy buffer init — load (or create) the persisted ring FIRST, then
+        // append. Pre-seeding `buffer = {}` here would make ensureBuffer()
+        // short-circuit (`if (buffer) return buffer`) and never merge the
+        // stored LOGS, so the first log after a page load wiped the whole ring.
         if (!buffer) {
-            buffer = {};
             ensureBuffer().then(() => {
                 if (!buffer[moduleId]) buffer[moduleId] = [];
                 buffer[moduleId].push(entry);

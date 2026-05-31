@@ -347,6 +347,21 @@
         }
         dbg(`step 4 resolved — action=${stableAction || 'TIMEOUT'} after ${Date.now() - stableStart}ms, polls=${pollCount}`);
 
+        // No-path WS error broke the poll with no stable action — a FATAL
+        // unreachable condition, not a transient settle miss. Emit
+        // SERVER_UNREACHABLE and return fatal:true exactly as step 5 does;
+        // otherwise the else branch below reports it as transient, burning a
+        // full second reconnect and never emitting the reachability signal.
+        if (!stableAction && root.__serverPathFailed > (root.__connectStartedAt || 0)) {
+            const snap = captureRejectSnapshot(serverName, item);
+            dbg('step 4 FAIL — no-path-to-server WS error snap=' + JSON.stringify(snap));
+            log('warn', `No path to server (WS): "${serverName}"`);
+            root.__serverPathFailed = 0;
+            const blockedByKD = NM.listServersOnKD(serverName);
+            Bus.window.post(MSG.JOB.SERVER_UNREACHABLE, { serverName, blockedByKD });
+            return { saiOpened: false, fatal: true };
+        }
+
         if (stableAction === 'sai') {
             dbg('step 4 — SAI already open for this server, skipping Connect/Login');
             return { saiOpened: true };

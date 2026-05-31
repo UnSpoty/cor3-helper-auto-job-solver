@@ -85,12 +85,18 @@
         return row;
     }
 
-    // One market block: header (name + status + count) then its jobs.
-    function marketSection(market, jobs, bugged) {
+    // One market block: a clickable header (caret + name + status + count) and a
+    // collapsible body of its jobs. `collapsed` is a shared Set of slot keys, so
+    // the expand/collapse state survives the component's frequent re-renders.
+    function marketSection(market, jobs, bugged, collapsed) {
+        const slot = market.slot;
+        const isCollapsed = collapsed.has(slot);
         const sec = el('div', 'ajv2-market' + (market.reachable === false ? ' is-unreachable' : ''));
 
         const head = el('div', 'ajv2-market-head');
-        head.appendChild(el('span', 'ajv2-market-name', SLOT_LABEL[market.slot] || market.slot || '?'));
+        const caret = el('span', 'ajv2-market-caret', isCollapsed ? '▸' : '▾');
+        head.appendChild(caret);
+        head.appendChild(el('span', 'ajv2-market-name', SLOT_LABEL[slot] || slot || '?'));
         if (market.reachable === false) {
             head.appendChild(el('span', 'pill warn', 'unreachable'));
         } else if (market.refreshed === false) {
@@ -101,13 +107,33 @@
         head.appendChild(el('span', 'muted xs ajv2-market-count', `${jobs.length} ${jobs.length === 1 ? 'job' : 'jobs'}`));
         sec.appendChild(head);
 
+        const bodyWrap = el('div', 'ajv2-market-jobs' + (isCollapsed ? ' collapsed' : ''));
         if (!jobs.length) {
             const why = market.reachable === false ? (market.reason || 'unreachable') : 'No jobs.';
-            sec.appendChild(el('div', 'muted xs ajv2-market-empty', why));
+            bodyWrap.appendChild(el('div', 'muted xs ajv2-market-empty', why));
         } else {
-            for (const job of jobs) sec.appendChild(jobRow(job, bugged && bugged[job.id]));
+            for (const job of jobs) bodyWrap.appendChild(jobRow(job, bugged && bugged[job.id]));
         }
+        sec.appendChild(bodyWrap);
+
+        // Click the header to collapse/expand this market.
+        head.addEventListener('click', () => {
+            const nowCollapsed = !bodyWrap.classList.contains('collapsed');
+            bodyWrap.classList.toggle('collapsed', nowCollapsed);
+            caret.textContent = nowCollapsed ? '▸' : '▾';
+            if (nowCollapsed) collapsed.add(slot); else collapsed.delete(slot);
+        });
+
         return sec;
+    }
+
+    // Ask the orchestrator (in the cor3.gg tab) to rebuild the saved job board
+    // once from the current markets. No-op when no game tab is open.
+    async function requestBoardRefresh() {
+        if (!(typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.query)) return;
+        const tabs = await chrome.tabs.query({ url: ['https://cor3.gg/*', 'https://os.cor3.gg/*'] });
+        const tab = tabs && tabs[0];
+        if (tab) { try { await chrome.tabs.sendMessage(tab.id, { action: C.MSG.AUTOJOBS_V2.REFRESH_BOARD }); } catch (_) { /* tab not ready */ } }
     }
 
     function attach(container) {
@@ -120,11 +146,28 @@
         let overrides = {};
         let bugged = {};
 
+        // Expand/collapse state per market slot — survives the frequent
+        // re-renders (lives in this closure; resets when the popup reopens).
+        const collapsed = new Set();
+
         const wrap = el('div', 'ajv2-jobs');
         const head = el('div', 'ajv2-jobs-head');
         head.appendChild(el('span', 'card-label', 'Jobs'));
+        const right = el('div', 'ajv2-jobs-head-right');
         const summary = el('span', 'muted xs ajv2-jobs-summary', '—');
-        head.appendChild(summary);
+        right.appendChild(summary);
+        const refreshBtn = el('button', 'nm-hud-btn ajv2-jobs-refresh', '↻');
+        refreshBtn.title = 'Refresh the job board from the markets (rebuilds the saved list). While Auto-Jobs v2 is running the board refreshes automatically each cycle.';
+        refreshBtn.addEventListener('click', async () => {
+            refreshBtn.disabled = true;
+            refreshBtn.textContent = '…';
+            try { await requestBoardRefresh(); } catch (_) { /* noop */ }
+            // The rebuilt board arrives via the AJV2_JOB_QUEUE onChanged below
+            // (which re-renders); just restore the button after a moment.
+            setTimeout(() => { refreshBtn.disabled = false; refreshBtn.textContent = '↻'; }, 1200);
+        });
+        right.appendChild(refreshBtn);
+        head.appendChild(right);
         wrap.appendChild(head);
 
         const list = el('div', 'ajv2-jobs-list');
@@ -143,31 +186,43 @@
 
             const jobs = Array.isArray(queue.jobs) ? queue.jobs : [];
 
-            // Live eligibility: combine the pipeline's DATA verdict
-            // (job.dataSkipReason) with the CONFIG verdict re-derived NOW from
-            // the current master switches + server overrides (shared evaluator).
-            // This keeps the SKIP flags in sync the instant a toggle changes,
-            // without waiting for the next pipeline cycle.
+            // Live eligibility: derive display rows from the pipeline's DATA
+            // verdict (job.dataSkipReason) + the CONFIG verdict re-derived NOW
+            // from the current switches/overrides (shared evaluator), so SKIP
+            // flags track a toggle instantly without waiting for the next cycle.
+            // Derive into NEW objects — never mutate lastQueue.jobs (the cached
+            // storage value), which other readers treat as authoritative.
             const evalConfig = root.COR3.ajv2Eligibility && root.COR3.ajv2Eligibility.configSkipReason;
-            if (evalConfig) {
-                for (const job of jobs) {
-                    if (job.status === 'TAKEN') continue;  // in-progress shown on its own
-                    const bug = bugged[job.id];
-                    const bugReason = bug ? `bugged: ${bug.reason || 'unknown'}` : null;
-                    const configSkip = evalConfig(job, switches, overrides);
-                    const dataSkip = job.dataSkipReason || null;
-                    job.skipReason = [bugReason, dataSkip, configSkip].filter(Boolean).join('; ') || null;
-                    job.eligible = !job.skipReason;
-                }
-            }
+            const rows = jobs.map((job) => {
+                if (!evalConfig || job.status === 'TAKEN') return job;
+                const bug = bugged[job.id];
+                const bugReason = bug ? `bugged: ${bug.reason || 'unknown'}` : null;
+                // CONFIG skip (market / job-type / server toggles) is re-derived
+                // LIVE so a Master-Switches or Network-Map change reflects
+                // instantly, without waiting for the next pipeline cycle.
+                const configSkip = evalConfig(job, switches, overrides);
+                // DATA skip (K/D cooldown, server access) is only known once
+                // CHECK_JOBS_CONDITION has stamped dataSkipReason onto the job.
+                const dataKnown = 'dataSkipReason' in job;
+                const dataSkip = dataKnown ? job.dataSkipReason : null;
+                const skipReason = [bugReason, dataSkip, configSkip].filter(Boolean).join('; ') || null;
+                // Any skip (config / bug / data) shows immediately. With NO skip,
+                // only claim "eligible" once the DATA gates have actually run —
+                // before that stay pending (eligible:null) rather than paint a
+                // premature green on the CONFIG verdict alone (finding #8).
+                if (skipReason) return Object.assign({}, job, { skipReason, eligible: false });
+                return Object.assign({}, job, { skipReason: null, eligible: dataKnown ? true : null });
+            });
+
             // Counts describe the acceptance board (available jobs); in-progress
-            // (TAKEN) and bugged jobs are reported separately.
-            const avail = jobs.filter((j) => j.status !== 'TAKEN');
-            const inProgress = jobs.length - avail.length;
+            // (TAKEN) and bugged jobs are reported separately. Bugged jobs are
+            // excluded from `skipped` so they are not tallied under both buckets.
+            const avail = rows.filter((j) => j.status !== 'TAKEN');
+            const inProgress = rows.length - avail.length;
             const evaluated = avail.filter((j) => j.eligible != null).length;
             const eligible = avail.filter((j) => j.eligible === true).length;
-            const skipped = avail.filter((j) => j.eligible === false).length;
-            const buggedN = jobs.filter((j) => bugged[j.id]).length;
+            const skipped = avail.filter((j) => j.eligible === false && !bugged[j.id]).length;
+            const buggedN = rows.filter((j) => bugged[j.id]).length;
             const active = inProgress ? ` · ${inProgress} in-progress` : '';
             const buggedSuffix = buggedN ? ` · ${buggedN} bugged` : '';
             const cyc = `cycle ${queue.cycle || '—'}`;
@@ -177,9 +232,9 @@
                     ? `${avail.length} available · ${eligible} eligible · ${skipped} skip${active}${buggedSuffix} · ${cyc}`
                     : `${avail.length} available${active}${buggedSuffix} · pending · ${cyc}`;
 
-            // Group jobs by their market slot.
+            // Group the derived rows by their market slot.
             const bySlot = {};
-            for (const j of jobs) (bySlot[j.marketSlot] = bySlot[j.marketSlot] || []).push(j);
+            for (const j of rows) (bySlot[j.marketSlot] = bySlot[j.marketSlot] || []).push(j);
 
             // Render one section per market. Prefer the pipeline's market
             // summary (covers reachable-but-empty + unreachable markets in a
@@ -188,7 +243,7 @@
                 ? queue.markets
                 : Object.keys(bySlot).map((slot) => ({ slot, reachable: true, refreshed: true, jobCount: bySlot[slot].length }));
 
-            for (const m of markets) list.appendChild(marketSection(m, bySlot[m.slot] || [], bugged));
+            for (const m of markets) list.appendChild(marketSection(m, bySlot[m.slot] || [], bugged, collapsed));
         }
 
         // The display re-renders when the job board OR the switches/overrides

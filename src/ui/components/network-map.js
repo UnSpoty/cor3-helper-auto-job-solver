@@ -606,96 +606,17 @@
         wrap.appendChild(canvasHost);
         container.appendChild(wrap);
 
-        // ── Camera state ────────────────────────────────────────────────
-        const cam = { x: 0, y: 0, zoom: 1, world: { worldW: 320, worldH: 160 } };
-        const ZOOM_MIN = 0.15, ZOOM_MAX = 3;
-
-        function applyCamera() {
-            const z = Number.isFinite(cam.zoom) && cam.zoom > 0 ? cam.zoom : 1;
-            const x = Number.isFinite(cam.x) ? cam.x : 0;
-            const y = Number.isFinite(cam.y) ? cam.y : 0;
-            cam.zoom = z; cam.x = x; cam.y = y;
-            camera.setAttribute('transform', `translate(${x}, ${y}) scale(${z})`);
-            // Grid layer follows the camera so the dotted lattice stays
-            // glued to the world coords. background-position scrolls;
-            // background-size scales with the zoom (so 70-unit world grid
-            // matches the camera scale).
-            const gridUnit = 70 * z;
-            const gridSub  = 35 * z;
-            gridLayer.style.backgroundPosition = `${x}px ${y}px, ${x + gridSub}px ${y + gridSub}px, ${x}px ${y}px, ${x}px ${y}px, ${x}px ${y}px, ${x}px ${y}px`;
-            gridLayer.style.backgroundSize = `${gridUnit}px ${gridUnit}px, ${gridUnit}px ${gridUnit}px, ${gridUnit}px ${gridUnit}px, ${gridUnit}px ${gridUnit}px, ${gridSub}px ${gridSub}px, ${gridSub}px ${gridSub}px`;
-            zoomLabel.textContent = Math.round(z * 100) + '%';
-        }
-
-        function fit() {
-            const rect = svg.getBoundingClientRect();
-            const ww = (cam.world && cam.world.worldW) || 0;
-            const wh = (cam.world && cam.world.worldH) || 0;
-            if (rect.width <= 0 || rect.height <= 0 || ww <= 0 || wh <= 0) {
-                cam.x = 0; cam.y = 0; cam.zoom = 1;
-                applyCamera();
-                return;
-            }
-            const sx = rect.width  / ww;
-            const sy = rect.height / wh;
-            // Fit-to-world but clamp to a readable minimum: in-game coord
-            // ranges easily span 2000+ units (counting D4RK/SRM side
-            // networks), which would zoom the home cluster down to noise.
-            // FIT_MIN keeps the default view readable; user pans/zooms
-            // out further via wheel if they want the whole expanse.
-            const FIT_MIN = 0.35;
-            const z = Math.max(FIT_MIN, Math.min(sx, sy, 1.2));
-            cam.zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
-            cam.x = (rect.width  - ww * cam.zoom) / 2;
-            cam.y = (rect.height - wh * cam.zoom) / 2;
-            applyCamera();
-        }
-
-        // ── Drag-to-pan ─────────────────────────────────────────────────
-        let dragging = null;
-        svg.addEventListener('pointerdown', (e) => {
-            if (e.button !== 0) return;
-            const targetTag = (e.target.tagName || '').toLowerCase();
-            if (targetTag === 'a' || targetTag === 'button' || targetTag === 'input') return;
-            dragging = { startX: e.clientX, startY: e.clientY, camX: cam.x, camY: cam.y };
-            try { svg.setPointerCapture(e.pointerId); } catch (_) {}
-            svg.classList.add('nm-grabbing');
-            e.preventDefault();
+        // ── Camera (pan / wheel-zoom / fit) via the shared controller ──────
+        // Read-only map: plain pan, no tap-select. World bounds update per
+        // render (`world`); fit clamps to a readable minimum (FIT_MIN 0.35)
+        // since in-game coords can span 2000+ units.
+        let world = { worldW: 320, worldH: 160 };
+        const panZoom = root.COR3.panZoom.create({
+            svg, camera, canvasHost, gridLayer, zoomLabel,
+            getWorld: () => world,
+            zoomMin: 0.15, zoomMax: 3, fitMin: 0.35, fitMax: 1.2,
         });
-        svg.addEventListener('pointermove', (e) => {
-            if (!dragging) return;
-            cam.x = dragging.camX + (e.clientX - dragging.startX);
-            cam.y = dragging.camY + (e.clientY - dragging.startY);
-            applyCamera();
-        });
-        function endDrag(e) {
-            if (!dragging) return;
-            try { svg.releasePointerCapture(e.pointerId); } catch (_) {}
-            dragging = null;
-            svg.classList.remove('nm-grabbing');
-        }
-        svg.addEventListener('pointerup', endDrag);
-        svg.addEventListener('pointercancel', endDrag);
-
-        // ── Wheel-to-zoom ───────────────────────────────────────────────
-        function onWheel(e) {
-            const rect = svg.getBoundingClientRect();
-            if (e.clientX < rect.left || e.clientX > rect.right ||
-                e.clientY < rect.top  || e.clientY > rect.bottom) return;
-            e.preventDefault();
-            e.stopPropagation();
-            const mx = e.clientX - rect.left;
-            const my = e.clientY - rect.top;
-            const factor = e.deltaY < 0 ? 1.12 : (1 / 1.12);
-            const newZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, cam.zoom * factor));
-            const worldX = (mx - cam.x) / cam.zoom;
-            const worldY = (my - cam.y) / cam.zoom;
-            cam.zoom = newZoom;
-            cam.x = mx - worldX * newZoom;
-            cam.y = my - worldY * newZoom;
-            applyCamera();
-        }
-        canvasHost.addEventListener('wheel', onWheel, { passive: false, capture: true });
+        const fit = () => panZoom.fit();
 
         fitBtn.addEventListener('click', () => fit());
 
@@ -732,7 +653,7 @@
             };
 
             const dims = render(camera, ctx);
-            cam.world = dims;
+            world = dims;
             // Fixed visual height in the popup — pan/zoom the camera
             // inside this box. Grid layer is `position: absolute; inset: 0`
             // so it follows canvasHost height automatically.
@@ -752,7 +673,7 @@
                 firstRender = false;
                 requestAnimationFrame(() => fit());
             } else {
-                applyCamera();
+                panZoom.applyCamera();
             }
         }
 
@@ -763,22 +684,13 @@
             if (c[SS.AUTOJOBS_SETTINGS] || c[SS.SERVER_PRIORITIES]) refresh();
         });
 
-        let resizeTimer = null;
-        const resizeObs = ('ResizeObserver' in window) ? new ResizeObserver(() => {
-            if (resizeTimer) clearTimeout(resizeTimer);
-            resizeTimer = setTimeout(() => fit(), 150);
-        }) : null;
-        if (resizeObs) resizeObs.observe(canvasHost);
-
         refresh();
 
         return {
             destroy() {
                 if (typeof localUnsub === 'function') localUnsub();
                 if (typeof syncUnsub === 'function') syncUnsub();
-                if (resizeObs) resizeObs.disconnect();
-                if (resizeTimer) clearTimeout(resizeTimer);
-                canvasHost.removeEventListener('wheel', onWheel, { capture: true });
+                panZoom.destroy();
                 container.innerHTML = '';
             },
             refresh,

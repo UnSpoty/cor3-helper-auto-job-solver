@@ -19,6 +19,7 @@
     let settings = { home_jobs: false, dark_jobs: false, srm_jobs: false };
     let retryPending = { home_jobs: false, dark_jobs: false, srm_jobs: false };
     let intervalId = null;
+    let ticking = false;   // re-entrancy guard (tick() awaits a storage read)
 
     async function getSeconds(market) {
         const d = await Store.local.getOne(market.storage);
@@ -30,16 +31,25 @@
     }
 
     async function tick(mod) {
-        for (const m of MARKETS) {
-            if (!settings[m.key]) continue;
-            if (retryPending[m.key]) continue;
-            const sec = await getSeconds(m);
-            if (sec !== null && sec <= 0) {
-                retryPending[m.key] = true;
-                mod.info(`auto-refresh: ${m.key} timer expired`);
-                Bus.window.post(m.refresh, null);
-                setTimeout(() => { retryPending[m.key] = false; }, 10000);
+        // Re-entrancy guard: tick() awaits a storage read before setting
+        // retryPending, so two 1s ticks could both pass the synchronous guard
+        // and double-post a refresh for the same market.
+        if (ticking) return;
+        ticking = true;
+        try {
+            for (const m of MARKETS) {
+                if (!settings[m.key]) continue;
+                if (retryPending[m.key]) continue;
+                const sec = await getSeconds(m);
+                if (sec !== null && sec <= 0) {
+                    retryPending[m.key] = true;
+                    mod.info(`auto-refresh: ${m.key} timer expired`);
+                    Bus.window.post(m.refresh, null);
+                    setTimeout(() => { retryPending[m.key] = false; }, 10000);
+                }
             }
+        } finally {
+            ticking = false;
         }
     }
 

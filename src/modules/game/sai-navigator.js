@@ -241,10 +241,23 @@
         return true;
     }
 
+    function isElVisible(elm) {
+        if (!elm) return false;
+        const view = elm.ownerDocument && elm.ownerDocument.defaultView;
+        const cs = (view || window).getComputedStyle(elm);
+        if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+        const r = elm.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+    }
+
     async function confirmDeleteDialog() {
         await dom.sleep(250);
         const overlay = document.querySelector(SEL.DELETE_MODAL);
-        if (!overlay || overlay.offsetParent === null) return;
+        // Visibility via getBoundingClientRect/computed style, NOT offsetParent:
+        // a position:fixed modal always reports offsetParent === null even when
+        // fully visible, which would skip the confirm click and leave the delete
+        // dialog open (the only confirm step in these flows).
+        if (!isElVisible(overlay)) return;
         const confirmBtn = overlay.querySelector(SEL.DELETE_CONFIRM);
         if (confirmBtn) {
             confirmBtn.click();
