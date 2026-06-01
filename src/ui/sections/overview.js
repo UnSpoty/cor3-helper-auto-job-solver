@@ -104,7 +104,10 @@
         ] = await Promise.all([
             Store.sync.getOne(C.STORAGE_SYNC.AUTO_REFRESH, { home_jobs: false, dark_jobs: false, srm_jobs: false }),
             Store.sync.getOne(C.STORAGE_SYNC.AUTO_DECRYPT_ENABLED, false),
-            Store.sync.getOne(C.STORAGE_SYNC.AUTO_ICE_WALL_ENABLED, false),
+            // ICE WALL defaults ON to MATCH the solver module (auto-ice-wall.js
+            // reads `true`): the toggle was showing OFF while the solver actually
+            // ran — the source of "v2 doesn't list ICE WALL as off".
+            Store.sync.getOne(C.STORAGE_SYNC.AUTO_ICE_WALL_ENABLED, true),
             Store.sync.getOne(C.STORAGE_SYNC.AUTO_SIMPLE_DECRYPT_ENABLED, false),
             Store.sync.getOne(C.STORAGE_SYNC.DISABLE_SYSTEM_MESSAGES, false),
             Store.sync.getOne(C.STORAGE_SYNC.DISABLE_BACKGROUND, false),
