@@ -408,20 +408,28 @@
         }
 
         // Collect unique placement offsets (ocol,orow) from all anchors.
-        const placements = new Map();   // "ocol,orow" -> [ocol, orow]
+        // "ocol,orow" -> { off:[ocol,orow], locked }. `locked` = this offset is
+        // pinned by an anchor glyph that is UNIQUE on the REVEALED board (its
+        // sig+mirror occurs exactly once) → the placement is DETERMINED, not a
+        // coincidental partial. Preferred over a denser region that merely shares
+        // more common glyphs — the root of the -16s wrong-partial mis-click.
+        const placements = new Map();
         let anchorHits = 0;
         for (const a of anchorSet) {
             const hits = bySigMir.get(a.sig + '|' + (a.mirror ? 1 : 0)) || [];
+            const boardUnique = hits.length === 1;
             for (const b of hits) {
                 anchorHits++;
                 const ocol = b.col - a.col, orow = b.row - a.row;
                 const key = `${ocol},${orow}`;
-                if (!placements.has(key)) placements.set(key, [ocol, orow]);
+                const ex = placements.get(key);
+                if (!ex) placements.set(key, { off: [ocol, orow], locked: boardUnique });
+                else if (boardUnique) ex.locked = true;
             }
         }
 
         const out = [];
-        for (const [ocol, orow] of placements.values()) {
+        for (const { off: [ocol, orow], locked } of placements.values()) {
             const refCol = ref.col + ocol, refRow = ref.row + orow;   // placement identity
             const candKey = `${refCol},${refRow}`;
             if (excludeKeys && excludeKeys.has(candKey)) continue;
@@ -454,12 +462,17 @@
                 clickGroup: clickCell ? clickCell.group : null,
                 clickCol, clickRow, clickMirror: targetClick.mirror,
                 realMatch, wildMatch, unknown, mismatch,
+                anchorLocked: locked,
                 match: realMatch, // alias for logging / backward compat
                 total: targetCells.length,
                 revealedTotal: revealedTargets.length,
             });
         }
         out.sort((a, b) => {
+            // Board-unique-anchored placements first: a glyph that is unique on the
+            // board pins the offset, so it beats a denser coincidental partial even
+            // when that partial confirms more cells.
+            if (a.anchorLocked !== b.anchorLocked) return a.anchorLocked ? -1 : 1;
             if (b.realMatch !== a.realMatch) return b.realMatch - a.realMatch;
             if (a.col !== b.col) return a.col - b.col;
             return a.row - b.row;
@@ -1017,7 +1030,7 @@
                 // tell for under-reading; `anchorHits` (shown only when cand 0)
                 // splits sig-mismatch (0) from coordinate-misalignment (>0).
                 const a0 = candidates.length === 0 ? ` · anchorHits ${anchorHits || 0}` : '';
-                drawHud(`ICE WALL  target ${total}c · revealed ${revealedTotal} · best rm ${best ? best.realMatch : 0}/${revealedTotal} · cand ${candidates.length}${a0} · gate mid${midTh}/str${strongTh}/minRev${minRevealed}`);
+                drawHud(`ICE WALL  target ${total}c · revealed ${revealedTotal} · best rm ${best ? best.realMatch : 0}/${revealedTotal} · cand ${candidates.length}${a0}${best && best.anchorLocked ? ' · LOCK' : ''} · gate mid${midTh}/str${strongTh}/minRev${minRevealed}`);
 
                 // No positive candidate → clear the stale tentative highlight so the
                 // board doesn't show a dashed shape the matcher no longer backs.
@@ -1053,6 +1066,20 @@
                 //    feasible.
                 const fullConfirms = candidates.filter((c) => c.realMatch === revealedTotal);
                 if (fullConfirms.length === 1) return finish({ best: fullConfirms[0], reason: 'complete' });
+
+                // 1b. Unique-anchor lock — a candidate whose anchor glyph is UNIQUE on
+                //     the revealed board has its offset DETERMINED (findShapeCandidates
+                //     sorts these first). Commit it once ≥midTh cells corroborate
+                //     (anchor + neighbours), even if a coincidental dense-region partial
+                //     shows a higher realMatch — that wrong partial is exactly what used
+                //     to eat a -16s while the true uniquely-anchored placement sat sparse.
+                //     Requires either the sole locked placement, or a clear lead when two
+                //     distinct unique glyphs disagree on the offset.
+                const lockedCands = candidates.filter((c) => c.anchorLocked && c.realMatch >= midTh);
+                if (lockedCands.length === 1 ||
+                    (lockedCands.length > 1 && lockedCands[0].realMatch - lockedCands[1].realMatch >= 2)) {
+                    return finish({ best: lockedCands[0], reason: 'unique-anchor' });
+                }
 
                 // 2. Strong partial — enough confirmed glyphs that the
                 //    candidate wins even against same-anchor alternatives.
