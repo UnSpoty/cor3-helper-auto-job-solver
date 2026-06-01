@@ -22,7 +22,7 @@
 //                           live: the panel switches to that server.
 //
 // Plain namespace, NOT a registered Module — it owns no Bus subscriptions or
-// storage. Consumed by the Auto-Jobs v2 bridge.
+// storage. Consumed by the Auto Jobs bridge.
 
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
@@ -92,7 +92,7 @@
     }
 
     // Open a desktop app by its dock key (e.g. 'NETWORK_MAP'). Throws on an
-    // unknown key or a missing dock item / handler — v2 rule: fail loud, never
+    // unknown key or a missing dock item / handler — design rule: fail loud, never
     // silently degrade.
     function openApp(appKey) {
         const comp = DOCK[appKey];

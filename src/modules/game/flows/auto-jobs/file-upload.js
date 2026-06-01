@@ -1,4 +1,4 @@
-// Auto-Jobs v2 — File/Data Upload flow (MAIN world). jobType: file_upload
+// Auto Jobs — File/Data Upload flow (MAIN world). jobType: file_upload
 // (handles both "file upload" and "data upload" — one type, see pipeline
 // JOB_TYPE_KEYWORDS). Push the job's target file(s) from the player's Downloads
 // to the server over WS.
@@ -9,14 +9,14 @@
 // the wire if the server rejects it.
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
-    if (!root.COR3 || !root.COR3.constants || !root.COR3.autoJobsV2 || !root.COR3.autoJobsV2.saiFlow) return;
+    if (!root.COR3 || !root.COR3.constants || !root.COR3.autoJobs || !root.COR3.autoJobs.saiFlow) return;
     const C = root.COR3.constants;
-    const NODE = C.AJV2.NODE;
-    const SF = root.COR3.autoJobsV2.saiFlow;
+    const NODE = C.AJ.NODE;
+    const SF = root.COR3.autoJobs.saiFlow;
 
     SF.defineFlow({
-        id: 'flow-v2-file-upload',
-        name: 'Flow v2: File/Data Upload',
+        id: 'flow-file-upload',
+        name: 'Flow: File/Data Upload',
         jobType: C.FLOW.FILE_UPLOAD,
         // job: { jobId, marketId, jobType, serverId, serverType, serverName, fileNames:[…] }
         async run(job, h) {

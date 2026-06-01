@@ -7,7 +7,7 @@
     const { Module, Bus, Store, Registry, constants: C } = root.COR3;
 
     // owner:'user' — the standalone toggle. solver-simple-decrypt ref-counts owners
-    // so this watcher survives an Auto-Jobs v2 flow's STOP (owner:'flow') and vice-versa.
+    // so this watcher survives an Auto Jobs flow's STOP (owner:'flow') and vice-versa.
     function start() { Bus.window.post(C.MSG.SOLVER.START_SIMPLE_DECRYPT, { owner: 'user' }); }
     function stop() { Bus.window.post(C.MSG.SOLVER.STOP_SIMPLE_DECRYPT, { owner: 'user' }); }
 

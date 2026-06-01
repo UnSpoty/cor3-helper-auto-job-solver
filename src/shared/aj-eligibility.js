@@ -1,4 +1,4 @@
-// Auto-Jobs v2 — shared eligibility evaluator.
+// Auto Jobs — shared eligibility evaluator.
 //
 // The CONFIG part of a job's eligibility (the part derivable purely from user
 // switches, with no pipeline data): global market toggles, global job-type
@@ -20,11 +20,11 @@
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
     root.COR3 = root.COR3 || {};
-    if (root.COR3.ajv2Eligibility) return;
+    if (root.COR3.ajEligibility) return;
 
     // Returns the first config-derived skip reason for `job`, or null if the
-    // job passes every config gate. `switches` = AJV2_MASTER_SWITCHES,
-    // `overrides` = AJV2_SERVER_OVERRIDES.
+    // job passes every config gate. `switches` = AJ_MASTER_SWITCHES,
+    // `overrides` = AJ_SERVER_OVERRIDES.
     function configSkipReason(job, switches, overrides) {
         const sw = switches || {};
         const markets = sw.markets || {};
@@ -41,5 +41,5 @@
         return null;
     }
 
-    root.COR3.ajv2Eligibility = { configSkipReason };
+    root.COR3.ajEligibility = { configSkipReason };
 })();

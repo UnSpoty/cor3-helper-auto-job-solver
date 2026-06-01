@@ -1,14 +1,13 @@
-// Auto-Jobs v2 — MAIN-world bridge for the Network Map context menu.
+// Auto Jobs — MAIN-world bridge for the Network Map context menu.
 //
-// The v2 Network Map (popup) lets the user Open SAI / Open Market for a
+// The Network Map (popup) lets the user Open SAI / Open Market for a
 // server. The request travels:
 //
-//   popup → (runtime) v2 orchestrator (isolated) → (window) here (MAIN)
+//   popup → (runtime) orchestrator (isolated) → (window) here (MAIN)
 //
-// This is the MAIN-world endpoint. v1 drove these flows by synthesising DOM
-// mouse-clicks at screen coordinates (open the map, hunt the tile, click
-// Connect, click Login/Market). This rewrite drives the SAME flows through the
-// game's own client functions and direct WS requests instead:
+// This is the MAIN-world endpoint. It drives these flows through the game's
+// own client functions and direct WS requests (no synthesised DOM clicks at
+// screen coordinates):
 //
 //   • Open the Network Map window  → COR3.game.desktop.openAppAndWait()
 //        (invokes the dock launcher's React onClick — no MouseEvent).
@@ -30,34 +29,34 @@
 // is a function call or a WS frame.
 //
 // The message carries `serverId` (the popup reads it from NM_GRAPH) — required
-// for the WS connect. v2 rule: a missing precondition fails LOUD, never a
+// for the WS connect. design rule: a missing precondition fails LOUD, never a
 // silent DOM fallback.
 //
-// Logging: connect()/panel controls emit on the v1 MSG.JOB.LOG channel; while a
-// v2-initiated action runs we MIRROR those into the v2 logger id
-// ('auto-jobs-v2') so the v2 Activity Log shows every step.
+// Logging: connect()/panel controls emit on the MSG.JOB.LOG channel; while a
+// Auto-Jobs-initiated action runs we MIRROR those into the logger id
+// ('auto-jobs') so the Activity Log shows every step.
 //
-// The orchestrator refuses to forward these while the v2 loop is running, so by
+// The orchestrator refuses to forward these while the loop is running, so by
 // the time a message reaches this bridge the pipeline is idle.
 
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
     if (!root.COR3 || !root.COR3.constants || !root.COR3.Bus) return;
     const { Bus, dom, constants: C } = root.COR3;
-    const AJV2 = C.MSG.AUTOJOBS_V2;
+    const AJ = C.MSG.AUTOJOBS;
     const MSG = C.MSG;
-    const LOG_ID = 'auto-jobs-v2';
+    const LOG_ID = 'auto-jobs';
 
     function desktop() { return (root.COR3.game || {}).desktop || null; }
 
     function log(level, msg, ctx) {
         const L = root.COR3 && root.COR3.Logger;
         if (L && typeof L.push === 'function') L.push(LOG_ID, level, msg, ctx);
-        else console.log(`[ajv2-bridge:${level}] ${msg}`, ctx || '');
+        else console.log(`[aj-bridge:${level}] ${msg}`, ctx || '');
     }
 
-    // Mirror the game's MSG.JOB.LOG entries into the v2 Activity Log for the
-    // duration of one v2-initiated action. Detach LATER, not immediately:
+    // Mirror the game's MSG.JOB.LOG entries into the Activity Log for the
+    // duration of one Auto-Jobs-initiated action. Detach LATER, not immediately:
     // window.postMessage delivers async, so a helper's FINAL line is posted in
     // the same tick it returns and its message event fires after this finally.
     async function withGameLogMirror(fn) {
@@ -109,7 +108,7 @@
     // market with a labelled button) shows a full-width "Market"/"Рынок"
     // button; a remote connected market server (DARK/SRM) shows an icon-only
     // "chest" button immediately to the RIGHT of the Login control in the
-    // actions row (no stable id, so we walk the row — the shape v1 relied on).
+    // actions row (no stable id, so we walk the row — the shape the game uses).
     // Without the icon fallback, Open Market on a remote market would never
     // find its (text-less) button.
     function findMarketControl(D) {
@@ -136,12 +135,12 @@
         '[data-component-name="SimpleDecryptApplication"]',
     ];
     const SOLVER_START = [MSG.SOLVER.START_DECRYPT, MSG.SOLVER.START_ICE_WALL, MSG.SOLVER.START_SIMPLE_DECRYPT];
-    // Driven under the 'flow' owner: solver-decrypt / solver-simple-decrypt
-    // ref-count owners, so STOP removes only 'flow' and leaves a user's standalone
-    // watcher (owner 'user') running. STOP_ICE_WALL omitted — ICE WALL is a
-    // standalone always-on watcher (auto-ice-wall) with no ref-counting that must
-    // survive a hack / cycle.
-    const SOLVER_STOP  = [MSG.SOLVER.STOP_DECRYPT,  MSG.SOLVER.STOP_SIMPLE_DECRYPT];
+    // Driven under the 'flow' owner: all three solvers ref-count owners, so STOP
+    // removes only 'flow' and leaves a user's standalone watcher (owner 'user')
+    // running. We DO stop ICE WALL here: if the user has Auto ICE WALL OFF (no
+    // 'user' owner), starting it for the hack must not leave it solving the
+    // user's own ICE WALLs afterwards.
+    const SOLVER_STOP  = [MSG.SOLVER.STOP_DECRYPT,  MSG.SOLVER.STOP_ICE_WALL, MSG.SOLVER.STOP_SIMPLE_DECRYPT];
     const startSolvers = () => { for (const m of SOLVER_START) Bus.window.post(m, { owner: 'flow' }); };
     const stopSolvers  = () => { for (const m of SOLVER_STOP)  Bus.window.post(m, { owner: 'flow' }); };
     const findMinigame = () => { for (const s of MINIGAME_SELS) { if (document.querySelector(s)) return true; } return false; };
@@ -245,8 +244,8 @@
     // gain access via saiAccess() — Active Access, or hack the server. The whole
     // body is wrapped: openApp()/invokeReactClick() can THROW (missing dock item
     // / handler), and an uncaught throw in an async Bus handler is an unhandled
-    // rejection — we want a loud v2 LOG instead.
-    Bus.window.on(AJV2.OPEN_SAI, async (env) => {
+    // rejection — we want a loud LOG instead.
+    Bus.window.on(AJ.OPEN_SAI, async (env) => {
         const serverName = env && env.serverName;
         const serverId = env && env.serverId;
         const serverType = env && env.serverType;
@@ -286,7 +285,7 @@
     // panel's Market control (text button for HOME, chest icon for DARK/SRM).
     // All control clicks are React-onClick invocations. Wrapped in try/catch for
     // the same reason as Open SAI.
-    Bus.window.on(AJV2.OPEN_MARKET, async (env) => {
+    Bus.window.on(AJ.OPEN_MARKET, async (env) => {
         const serverName = (env && env.serverName) || null;   // null → HOME market
         const serverId = (env && env.serverId) || null;
         log('info', `Open Market → "${serverName || '(home)'}"`);
@@ -309,5 +308,5 @@
         }
     });
 
-    console.log('[COR3] Auto-Jobs v2 bridge installed (MAIN) — WS + client-fn navigation');
+    console.log('[COR3] Auto Jobs bridge installed (MAIN) — WS + client-fn navigation');
 })();

@@ -7,8 +7,10 @@
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
     const { Module, Bus, Store, Registry, constants: C } = root.COR3;
 
-    function start() { Bus.window.post(C.MSG.SOLVER.START_ICE_WALL, null); }
-    function stop()  { Bus.window.post(C.MSG.SOLVER.STOP_ICE_WALL,  null); }
+    // owner:'user' — the standalone toggle. solver-ice-wall ref-counts owners so
+    // this watcher survives an Auto Jobs flow's STOP (owner:'flow') and vice-versa.
+    function start() { Bus.window.post(C.MSG.SOLVER.START_ICE_WALL, { owner: 'user' }); }
+    function stop()  { Bus.window.post(C.MSG.SOLVER.STOP_ICE_WALL,  { owner: 'user' }); }
 
     class AutoIceWallModule extends Module {
         constructor() {
@@ -20,10 +22,11 @@
             });
         }
         async start() {
-            // Default ON: the ICE WALL solver should watch + solve whenever a
-            // puzzle appears, independently of Auto-Jobs (manual hacks, manually
-            // opened decrypt files, etc.). The Auto-Jobs flows no longer post
-            // STOP_ICE_WALL, so this standalone watcher survives a v2 cycle.
+            // Default ON: the ICE WALL solver watches + solves whenever a puzzle
+            // appears, independently of Auto Jobs. When this toggle is OFF the
+            // 'user' owner is absent, so an Auto Jobs flow that turns the solver
+            // on for a hack (owner 'flow') turns it back off when it finishes —
+            // a manually-opened ICE WALL afterwards is NOT auto-solved.
             const enabled = await Store.sync.getOne(C.STORAGE_SYNC.AUTO_ICE_WALL_ENABLED, true);
             if (enabled) { this.info('starting ice-wall solver (standalone, default on)'); start(); }
 

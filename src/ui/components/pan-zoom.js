@@ -1,14 +1,13 @@
 // Shared pan / wheel-zoom / fit camera controller for the SVG maps.
 //
-// The Network Map (v1 components + v2 section) and the v2 Flow Map all draw a
-// world into an <svg><g class="…-camera"> over a CSS dotted-grid layer, and all
-// pan/zoom that camera identically. This is the one implementation of that
-// mechanic — drag-to-pan, wheel-zoom-to-cursor, fit-to-world, the 6-stop grid
-// background string, and a debounced ResizeObserver refit — so a fix lands in
-// one place instead of three byte-for-byte copies.
+// The Auto Jobs Network Map and the Flow Map both draw a world into an
+// <svg><g class="…-camera"> over a CSS dotted-grid layer, and both pan/zoom
+// that camera identically. This is the one implementation of that mechanic —
+// drag-to-pan, wheel-zoom-to-cursor, fit-to-world, the 6-stop grid background
+// string, and a debounced ResizeObserver refit — so a fix lands in one place
+// instead of byte-for-byte copies.
 //
-// Neutral namespace (COR3.panZoom) so both the v1 component registry and the
-// v2 section can use it without reaching into each other's registry.
+// Neutral namespace (COR3.panZoom) so any map can use it.
 //
 // create({ svg, camera, canvasHost, gridLayer, zoomLabel, getWorld, ...opts })
 //   → { cam, applyCamera, fit, destroy }
@@ -42,7 +41,7 @@
         // No defensive self-heal of cam values: the camera math has one path,
         // and a non-finite value (only reachable via a real bug) shows as a
         // visibly broken transform rather than being silently snapped to a
-        // default — which is what the v2 "no silent degradation" rule wants.
+        // default — which is what the "no silent degradation" rule wants.
         function applyCamera() {
             const { x, y, zoom } = cam;
             camera.setAttribute('transform', `translate(${x}, ${y}) scale(${zoom})`);

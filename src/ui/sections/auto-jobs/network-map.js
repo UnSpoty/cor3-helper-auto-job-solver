@@ -1,61 +1,29 @@
-// Local Network Map renderer for the popup.
+// Auto Jobs — Local Network Map renderer.
 //
-//   - Positions taken directly from each server's serverPlace[x,y] (the
-//     in-game world coordinate). Auto-fitted into the popup canvas via the
-//     camera transform — no computed layout, no Reingold-Tilford. Topology
-//     is therefore identical to the in-game Network Map.
-//   - Colours taken directly from serverColor.{main,secondary,highlighted}
-//     shipped per-server in the WS payload. No faction palette table —
-//     the game's own colours are used inline as gradient stops + stroke.
-//   - Type-glyph (Public/Private/Restricted) rendered from transitType
-//     via shared <symbol> definitions in <defs>.
-//   - Edges drawn with Manhattan-routed paths (cardinal tail → curve →
-//     diagonal → curve → cardinal tail) under a single feGaussianBlur
-//     glow filter, matching the in-game ConnectionsLayerStyled look.
-//     Active path HOME → currentEndpoint is stroked cyan.
-//   - Pan (drag) + zoom (wheel) via a top-level <g> transform; the camera
-//     survives storage-driven re-renders. % indicator + Fit button live
-//     in a tiny HUD overlay over the canvas.
-//   - Subscribes to NM_GRAPH, the three market envelopes, settings, and
-//     priorities; component-level destroy() tears the listeners down so
-//     re-mounting on tab switch doesn't leak.
-//
-// API:
-//   const handle = uiComponents.networkMap.attach(container);
-//   handle.destroy();   // tears down storage + DOM listeners
-//   handle.refresh();   // forces a re-render
+//   - Exposes the attach API on `COR3.uiComponents.networkMap`.
+//   - No reads of AUTOJOBS_SETTINGS — Auto Jobs has no UI to drive market
+//     toggles or server-skip flags from here, so dimming for those states is
+//     dead weight. Map shows home / K/D / job counts only.
+//   - Refresh button dispatches the `rescanNetworkMap` runtime message; the
+//     in-game NM is shared, so the rescan also refreshes the live game panel.
 
 (function () {
     const root = window;
     if (!root.COR3 || !root.COR3.constants) return;
     const { Store, constants: C } = root.COR3;
     const SL = C.STORAGE_LOCAL;
-    const SS = C.STORAGE_SYNC;
     const SVG_NS = 'http://www.w3.org/2000/svg';
 
-    // Compact node geometry. Native cor3.gg nodes are 88×88; we shrink to
-    // 60×44 so the full graph fits in the popup at fit-zoom without forcing
-    // operators to pan to see a neighbour. World coordinates stay 1:1 with
-    // serverPlace so relative positions match the game exactly.
     const NODE_W   = 60;
     const NODE_H   = 44;
-    const NODE_FASCIA = 8;  // top-right corner chamfer (px)
+    const NODE_FASCIA = 8;
 
-    // Edge geometry. Cor3.gg uses tail=6, radius=10 in the live paths we
-    // sampled. Same numbers reproduce the railway feel at our scale.
     const EDGE_TAIL = 6;
     const EDGE_RADIUS = 10;
 
-    // serverPlace lives in "logical units" in the WS payload (e.g. [3.5, 2]
-    // for a server the game positions at [350, -200] on screen). The game's
-    // own renderer multiplies by ~100 and negates Y (game uses cartesian
-    // y-up; SVG uses y-down). We do the same on the way into world coords
-    // so node spacing + orientation match the in-game layout 1:1.
     const PLACE_SCALE = 50;
     const PLACE_Y_SIGN = -1;
 
-    // Default colour fallbacks when the WS payload doesn't ship a
-    // serverColor (very rare, but never crash the renderer over it).
     const DEFAULT_COLOR = { main: '#7D8488', secondary: '#3D4146', highlighted: '#A4A9AC' };
     const EDGE_DEFAULT  = '#828282';
     const EDGE_ACTIVE   = 'rgba(118, 193, 209, 0.75)';
@@ -73,19 +41,10 @@
         if (html !== undefined) e.innerHTML = html;
         return e;
     }
-    // Safely turn any server id/name into a string fit for an SVG `id`
-    // attribute — gradients reference it via url(#…) and SVG ids reject
-    // most punctuation.
     function safeId(s) { return String(s || '').replace(/[^a-zA-Z0-9_-]/g, '_'); }
 
-    // ─── Layout: project serverPlace into world coords ────────────────────
-    //
-    // Compute the bbox of all servers' serverPlace values, then shift so
-    // the world origin is positive (SVG coords don't go negative for our
-    // camera setup). Orphans without serverPlace get a synthetic row under
-    // the main cluster so the user still sees them.
     function projectPositions(graph) {
-        const positions = new Map();   // name → { x, y } in world units
+        const positions = new Map();
         const placed   = [];
         const orphans  = [];
         for (const s of graph.servers || []) {
@@ -97,10 +56,6 @@
         }
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
         for (const s of placed) {
-            // Scale + flip Y to match the in-game renderer's coord mapping.
-            // Raw serverPlace is the game's logical coord; PLACE_SCALE
-            // brings it to "pixels of separation", PLACE_Y_SIGN flips so
-            // a "northern" server (raw y > 0) renders above center.
             const x = s.serverPlace[0] * PLACE_SCALE;
             const y = s.serverPlace[1] * PLACE_SCALE * PLACE_Y_SIGN;
             if (x < minX) minX = x;
@@ -111,8 +66,6 @@
         }
         if (!placed.length) { minX = 0; minY = 0; maxX = 0; maxY = 0; }
 
-        // Orphans row: just below the bbox, evenly spaced. They lose
-        // topological accuracy but at least show up in the map.
         const ORPHAN_GAP = 120;
         orphans.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
         orphans.forEach((s, i) => {
@@ -123,7 +76,6 @@
             if (y > maxY) maxY = y;
         });
 
-        // Shift to positive coords + add padding for node half-widths.
         const PAD = 80;
         const offsetX = -minX + PAD;
         const offsetY = -minY + PAD;
@@ -136,18 +88,13 @@
         return { positions, worldW, worldH };
     }
 
-    // ─── Classification ───────────────────────────────────────────────────
     function classifyNode(node, ctx) {
         if (!node) return 'ok';
         if (node.name === ctx.homeName) return 'home';
         if (node.isInMaintenance) return 'kd';
-        if (ctx.skipSet.has(node.name)) return 'skip';
-        if (node.marketId && ctx.disabledMarketIds.has(node.marketId)) return 'off';
         return 'ok';
     }
 
-    // Count available jobs per server. Each market envelope's jobs[] entries
-    // carry relatedServers[]; we attribute the job to the first listed server.
     function buildJobCounts(marketsData) {
         const counts = {};
         for (const data of marketsData) {
@@ -166,15 +113,6 @@
         return counts;
     }
 
-    // ─── Edge geometry: cardinal-tail → curve → diagonal → curve → tail ─
-    //
-    // Reproduces the in-game ConnectionsLayerStyled path pattern:
-    //   M a.x a.y  L tailA  Q cornerA endA  L startB  Q cornerB tailB  L b.x b.y
-    // The diagonal segment runs between the two "corner-extreme" points
-    // (anchor + tail + radius in port direction). Q endpoints sit `radius`
-    // along the diagonal from those corners. dirA / dirB are outward unit
-    // vectors at each port; the path tail leaves cardinally before curving
-    // toward the other node.
     function manhattanPath(ax, ay, bx, by, dirA, dirB, tail, radius) {
         const t = (tail != null) ? tail : EDGE_TAIL;
         const r = (radius != null) ? radius : EDGE_RADIUS;
@@ -191,8 +129,6 @@
         const len = Math.hypot(dx, dy) || 1;
         const ux = dx / len;
         const uy = dy / len;
-        // Q endpoint on the A side sits `radius` along the diagonal from
-        // the A corner control point — same on the B side, mirrored.
         const aEx = aCX + ux * r;
         const aEy = aCY + uy * r;
         const bSx = bCX - ux * r;
@@ -200,17 +136,11 @@
         return `M ${ax} ${ay} L ${aTX} ${aTY} Q ${aCX} ${aCY} ${aEx} ${aEy} L ${bSx} ${bSy} Q ${bCX} ${bCY} ${bTX} ${bTY} L ${bx} ${by}`;
     }
 
-    // Decide which side of each node hosts the port for an edge. The port
-    // closest to the other end-point along the dominant axis wins, matching
-    // how the in-game map lays its ports out. Returns { aSide, bSide,
-    // aAnchor, bAnchor } where side ∈ {'right','left','top','bottom'} and
-    // anchor is the [x,y] on the node's perimeter.
     function pickPortSides(aCenter, bCenter) {
         const dx = bCenter.x - aCenter.x;
         const dy = bCenter.y - aCenter.y;
         let aSide, bSide;
         if (Math.abs(dx) >= Math.abs(dy)) {
-            // Horizontal dominance: side ports.
             aSide = dx > 0 ? 'right' : 'left';
             bSide = dx > 0 ? 'left'  : 'right';
         } else {
@@ -229,15 +159,11 @@
         return { a: sideAnchor(aCenter, aSide), b: sideAnchor(bCenter, bSide) };
     }
 
-    // Node body path: rect (60×44) with a top-right corner chamfer.
-    // Drawn as a single closed <path> so fill + stroke render in one go.
     function nodePathD() {
         const W = NODE_W;
         const H = NODE_H;
         const F = NODE_FASCIA;
-        const R = 3;  // outer corner radius (excluding the chamfer)
-        // Walk clockwise: top-left → top-right-pre-chamfer → diag-chamfer →
-        // right-side-down → bottom-right → bottom-left → close.
+        const R = 3;
         return [
             `M ${R} 0`,
             `L ${W - F} 0`,
@@ -252,7 +178,6 @@
         ].join(' ');
     }
 
-    // ─── Render ───────────────────────────────────────────────────────────
     function render(camera, ctx) {
         while (camera.firstChild) camera.removeChild(camera.firstChild);
 
@@ -269,16 +194,14 @@
 
         const { positions, worldW, worldH } = projectPositions(graph);
 
-        // Per-node colour-gradient defs. Re-created each render so a server
-        // whose serverColor changed between snapshots actually updates.
         const defs = svgEl('defs');
-        const usedColors = new Map();   // server id → resolved color triple
+        const usedColors = new Map();
         for (const s of graph.servers) {
             const col = (s.serverColor && s.serverColor.main) ? s.serverColor : DEFAULT_COLOR;
             const idSafe = safeId(s.id || s.name);
             usedColors.set(s.id || s.name, { col, idSafe });
             const grad = svgEl('linearGradient', {
-                id: `nm-grad-${idSafe}`,
+                id: `nmv2-grad-${idSafe}`,
                 x1: 0, y1: 0, x2: 0, y2: 1,
             });
             const stop1 = svgEl('stop', { offset: '0%',   'stop-color': col.main });
@@ -289,16 +212,6 @@
         }
         camera.appendChild(defs);
 
-        // ── Edges ───────────────────────────────────────────────────────
-        //
-        // Two layers:
-        //   1. Tree edges (parentName-based) — the BFS spanning tree.
-        //   2. Extra edges — every connection in graph.connections that
-        //      isn't already covered by the tree (the map is a DAG with
-        //      multi-parent nodes).
-        //
-        // Active path HOME → currentEndpoint gets cyan stroke. We index
-        // homePath as an unordered pair set for cheap lookup.
         const pairKey = (a, b) => (a < b ? `${a}|${b}` : `${b}|${a}`);
         const activeSet = new Set();
         for (const e of (graph.homePath || [])) {
@@ -345,7 +258,6 @@
 
         camera.appendChild(edgesG);
 
-        // ── Nodes ───────────────────────────────────────────────────────
         const nodeBodyD = nodePathD();
         const cardsG = svgEl('g', { class: 'nm-cards' });
         for (const s of graph.servers) {
@@ -353,7 +265,6 @@
             if (!pos) continue;
             const cls = classifyNode(s, ctx);
             const { col, idSafe } = usedColors.get(s.id || s.name);
-            // Translate so the node's top-left sits at (pos - half size).
             const tx = Math.round(pos.x - NODE_W / 2);
             const ty = Math.round(pos.y - NODE_H / 2);
             const isHome = s.serverTypeName === 'Home' || s.name === ctx.homeName;
@@ -365,20 +276,17 @@
                 transform: `translate(${tx}, ${ty})`,
             });
 
-            // Body — gradient fill + faction-coloured stroke.
             g.appendChild(svgEl('path', {
                 class: 'nm-card',
                 d: nodeBodyD,
-                fill: `url(#nm-grad-${idSafe})`,
-                'fill-opacity': cls === 'off' ? 0.2 : 0.4,
+                fill: `url(#nmv2-grad-${idSafe})`,
+                'fill-opacity': 0.4,
                 stroke: col.main,
-                'stroke-opacity': cls === 'off' ? 0.3 : 0.65,
+                'stroke-opacity': 0.65,
                 'stroke-width': isHome || isActiveEndpoint ? 1.5 : 1,
             }));
 
-            // Type-glyph (Public/Private/Restricted) centred. Skip for
-            // HOME — its faction colour already says "home" at a glance.
-            const glyph = !isHome && s.transitType ? `nm-glyph-${s.transitType}` : null;
+            const glyph = !isHome && s.transitType ? `nmv2-glyph-${s.transitType}` : null;
             if (glyph) {
                 const G = 16;
                 g.appendChild(svgEl('use', {
@@ -392,7 +300,6 @@
                 }));
             }
 
-            // Server name — small caps near the top of the card.
             const nameTrim = (s.name || '').replace(/^RM7-/, '').slice(0, 9);
             const lbl = svgEl('text', {
                 x: NODE_W / 2,
@@ -403,10 +310,6 @@
             lbl.textContent = nameTrim || '?';
             g.appendChild(lbl);
 
-            // Corner brackets — appear on hover/selected/active via CSS.
-            // Each is a 5×5 "L" path positioned just outside one corner of
-            // the body; CSS translates them further outward on hover for
-            // the cor3.gg pop-out feel.
             const cornerSize = 5;
             const cornerColor = col.highlighted || col.main;
             const brackets = [
@@ -426,7 +329,6 @@
                 }));
             }
 
-            // K/D badge (top-right of the body, above the fascia).
             if (cls === 'kd') {
                 const bg = svgEl('g', { class: 'nm-kd-badge', transform: `translate(${NODE_W - 22}, -7)` });
                 bg.appendChild(svgEl('rect', { x: 0, y: 0, width: 22, height: 10, rx: 2, ry: 2, class: 'nm-kd-bg' }));
@@ -436,7 +338,6 @@
                 g.appendChild(bg);
             }
 
-            // Jobs badge — bottom-right corner circle with the count.
             const jobs = ctx.jobCounts[s.name] || 0;
             if (jobs > 0) {
                 const bg = svgEl('g', { class: 'nm-jobs-badge', transform: `translate(${NODE_W - 8}, ${NODE_H - 8})` });
@@ -447,8 +348,6 @@
                 g.appendChild(bg);
             }
 
-            // "NEW" pill — game flags fresh servers. Small white tag,
-            // bottom-left of the body.
             if (s.isNew) {
                 const bg = svgEl('g', { class: 'nm-new-badge', transform: `translate(3, ${NODE_H - 12})` });
                 bg.appendChild(svgEl('rect', { x: 0, y: 0, width: 18, height: 9, rx: 1.5, ry: 1.5, class: 'nm-new-bg' }));
@@ -458,18 +357,45 @@
                 g.appendChild(bg);
             }
 
-            // Tooltip via native <title>. Keeps the popup chrome-free.
+            // User-override marker (top-left corner). Small so it doesn't
+            // crowd the card: a red ⊘ for a skipped server, or an amber count
+            // for a server with N job types disabled.
+            const ov = ctx.overrides && ctx.overrides[s.name];
+            const disabledCount = (ov && ov.disabledTypes)
+                ? Object.keys(ov.disabledTypes).filter((k) => ov.disabledTypes[k]).length : 0;
+            if (ov && ov.skip) {
+                g.classList.add('nm-skip');
+                const bg = svgEl('g', { class: 'nm-ov-badge', transform: 'translate(-3, -3)' });
+                bg.appendChild(svgEl('circle', { cx: 6, cy: 6, r: 6, class: 'nm-skip-bg' }));
+                bg.appendChild(svgEl('line', { x1: 2.6, y1: 2.6, x2: 9.4, y2: 9.4, class: 'nm-skip-slash' }));
+                g.appendChild(bg);
+            } else if (disabledCount > 0) {
+                g.classList.add('nm-has-disabled');
+                const bg = svgEl('g', { class: 'nm-ov-badge', transform: 'translate(-3, -3)' });
+                bg.appendChild(svgEl('circle', { cx: 6, cy: 6, r: 6, class: 'nm-dis-bg' }));
+                const t = svgEl('text', { x: 6, y: 8.6, 'text-anchor': 'middle', class: 'nm-dis-text' });
+                t.textContent = String(disabledCount);
+                bg.appendChild(t);
+                g.appendChild(bg);
+            }
+
+            // Market disabled via Master Switches → dim the tile.
+            const mslot = ctx.marketSlotByName && ctx.marketSlotByName[s.name];
+            const marketOff = !!(mslot && ctx.switches && ctx.switches.markets && ctx.switches.markets[mslot] === false);
+            if (marketOff) g.classList.add('nm-market-off');
+
             const title = svgEl('title');
             const parts = [s.name];
+            if (marketOff)               parts.push(`market disabled (${mslot})`);
             if (s.serverTypeName)        parts.push(s.serverTypeName);
             if (s.cluster)               parts.push(`cluster: ${s.cluster}`);
             if (Number.isFinite(s.depth)) parts.push(`depth: ${s.depth}${s.viaHidden ? ' (via hidden)' : ''}`);
             if (s.parentName)            parts.push(`from: ${s.parentName}`);
             if (isActiveEndpoint)        parts.push('← current endpoint');
             if (cls === 'kd')            parts.push('K/D — temporarily in maintenance');
-            if (cls === 'skip')          parts.push('user-skipped');
-            if (cls === 'off')           parts.push('market disabled in settings');
             if (jobs > 0)                parts.push(`${jobs} job(s) available`);
+            if (ov && ov.skip)           parts.push('SKIPPED by user');
+            else if (disabledCount > 0)  parts.push(`${disabledCount} job type(s) disabled here`);
             title.textContent = parts.join('\n');
             g.appendChild(title);
 
@@ -480,19 +406,12 @@
         return { worldW, worldH };
     }
 
-    // Build the shared <defs> that the camera references via url(#…).
-    // Lives in the root <svg> (outside camera) so it's not wiped between
-    // renders. Type-glyph <symbol>s come from the in-game legend SVGs
-    // (legend-icons.tsx) so the shapes are pixel-identical.
     function ensureSharedDefs(svg) {
-        if (svg.querySelector('defs.nm-shared-defs')) return;
-        const defs = svgEl('defs', { class: 'nm-shared-defs' });
+        if (svg.querySelector('defs.nmv2-shared-defs')) return;
+        const defs = svgEl('defs', { class: 'nmv2-shared-defs' });
 
-        // Edge glow filter — feGaussianBlur stdDeviation=2 (lighter than
-        // the game's 4 because our compact node spacing would otherwise
-        // bleed the glow across neighbours).
         const filter = svgEl('filter', {
-            id: 'nm-glow-line',
+            id: 'nmv2-glow-line',
             x: '-50%', y: '-50%', width: '200%', height: '200%',
         });
         filter.appendChild(svgEl('feGaussianBlur', { stdDeviation: 2, result: 'blur' }));
@@ -502,12 +421,7 @@
         filter.appendChild(merge);
         defs.appendChild(filter);
 
-        // Type-glyph symbols. Coords are 24×24 (Public/Restricted) or 20×20
-        // (Private); SVG <use> scales them to whatever width/height we set
-        // on the use element.
-        //
-        // Public: 4 triangles forming a 4-petal star/diamond.
-        const pub = svgEl('symbol', { id: 'nm-glyph-public', viewBox: '0 0 24 24' });
+        const pub = svgEl('symbol', { id: 'nmv2-glyph-public', viewBox: '0 0 24 24' });
         const pubPaths = [
             'M12.047 2.35352L16.9375 10.8241H7.15646L12.047 2.35352Z',
             'M12.0472 20.5176L7.15666 12.047L16.9377 12.047L12.0472 20.5176Z',
@@ -517,8 +431,7 @@
         for (const d of pubPaths) pub.appendChild(svgEl('path', { d }));
         defs.appendChild(pub);
 
-        // Private: 4 quarter-disc petals.
-        const priv = svgEl('symbol', { id: 'nm-glyph-private', viewBox: '0 0 20 20' });
+        const priv = svgEl('symbol', { id: 'nmv2-glyph-private', viewBox: '0 0 20 20' });
         const privPaths = [
             'M9.28418 10.7178V20.001C4.31684 19.6501 0.350896 15.6851 0 10.7178H9.28418Z',
             'M20.002 10.7178C19.6511 15.6851 15.6851 19.6501 10.7178 20.001V10.7178H20.002Z',
@@ -528,8 +441,7 @@
         for (const d of privPaths) priv.appendChild(svgEl('path', { d }));
         defs.appendChild(priv);
 
-        // Restricted: 4 rotated squares (diamonds) in 2×2 arrangement.
-        const restricted = svgEl('symbol', { id: 'nm-glyph-restricted', viewBox: '0 0 24 24' });
+        const restricted = svgEl('symbol', { id: 'nmv2-glyph-restricted', viewBox: '0 0 24 24' });
         const rects = [
             { y: 11.6035, x: 0,        rot: '-45 0 11.6035' },
             { y: 5.15723, x: 6.44604, rot: '-45 6.44604 5.15723' },
@@ -543,12 +455,10 @@
         }
         defs.appendChild(restricted);
 
-        // Insert defs as the first child so renders below it can reference.
         if (svg.firstChild) svg.insertBefore(defs, svg.firstChild);
         else svg.appendChild(defs);
     }
 
-    // ─── Pan + Zoom (camera transform) ────────────────────────────────────
     function attach(container) {
         container.classList.add('network-map-host');
         container.innerHTML = '';
@@ -563,13 +473,9 @@
 
         const canvasHost = htmlEl('div', 'network-map-canvas');
 
-        // Background grid layer (sized to the world, scrolled by the camera
-        // transform). Lives behind the <svg> so the dotted lattice stays
-        // perfectly aligned with the SVG content under pan+zoom.
         const gridLayer = htmlEl('div', 'network-map-grid');
         canvasHost.appendChild(gridLayer);
 
-        // HUD: zoom %, Refresh button, Fit button.
         const hud = htmlEl('div', 'nm-hud');
         const zoomLabel = htmlEl('span', 'nm-hud-zoom muted xs', '100%');
         const refreshBtn = htmlEl('button', 'btn small nm-hud-btn', '↻');
@@ -585,10 +491,7 @@
             try {
                 refreshBtn.disabled = true;
                 refreshBtn.textContent = '…';
-                const tabs = await chrome.tabs.query({ url: ['https://cor3.gg/*', 'https://os.cor3.gg/*'] });
-                if (tabs && tabs[0]) {
-                    chrome.tabs.sendMessage(tabs[0].id, { action: 'rescanNetworkMap' }).catch(() => {});
-                }
+                await sendGameAction(C.MSG.GAME.RESCAN_NETWORK_MAP);
             } catch (_) { /* ignore */ }
             setTimeout(() => { refreshBtn.disabled = false; refreshBtn.textContent = '↻'; }, 1500);
         });
@@ -606,57 +509,248 @@
         wrap.appendChild(canvasHost);
         container.appendChild(wrap);
 
-        // ── Camera (pan / wheel-zoom / fit) via the shared controller ──────
-        // Read-only map: plain pan, no tap-select. World bounds update per
-        // render (`world`); fit clamps to a readable minimum (FIT_MIN 0.35)
-        // since in-game coords can span 2000+ units.
+        // World bounds (updated per render) for the shared pan/zoom controller.
         let world = { worldW: 320, worldH: 160 };
+
+        // Context-menu state (RIGHT-click a server node). Left-click selects.
+        const serversByName = new Map();
+        let homeName = null;
+        let v2Enabled = false;       // Open SAI / Open Market blocked while true
+        let menuEl = null, menuFor = null, menuX = 0, menuY = 0;
+        let selectedName = null;     // left-click selection (persistent highlight)
+
+        // ── Camera (pan / wheel-zoom / fit) via the shared controller ──────
+        // Left-click without a drag selects a node (onTap); right-click opens
+        // the context menu (handled separately below). World bounds update per
+        // render (`world`).
         const panZoom = root.COR3.panZoom.create({
             svg, camera, canvasHost, gridLayer, zoomLabel,
             getWorld: () => world,
             zoomMin: 0.15, zoomMax: 3, fitMin: 0.35, fitMax: 1.2,
+            onTap: (clientX, clientY, target) => {
+                const nodeG = target && target.closest && target.closest('.nm-node');
+                selectNode(nodeG ? nodeG.getAttribute('data-name') : null);
+            },
         });
         const fit = () => panZoom.fit();
 
+        // ─── Context menu ──────────────────────────────────────────────────
+        const JOB_TYPES = Object.values(C.FLOW);
+
+        async function getCor3Tab() {
+            const tabs = await chrome.tabs.query({ url: ['https://cor3.gg/*', 'https://os.cor3.gg/*'] });
+            return (tabs && tabs[0]) || null;
+        }
+        async function sendGameAction(action, serverName, serverId, serverType) {
+            const tab = await getCor3Tab();
+            if (tab) chrome.tabs.sendMessage(tab.id, { action, serverName, serverId, serverType }).catch(() => {});
+        }
+        async function readOverrides() {
+            return (await Store.local.getOne(SL.AJ_SERVER_OVERRIDES, {})) || {};
+        }
+        // Serialized so rapid in-place toggles can't race: each patch reads
+        // AFTER the previous one's write commits (read-modify-write on shared
+        // storage would otherwise clobber concurrent edits).
+        let patchChain = Promise.resolve();
+        function patchOverride(name, mutate) {
+            patchChain = patchChain.then(async () => {
+                const all = await readOverrides();
+                const cur = all[name] || { skip: false, disabledTypes: {} };
+                mutate(cur);
+                const hasDisabled = cur.disabledTypes && Object.keys(cur.disabledTypes).some((k) => cur.disabledTypes[k]);
+                if (!cur.skip && !hasDisabled) delete all[name];
+                else all[name] = cur;
+                await Store.local.setOne(SL.AJ_SERVER_OVERRIDES, all);
+            });
+            return patchChain;
+        }
+
+        function onDocDown(e) { if (menuEl && !menuEl.contains(e.target)) closeMenu(); }
+        function onKeyDown(e) { if (e.key === 'Escape') closeMenu(); }
+        function closeMenu() {
+            if (menuEl) { menuEl.remove(); menuEl = null; }
+            menuFor = null;
+            document.removeEventListener('pointerdown', onDocDown, true);
+            document.removeEventListener('keydown', onKeyDown, true);
+        }
+
+        // Left-click selection — a persistent cyan highlight on one node. The
+        // cards are rebuilt on every refresh(), so re-apply after each render.
+        function applySelection() {
+            for (const g of camera.querySelectorAll('.nm-node')) {
+                g.classList.toggle('is-selected', g.getAttribute('data-name') === selectedName);
+            }
+        }
+        function selectNode(name) {
+            selectedName = name || null;
+            applySelection();
+        }
+
+        async function openMenu(serverName, clientX, clientY) {
+            closeMenu();
+            menuX = clientX; menuY = clientY;
+            selectNode(serverName);   // the menu's node reads as selected
+            const server = serversByName.get(serverName) || null;
+            const isHome = !!(server && (server.serverTypeName === 'Home' || server.name === homeName));
+            const isMarket = isHome || !!(server && server.marketId);
+            const ov = (await readOverrides())[serverName] || { skip: false, disabledTypes: {} };
+
+            const menu = htmlEl('div', 'nm-ctx-menu');
+            menu.appendChild(htmlEl('div', 'nm-ctx-title', serverName));
+
+            // serverId + serverType (from NM_GRAPH) ride alongside serverName:
+            // the MAIN bridge connects via WS set.endpoint (needs the id) and,
+            // for Open SAI, may hack the server — picking HACK software by its
+            // serverTypeName (e.g. "CEDRT private").
+            const serverId = (server && server.id) || null;
+            const serverType = (server && server.serverTypeName) || null;
+            const gameBtn = (label, action, arg, argId, argType) => {
+                const b = htmlEl('button', 'nm-ctx-item', label);
+                b.disabled = v2Enabled;
+                if (v2Enabled) b.title = 'Disabled while Auto Jobs is running';
+                b.addEventListener('click', () => { if (v2Enabled) return; sendGameAction(action, arg, argId, argType); closeMenu(); });
+                menu.appendChild(b);
+            };
+            // HOME has no SAI terminal — only offer Open Market there.
+            if (!isHome) gameBtn('Open SAI', C.MSG.AUTOJOBS.OPEN_SAI_ACTION, serverName, serverId, serverType);
+            if (isMarket) gameBtn('Open Market', C.MSG.AUTOJOBS.OPEN_MARKET_ACTION, isHome ? null : serverName, isHome ? null : serverId, null);
+
+            menu.appendChild(htmlEl('div', 'nm-ctx-divider'));
+
+            // SKIP toggle — flips IN PLACE (no openMenu rebuild, so no flicker
+            // or position jump). The storage write triggers a map re-render
+            // that updates the node's override badge live.
+            const skipBtn = htmlEl('button', 'nm-ctx-item nm-ctx-toggle');
+            const renderSkip = (on) => {
+                skipBtn.classList.toggle('is-on', on);
+                skipBtn.textContent = (on ? '☑ ' : '☐ ') + 'SKIP this server';
+            };
+            renderSkip(!!ov.skip);
+            skipBtn.addEventListener('click', () => {
+                const next = !skipBtn.classList.contains('is-on');
+                renderSkip(next);
+                patchOverride(serverName, (c) => { c.skip = next; });
+            });
+            menu.appendChild(skipBtn);
+
+            // Per-server job-type disables — compact chip grid (green = runs
+            // here / grey = muted here), same visual as Master Switches. Each
+            // chip toggles in place; no scroll.
+            menu.appendChild(htmlEl('div', 'nm-ctx-sub', 'Disable job types here:'));
+            const disabled = ov.disabledTypes || {};
+            const chipsWrap = htmlEl('div', 'nm-ctx-chips');
+            for (const type of JOB_TYPES) {
+                const chip = htmlEl('button', 'aj-ms-chip' + (disabled[type] ? '' : ' on'), type.replace(/_/g, ' '));
+                chip.addEventListener('click', () => {
+                    const runsHere = !chip.classList.contains('on');   // off → enable, on → disable
+                    chip.classList.toggle('on', runsHere);
+                    patchOverride(serverName, (c) => {
+                        c.disabledTypes = c.disabledTypes || {};
+                        if (runsHere) delete c.disabledTypes[type];
+                        else c.disabledTypes[type] = true;
+                    });
+                });
+                chipsWrap.appendChild(chip);
+            }
+            menu.appendChild(chipsWrap);
+
+            // Reset — clears skip + every type disable for this server.
+            const resetBtn = htmlEl('button', 'nm-ctx-item nm-ctx-reset', 'Reset overrides');
+            resetBtn.addEventListener('click', () => {
+                renderSkip(false);
+                chipsWrap.querySelectorAll('.aj-ms-chip').forEach((c) => c.classList.add('on'));
+                patchOverride(serverName, (c) => { c.skip = false; c.disabledTypes = {}; });
+            });
+            menu.appendChild(resetBtn);
+
+            const hostRect = canvasHost.getBoundingClientRect();
+            menu.style.left = (clientX - hostRect.left + 4) + 'px';
+            menu.style.top = (clientY - hostRect.top + 4) + 'px';
+            canvasHost.appendChild(menu);
+            // Clamp inside the canvas.
+            const m = menu.getBoundingClientRect();
+            if (m.right > hostRect.right) menu.style.left = Math.max(2, hostRect.width - m.width - 4) + 'px';
+            if (m.bottom > hostRect.bottom) menu.style.top = Math.max(2, hostRect.height - m.height - 4) + 'px';
+
+            menuEl = menu;
+            menuFor = serverName;
+            setTimeout(() => {
+                document.addEventListener('pointerdown', onDocDown, true);
+                document.addEventListener('keydown', onKeyDown, true);
+            }, 0);
+        }
+
+        // Pan + left-click tap-select are owned by the shared pan/zoom
+        // controller (onTap above). Right-click context menu stays here.
+
+        // Right-click a node → context menu (Open SAI/Market + per-server
+        // overrides). Always suppress the browser menu over the map.
+        svg.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            const nodeG = e.target.closest && e.target.closest('.nm-node');
+            const name = nodeG ? nodeG.getAttribute('data-name') : null;
+            if (name) openMenu(name, e.clientX, e.clientY);
+            else closeMenu();
+        });
+
         fitBtn.addEventListener('click', () => fit());
 
-        // ── Refresh / data ──────────────────────────────────────────────
         const summaryStatus = wrap.querySelector('.nm-summary-status');
         let firstRender = true;
 
         async function refresh() {
-            const [graph, settings, priorities, home, dark, srm] = await Promise.all([
+            const [graph, home, dark, srm, overrides, switches, queue] = await Promise.all([
                 Store.local.getOne(SL.NM_GRAPH, null),
-                Store.sync.getOne(SS.AUTOJOBS_SETTINGS, { markets: { home: true, dark: true, srm: true } }),
-                Store.sync.getOne(SS.SERVER_PRIORITIES, {}),
                 Store.local.getOne(SL.MARKET, null),
                 Store.local.getOne(SL.DARK_MARKET, null),
                 Store.local.getOne(SL.SRM_MARKET, null),
+                Store.local.getOne(SL.AJ_SERVER_OVERRIDES, {}),
+                Store.local.getOne(SL.AJ_MASTER_SWITCHES, {}),
+                Store.local.getOne(SL.AJ_JOB_QUEUE, null),
             ]);
-            const skipSet = new Set();
-            for (const [name, val] of Object.entries(priorities || {})) {
-                if (val === 'skip') skipSet.add(name);
+
+            // Map each market server to its slot so we can dim it when its
+            // Master Switch is off. home = the graph's home (no envelope
+            // needed). dark/srm matched by marketId — but the live envelope may
+            // not have loaded yet this session, so also use the slot↔marketId
+            // pairs the pipeline recorded in AJ_JOB_QUEUE (those persist even
+            // while the live envelope is absent). Without this the tile shows
+            // enabled while the pipeline already suppresses the market.
+            const marketSlotByName = {};
+            const homeNm = graph && graph.home;
+            const marketIdToSlot = {};
+            if (queue && Array.isArray(queue.markets)) {
+                for (const m of queue.markets) if (m && m.marketId && m.slot) marketIdToSlot[m.marketId] = m.slot;
             }
-            const disabledMarketIds = new Set();
-            const m = settings.markets || {};
-            if (m.home === false && home && home.marketId) disabledMarketIds.add(home.marketId);
-            if (m.dark === false && dark && dark.marketId) disabledMarketIds.add(dark.marketId);
-            if (m.srm  === false && srm  && srm.marketId)  disabledMarketIds.add(srm.marketId);
+            if (dark && dark.marketId) marketIdToSlot[dark.marketId] = 'dark';
+            if (srm && srm.marketId) marketIdToSlot[srm.marketId] = 'srm';
+            for (const s of (graph && graph.servers) || []) {
+                if (!s || !s.name) continue;
+                if (s.name === homeNm || s.serverTypeName === 'Home') marketSlotByName[s.name] = 'home';
+                else if (s.marketId && marketIdToSlot[s.marketId]) marketSlotByName[s.name] = marketIdToSlot[s.marketId];
+            }
 
             const ctx = {
                 graph,
                 homeName: graph?.home || null,
                 currentEndpointName: graph?.currentEndpointName || null,
-                skipSet,
-                disabledMarketIds,
                 jobCounts: buildJobCounts([home, dark, srm]),
+                overrides: overrides || {},
+                switches: switches || {},
+                marketSlotByName,
             };
 
+            // Index servers for the context menu (name → server object, so the
+            // menu knows market-ness, home-ness, etc.).
+            serversByName.clear();
+            homeName = ctx.homeName;
+            for (const s of (graph && graph.servers) || []) {
+                if (s && s.name) serversByName.set(s.name, s);
+            }
+
             const dims = render(camera, ctx);
+            applySelection();   // cards were rebuilt — restore the highlight
             world = dims;
-            // Fixed visual height in the popup — pan/zoom the camera
-            // inside this box. Grid layer is `position: absolute; inset: 0`
-            // so it follows canvasHost height automatically.
             const visualHeight = 320;
             svg.style.height = visualHeight + 'px';
 
@@ -678,16 +772,27 @@
         }
 
         const localUnsub = Store.local.onChanged((c) => {
-            if (c[SL.NM_GRAPH] || c[SL.MARKET] || c[SL.DARK_MARKET] || c[SL.SRM_MARKET] || c[SL.AJ_REACHABILITY]) refresh();
+            if (c[SL.NM_GRAPH] || c[SL.MARKET] || c[SL.DARK_MARKET] || c[SL.SRM_MARKET]
+                || c[SL.AJ_SERVER_OVERRIDES] || c[SL.AJ_MASTER_SWITCHES] || c[SL.AJ_JOB_QUEUE]) refresh();
         });
+
+        // Track whether Auto Jobs is running — Open SAI / Open Market are
+        // blocked while it is. Re-render an open menu so its buttons reflect
+        // the new state immediately.
+        const SS = C.STORAGE_SYNC;
         const syncUnsub = Store.sync.onChanged((c) => {
-            if (c[SS.AUTOJOBS_SETTINGS] || c[SS.SERVER_PRIORITIES]) refresh();
+            if (!c[SS.AUTOJOBS_SETTINGS]) return;
+            const nv = c[SS.AUTOJOBS_SETTINGS].newValue;
+            v2Enabled = !!(nv && nv.enabled);
+            if (menuEl && menuFor != null) openMenu(menuFor, menuX, menuY);
         });
+        Store.sync.getOne(SS.AUTOJOBS_SETTINGS, { enabled: false }).then((s) => { v2Enabled = !!(s && s.enabled); });
 
         refresh();
 
         return {
             destroy() {
+                closeMenu();
                 if (typeof localUnsub === 'function') localUnsub();
                 if (typeof syncUnsub === 'function') syncUnsub();
                 panZoom.destroy();

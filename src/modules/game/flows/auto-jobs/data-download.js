@@ -1,14 +1,14 @@
-// Auto-Jobs v2 — Data Download flow (MAIN world). jobType: data_download
+// Auto Jobs — Data Download flow (MAIN world). jobType: data_download
 // (DownloadData). Download the job's target file(s) from the server into the
 // player's Downloads, pure WS. Job carries file NAMES → map name→fileId via
 // get.files, then file.download (the file lands in Downloads via
 // desktop.update.file). No minigame.
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
-    if (!root.COR3 || !root.COR3.constants || !root.COR3.autoJobsV2 || !root.COR3.autoJobsV2.saiFlow) return;
+    if (!root.COR3 || !root.COR3.constants || !root.COR3.autoJobs || !root.COR3.autoJobs.saiFlow) return;
     const C = root.COR3.constants;
-    const NODE = C.AJV2.NODE;
-    const SF = root.COR3.autoJobsV2.saiFlow;
+    const NODE = C.AJ.NODE;
+    const SF = root.COR3.autoJobs.saiFlow;
 
     const findFile = (files, name) => {
         const n = String(name || '').toLowerCase();
@@ -16,8 +16,8 @@
     };
 
     SF.defineFlow({
-        id: 'flow-v2-data-download',
-        name: 'Flow v2: Data Download',
+        id: 'flow-data-download',
+        name: 'Flow: Data Download',
         jobType: C.FLOW.DATA_DOWNLOAD,
         // job: { jobId, marketId, jobType, serverId, serverType, serverName, fileNames:[…] }
         async run(job, h) {

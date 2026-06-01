@@ -1,18 +1,17 @@
-// Auto-Jobs v2 "Download Log" bundle builder.
+// Auto Jobs "Download Log" bundle builder.
 //
-// Bundle: header (build/web/ext versions) + v2 settings + v2 RUNTIME STATE
+// Bundle: header (build/web/ext versions) + Auto Jobs settings + RUNTIME STATE
 // (pipeline node, job-queue board, bugged registry + reasons, master switches,
-// server overrides — all v2-owned keys the orchestrator/flows write) + v2
-// logger entries (module id `auto-jobs-v2` or `flow-v2-*`). No SERVER_PRIORITIES
-// / NM_GRAPH — those are shared with v1 and would leak v1's configuration into
-// a "v2-only" download.
+// server overrides — all Auto-Jobs-owned keys the orchestrator/flows write) +
+// logger entries (module id `auto-jobs` or `flow-*`). No NM_GRAPH — that is
+// shared game state and would bloat an Auto-Jobs-only download.
 
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
     if (!root.COR3 || !root.COR3.constants) return;
     const { Store, Logger, constants: C } = root.COR3;
 
-    const RELEVANT_MODULE_PATTERN = /^(auto-jobs-v2|flow-v2-.+)$/;
+    const RELEVANT_MODULE_PATTERN = /^(auto-jobs|flow-.+)$/;
 
     function fmtTs(ts) {
         if (!ts) return '—';
@@ -24,47 +23,47 @@
         const ss = C.STORAGE_SYNC;
         const local = await Store.local.get([
             sl.WEB_VERSION, sl.SYSTEM_VERSION,
-            sl.AJV2_PIPELINE_STATE, sl.AJV2_JOB_QUEUE, sl.AJV2_BUGGED_JOBS,
-            sl.AJV2_MASTER_SWITCHES, sl.AJV2_SERVER_OVERRIDES,
+            sl.AJ_PIPELINE_STATE, sl.AJ_JOB_QUEUE, sl.AJ_BUGGED_JOBS,
+            sl.AJ_MASTER_SWITCHES, sl.AJ_SERVER_OVERRIDES,
         ]);
-        const sync  = await Store.sync.get([ss.AUTOJOBS_V2_SETTINGS]);
+        const sync  = await Store.sync.get([ss.AUTOJOBS_SETTINGS]);
 
         const lines = [];
-        lines.push(`=== COR3 Helper / Auto-Jobs v2 debug log — exported ${new Date().toISOString()} ===`);
+        lines.push(`=== COR3 Helper / Auto Jobs debug log — exported ${new Date().toISOString()} ===`);
         const bi = root.COR3 && root.COR3.buildInfo;
         const mv = (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getManifest)
             ? (chrome.runtime.getManifest().version || '?') : '?';
         lines.push(`Build: ${bi?.commit || 'unknown'} (${bi?.date || '?'})     ExtVersion: ${mv}`);
         lines.push(`WebVersion: ${local[sl.WEB_VERSION] || '?'}     SystemVersion: ${local[sl.SYSTEM_VERSION] || '?'}`);
         lines.push('');
-        lines.push('Settings v2:');
+        lines.push('Settings:');
         // Print the raw stored value. An ABSENT marker (not a fabricated
         // `{enabled:false}`) so a debug reader can tell "never written" from
         // "explicitly disabled".
-        const v2settings = sync[ss.AUTOJOBS_V2_SETTINGS];
+        const v2settings = sync[ss.AUTOJOBS_SETTINGS];
         lines.push('  ' + (v2settings === undefined ? '(ABSENT — never written)' : JSON.stringify(v2settings)));
         lines.push('');
 
-        // ── Runtime state (v2-owned keys the orchestrator + flows write) ──
-        lines.push('─── Runtime state (v2) ───');
+        // ── Runtime state (Auto-Jobs-owned keys the orchestrator + flows write) ──
+        lines.push('─── Runtime state ───');
 
-        const ps = local[sl.AJV2_PIPELINE_STATE];
-        lines.push('Pipeline (AJV2_PIPELINE_STATE):');
+        const ps = local[sl.AJ_PIPELINE_STATE];
+        lines.push('Pipeline (AJ_PIPELINE_STATE):');
         lines.push('  ' + (ps
             ? `running=${!!ps.running} node=${ps.node || '—'} cycle=${ps.cycle != null ? ps.cycle : '—'} error=${ps.error || '—'} updatedAt=${fmtTs(ps.updatedAt)}`
             : '(none — orchestrator has not run this session)'));
 
-        const bugged = local[sl.AJV2_BUGGED_JOBS];
+        const bugged = local[sl.AJ_BUGGED_JOBS];
         const buggedKeys = (bugged && typeof bugged === 'object') ? Object.keys(bugged) : [];
-        lines.push(`Bugged jobs (AJV2_BUGGED_JOBS): ${buggedKeys.length}`);
+        lines.push(`Bugged jobs (AJ_BUGGED_JOBS): ${buggedKeys.length}`);
         if (!buggedKeys.length) lines.push('  (none)');
         else for (const id of buggedKeys) {
             const b = bugged[id] || {};
             lines.push(`  ${id} — ${b.reason || '?'} (since ${fmtTs(b.since)})`);
         }
 
-        const q = local[sl.AJV2_JOB_QUEUE];
-        lines.push('Job queue (AJV2_JOB_QUEUE):');
+        const q = local[sl.AJ_JOB_QUEUE];
+        lines.push('Job queue (AJ_JOB_QUEUE):');
         if (!q || !Array.isArray(q.jobs)) {
             lines.push('  (none — JOB_QUEUE has not been built this session)');
         } else {
@@ -79,17 +78,17 @@
             }
         }
 
-        const ms = local[sl.AJV2_MASTER_SWITCHES];
-        lines.push('Master switches (AJV2_MASTER_SWITCHES):');
+        const ms = local[sl.AJ_MASTER_SWITCHES];
+        lines.push('Master switches (AJ_MASTER_SWITCHES):');
         lines.push('  ' + (ms === undefined ? '(ABSENT — never written)' : JSON.stringify(ms)));
 
-        const so = local[sl.AJV2_SERVER_OVERRIDES];
+        const so = local[sl.AJ_SERVER_OVERRIDES];
         const soKeys = (so && typeof so === 'object') ? Object.keys(so) : [];
-        lines.push(`Server overrides (AJV2_SERVER_OVERRIDES): ${soKeys.length}`);
+        lines.push(`Server overrides (AJ_SERVER_OVERRIDES): ${soKeys.length}`);
         if (soKeys.length) lines.push('  ' + JSON.stringify(so));
 
         lines.push('');
-        lines.push('─── Logs (v2 only) ───');
+        lines.push('─── Logs ───');
 
         try {
             // Read straight from chrome.storage.local 'cor3_logs' — the SAME
@@ -102,7 +101,7 @@
             if (all && typeof all === 'object') {
                 const moduleIds = Object.keys(all).filter((id) => RELEVANT_MODULE_PATTERN.test(id)).sort();
                 if (!moduleIds.length) {
-                    lines.push('(no v2 log entries yet — no module is writing under the auto-jobs-v2 id)');
+                    lines.push('(no log entries yet — no module is writing under the auto-jobs id)');
                 }
                 for (const id of moduleIds) {
                     const entries = Array.isArray(all[id])
@@ -132,7 +131,7 @@
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = filename || `cor3-autojobs-v2-debug-${Date.now()}.txt`;
+        a.download = filename || `cor3-autojobs-debug-${Date.now()}.txt`;
         document.body.appendChild(a);
         a.click();
         a.remove();
@@ -140,6 +139,6 @@
         return text.length;
     }
 
-    root.COR3.autoJobsV2 = root.COR3.autoJobsV2 || {};
-    root.COR3.autoJobsV2.logExport = { buildDebugBundle, downloadDebugBundle };
+    root.COR3.autoJobs = root.COR3.autoJobs || {};
+    root.COR3.autoJobs.logExport = { buildDebugBundle, downloadDebugBundle };
 })();

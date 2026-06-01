@@ -1,17 +1,17 @@
-// Auto-Jobs v2 — IP Injection flow (MAIN world). jobType: ip_injection (InjectIps).
+// Auto Jobs — IP Injection flow (MAIN world). jobType: ip_injection (InjectIps).
 // Add the job's target IPs to the server's transit whitelist, pure WS.
 // Target IPs come from the TAKEN job's primary condition details.ips
 // (resolved by the orchestrator into job.ips).
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
-    if (!root.COR3 || !root.COR3.constants || !root.COR3.autoJobsV2 || !root.COR3.autoJobsV2.saiFlow) return;
+    if (!root.COR3 || !root.COR3.constants || !root.COR3.autoJobs || !root.COR3.autoJobs.saiFlow) return;
     const C = root.COR3.constants;
-    const NODE = C.AJV2.NODE;
-    const SF = root.COR3.autoJobsV2.saiFlow;
+    const NODE = C.AJ.NODE;
+    const SF = root.COR3.autoJobs.saiFlow;
 
     SF.defineFlow({
-        id: 'flow-v2-ip-injection',
-        name: 'Flow v2: IP Injection',
+        id: 'flow-ip-injection',
+        name: 'Flow: IP Injection',
         jobType: C.FLOW.IP_INJECTION,
         // job: { jobId, marketId, jobType, serverId, serverType, serverName, ips:[…] }
         async run(job, h) {

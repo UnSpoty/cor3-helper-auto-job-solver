@@ -153,8 +153,8 @@
     }
 
     // Clear log entries from the in-memory ring AND storage.
-    //   • RegExp → drop every module id that matches (e.g. the v2 Activity Log
-    //     clears /^(auto-jobs-v2|flow-v2-.+)$/).
+    //   • RegExp → drop every module id that matches (e.g. the Activity Log
+    //     clears /^(auto-jobs|flow-.+)$/).
     //   • string → drop that one module.
     //   • falsy  → wipe everything.
     // Mutating the shared `buffer` (not reassigning on the RegExp/string paths)

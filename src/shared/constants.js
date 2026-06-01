@@ -35,7 +35,7 @@
             //     equippedSoftware:[], resources:{supply,demand,canBoot,softwarePower} }
             // Each software has specs:[{type:"DECRYPT|HACK|SEARCH", fileTypes?, power, remote}]
             // which is what drives the dynamic minigame file allow-list and
-            // the per-job-type pre-rejection in the Auto-Jobs planner.
+            // the per-job-type pre-rejection in the Auto Jobs planner.
             LOADOUT: 'COR3_WS_LOADOUT',
             // Desktop OS-shell events. Emitted by the WS interceptor when
             // cor3.gg's server pushes desktop:get.options / open.folder /
@@ -54,7 +54,7 @@
             DESKTOP_OPTIONS: 'COR3_WS_DESKTOP_OPTIONS',
             // SAI (Server Admin Interface) subsystem replies. Posted by the WS
             // interceptor's `sai` inbound route in response to the __cor3Sai*
-            // read helpers, so an Auto-Jobs v2 flow can awaitBus the reply
+            // read helpers, so an Auto Jobs flow can awaitBus the reply
             // instead of scraping the SAI terminal DOM. Reply data shapes
             // (captured live, see tmp_research/sai-wire-capture.md):
             //   SAI_SUMMARY  ← get.summary
@@ -96,27 +96,24 @@
             COLLECT_ALL: 'COR3_COLLECT_ALL',
             ACCEPT_JOB: 'COR3_ACCEPT_JOB',
             // market.job.complete (endpoint-preflight handled in the interceptor,
-            // like ACCEPT_JOB). Generic game RPC — used by v1 auto-jobs and
-            // Auto-Jobs v2's flow-v2 modules to claim a finished job.
+            // like ACCEPT_JOB). Generic game RPC — used by the Auto Jobs flow
+            // modules to claim a finished job.
             COMPLETE_JOB: 'COR3_COMPLETE_JOB',
             RESPOND_DECISION: 'COR3_RESPOND_DECISION',
-            OPEN_NETWORK_MAP: 'COR3_OPEN_NETWORK_MAP',
-            OPEN_MARKET_JOBS: 'COR3_OPEN_MARKET_JOBS',
-            REQUEST_NM_SERVERS: 'COR3_REQUEST_NM_SERVERS',
-            NM_SERVERS: 'COR3_NM_SERVERS',
             REQUEST_NM_MAP: 'COR3_REQUEST_NM_MAP',
             NM_GRAPH: 'COR3_NM_GRAPH',
             // Re-request current loadout snapshot. Trivial: join-room
             // {room:"loadout"} — server replies with loadout/get.options.
             REQUEST_LOADOUT: 'COR3_REQUEST_LOADOUT',
             // Tell MAIN to revert the network-map endpoint back to HOME
-            // (used by auto-jobs at end of a bulk-accept batch that may
-            // have left endpoint on DARK/SRM after a remote-market accept).
+            // (posted by the orchestrator at the end of a bulk-accept batch
+            // that may have left endpoint on DARK/SRM after a remote-market
+            // accept).
             REVERT_ENDPOINT_TO_HOME: 'COR3_REVERT_ENDPOINT_TO_HOME',
             // chrome.runtime action (popup → content script) asking the page
-            // to force a Network Map rescan. Shared read-only channel: v1
-            // auto-jobs listens for it; the v2 / v1 Network Map Refresh
-            // buttons fire it. Plain string (not a COR3_* window type).
+            // to force a Network Map rescan. The Auto Jobs orchestrator listens
+            // for it; the Network Map Refresh button fires it. Plain string
+            // (not a COR3_* window type).
             RESCAN_NETWORK_MAP: 'rescanNetworkMap',
         },
 
@@ -134,11 +131,7 @@
             START_ICE_WALL: 'COR3_START_ICE_WALL',
             // ICE WALL lifecycle heartbeat. Posted when the solver detects
             // an IceWallBreakApplication and again when that window closes.
-            // Shape: { busy: bool, ts }. Auto-jobs uses it to suppress its
-            // solving-watchdog while the puzzle is being worked — otherwise
-            // a long ice-wall (cor3.gg allows up to 240s per round, and
-            // multi-round puzzles compound) can trip the 5min state TTL
-            // before the flow even gets to run.
+            // Shape: { busy: bool, ts }.
             ICE_WALL_BUSY: 'COR3_ICE_WALL_BUSY',
             STOP_ICE_WALL: 'COR3_STOP_ICE_WALL',
             // ICE WALL learned click-DB sync. The MAIN solver learns, per shape,
@@ -157,102 +150,65 @@
             STOP_SIMPLE_DECRYPT: 'COR3_STOP_SIMPLE_DECRYPT',
         },
 
-        // Job-flow dispatch (isolated → MAIN job-manager)
+        // Game-core log channel (MAIN interceptor → isolated). The interceptor
+        // posts human-readable game-action notes (accept/complete RPCs, SAI
+        // login verdicts) here; the Auto Jobs bridge mirrors them into the
+        // Activity Log.
         JOB: {
-            START_DECRYPTION: 'COR3_START_JOB_FLOW',
-            START_IP_INJECTION: 'COR3_START_IP_JOB_FLOW',
-            START_IP_CLEANUP: 'COR3_START_IP_CLEANUP_FLOW',
-            START_UPLOAD: 'COR3_START_UPLOAD_JOB_FLOW',
-            START_LOG_DELETION: 'COR3_START_LOG_DELETION_FLOW',
-            START_LOG_DOWNLOAD: 'COR3_START_LOG_DOWNLOAD_FLOW',
-            START_FILE_ELIMINATION: 'COR3_START_FILE_ELIMINATION_FLOW',
-            START_DATA_DOWNLOAD: 'COR3_START_DATA_DOWNLOAD_FLOW',
-            START_DECRYPT_EXTRACT: 'COR3_START_DECRYPT_EXTRACT_FLOW',
-            ABORT: 'COR3_ABORT_JOB_FLOW',
-
-            // Job-flow signals (MAIN → isolated)
-            MINIGAME_DONE: 'COR3_JOB_MINIGAME_DONE',
-            MINIGAME_TIMEOUT: 'COR3_JOB_MINIGAME_TIMEOUT',
-            // Unified flow result. Carries { success, didWork, reason }.
-            // success=true,didWork=true   → orchestrator sends COR3_COMPLETE_JOB.
-            // success=true,didWork=false  → permanent reject (structurally
-            //   nothing to do — log not in list, no section on server, etc).
-            //   No completion sent. UI shows the reason next to the job.
-            // success=false               → runtime crash/timeout — retry once,
-            //   then permanent reject with runtime details.
-            MINIGAME_RESULT: 'COR3_JOB_MINIGAME_RESULT',
-            KD_DETECTED: 'COR3_JOB_KD_DETECTED',
-            SERVER_UNREACHABLE: 'COR3_SERVER_UNREACHABLE',
-            // Readiness probe result. Posted by server-connect when it
-            // observes access state on a server.
-            // Shape: { serverName, canAccess: bool, hasHackTools: bool, reason }
-            // Consumed by auto-jobs to persist AJ_SERVER_READINESS so the
-            // planner can pre-reject the server (and everything behind it)
-            // without re-running the failing pipeline.
-            SERVER_ACCESS_PROBED: 'COR3_SERVER_ACCESS_PROBED',
             LOG: 'COR3_JOB_LOG',
-            AUTOJOBS_ACTIVE_CHANGED: 'COR3_AUTOJOBS_ACTIVE_CHANGED',
-            // Orchestrator → UI: a state transition just occurred. Carries
-            // { from, to, reason?, ts }. Used by the popup to render the
-            // state pill, "next state" hint, and the state-history timeline.
-            STATE_TRANSITIONED: 'COR3_AUTOJOBS_STATE_TRANSITIONED',
         },
 
-        // Auto-Jobs v2 control. Owned entirely by v2; never overlaps the v1
-        // toggleAutoJobs action.
-        AUTOJOBS_V2: {
-            // chrome.tabs.sendMessage action the v2 popup fires alongside the
-            // AUTOJOBS_V2_SETTINGS sync write, so the orchestrator starts/stops
+        // Auto Jobs control. Owns its own runtime actions and window messages.
+        AUTOJOBS: {
+            // chrome.tabs.sendMessage action the popup fires alongside the
+            // AUTOJOBS_SETTINGS sync write, so the orchestrator starts/stops
             // its loop immediately even on Firefox (where sync.onChanged can
             // be flaky across contexts). Payload: { settings: { enabled } }.
-            TOGGLE: 'toggleAutoJobsV2',
+            TOGGLE: 'toggleAutoJobs',
 
             // popup → isolated runtime actions (Network Map context menu).
             // Payload: { serverName }. The orchestrator forwards these to the
-            // MAIN-world v2 bridge — but refuses while the loop is running, so
+            // MAIN-world bridge — but refuses while the loop is running, so
             // a manual click can't flap the endpoint mid-cycle.
-            OPEN_SAI_ACTION: 'ajv2OpenSai',
-            OPEN_MARKET_ACTION: 'ajv2OpenMarket',
+            OPEN_SAI_ACTION: 'ajOpenSai',
+            OPEN_MARKET_ACTION: 'ajOpenMarket',
 
             // popup Jobs panel → orchestrator: rebuild the saved job board ONCE
             // from the current markets (the orchestrator runs the read-only
-            // half of the pipeline and republishes AJV2_JOB_QUEUE). Refused
+            // half of the pipeline and republishes AJ_JOB_QUEUE). Refused
             // while the loop runs (it already rebuilds the board each cycle).
-            REFRESH_BOARD: 'ajv2RefreshBoard',
+            REFRESH_BOARD: 'ajRefreshBoard',
 
             // popup Activity-Log "Clear" → orchestrator (isolated world, where
-            // the authoritative log ring lives). Wipes the v2 log entries
-            // (module ids 'auto-jobs-v2' + 'flow-v2-*') from the Logger's buffer
+            // the authoritative log ring lives). Wipes the Auto Jobs log entries
+            // (module ids 'auto-jobs' + 'flow-*') from the Logger's buffer
             // AND storage in one place, so a popup-side storage wipe can't be
             // clobbered by the content world re-flushing its in-memory ring.
-            CLEAR_LOG: 'ajv2ClearLog',
+            CLEAR_LOG: 'ajClearLog',
 
-            // isolated → MAIN window messages. Handled by the MAIN-world v2
-            // bridge, which calls the generic COR3.game helpers
-            // (serverConnect.connect / networkMap.openServerMarket).
-            OPEN_SAI: 'COR3_AJV2_OPEN_SAI',
-            OPEN_MARKET: 'COR3_AJV2_OPEN_MARKET',
+            // isolated → MAIN window messages. Handled by the MAIN-world bridge.
+            OPEN_SAI: 'COR3_AJ_OPEN_SAI',
+            OPEN_MARKET: 'COR3_AJ_OPEN_MARKET',
 
-            // JOB_FLOW dispatch (isolated orchestrator → MAIN flow-v2 module).
+            // JOB_FLOW dispatch (isolated orchestrator → MAIN flow module).
             // Payload: { jobId, marketId, jobType, fileCondition }.
             // (Field is `jobType`, NOT `type` — Bus.window builds the envelope as
             //  Object.assign({type}, payload), so a payload `type` would clobber
             //  the Bus message id and the message would never be delivered.)
             // The MAIN flow executes the job (loadout + minigame + complete) and
-            // replies with FLOW_RESULT. These are v2-only — they never overlap
-            // the v1 MSG.JOB.* channel.
-            FLOW_START: 'COR3_AJV2_FLOW_START',
+            // replies with FLOW_RESULT.
+            FLOW_START: 'COR3_AJ_FLOW_START',
             // Orchestrator → MAIN flow: cancel the in-flight job (STOP pressed
             // or FLOW_TIMEOUT_MS elapsed). Payload: { jobId }. The flow flips
             // its abort flag, bails out of its wait loops WITHOUT sending
             // job.complete, and stops being "busy" so the next FLOW_START runs.
-            FLOW_ABORT: 'COR3_AJV2_FLOW_ABORT',
-            // MAIN flow-v2 → isolated orchestrator: "I'm now on sub-step <node>".
-            // Payload: { jobId, node } where node ∈ AJV2.NODE.*. The orchestrator
-            // relays it to AJV2_PIPELINE_STATE so the Flow Map highlights the
+            FLOW_ABORT: 'COR3_AJ_FLOW_ABORT',
+            // MAIN flow → isolated orchestrator: "I'm now on sub-step <node>".
+            // Payload: { jobId, node } where node ∈ AJ.NODE.*. The orchestrator
+            // relays it to AJ_PIPELINE_STATE so the Flow Map highlights the
             // live sub-step inside JOB_FLOW.
-            FLOW_STEP: 'COR3_AJV2_FLOW_STEP',
-            // MAIN flow-v2 → isolated orchestrator. Payload:
+            FLOW_STEP: 'COR3_AJ_FLOW_STEP',
+            // MAIN flow → isolated orchestrator. Payload:
             //   { jobId, marketId, success, didWork, reason, retryable }
             //   success:true,didWork:true   → flow completed the job (job.complete sent)
             //   success:true,didWork:false  → genuinely undoable (e.g. no owned
@@ -263,7 +219,7 @@
             //                                  orchestrator SKIPs and retries it
             //                                  next cycle (NOT bugged). Absent or
             //                                  retryable:false → MARK bugged.
-            FLOW_RESULT: 'COR3_AJV2_FLOW_RESULT',
+            FLOW_RESULT: 'COR3_AJ_FLOW_RESULT',
         },
     };
 
@@ -316,72 +272,39 @@
         LAUNCH_ERROR: 'expeditionLaunchError',
 
         // Network Map runtime
-        NM_SERVERS: 'networkMapServers',  // name array (DOM-scraped)
         NM_GRAPH:   'networkMapGraph',    // { home, currentEndpointId, servers:[{id,name,depth,faction,…}] }
                                           //   from network-map.get.map WS response (BFS-depth)
 
-        // Auto-jobs runtime
-        AUTOJOBS_STATE: 'autoJobsState',
-        AUTOJOBS_QUEUE: 'autoJobsQueue',
-        BUGGED_JOBS: 'buggedJobIds',  // superseded by AJ_REJECTED_JOBS
-        // Per-cycle reachability snapshot.
-        // Shape: { computedAt, markets: { home: {reachable, blockers, path}, dark, srm }, servers: {...} }
-        AJ_REACHABILITY: 'ajReachability',
-        // Per-server readiness probe. Shape:
-        //   { [serverName]: { canAccess, hasHackTools, checkedAt, reason? } }
-        // canAccess===false means the server is unusable until a fresh probe
-        // contradicts it (e.g. no Active Access AND no Hack Tools, or a
-        // hack-tool path that failed every retry). Planner consults this and
-        // treats canAccess===false on the path as a hard reject — transitive
-        // blocking. TTL handled in-code (default 15 min — long enough to
-        // avoid re-probing every cycle, short enough to recover if the user
-        // manually fixed access in-game).
-        AJ_SERVER_READINESS: 'ajServerReadiness',
-        // Permanent rejects for *this cycle*. No TTL — auto-cleared when the
-        // job vanishes from markets, or via UI "Clear" button.
-        // Shape: { [jobId]: { reason, since, descriptor } }
-        AJ_REJECTED_JOBS: 'ajRejectedJobs',
-        // Ring buffer of the last N state transitions (LIMITS.STATE_HISTORY_RING).
-        // Shape: [{ ts, from, to, reason? }, …]. Persisted so the popup can render the
-        // timeline without an open subscription to MSG.JOB.STATE_TRANSITIONED (popup is
-        // a separate context from the orchestrator).
-        AJ_STATE_HISTORY: 'ajStateHistory',
-        // Most-recent completed jobs ring (LIMITS.COMPLETED_LOG_RING). Persisted
-        // incrementally so a crash mid-cycle doesn't lose history. Shape:
-        // [{ jobId, jobType, serverName, marketId, descriptor, completedAt }, …]
-        // newest-first.
-        AJ_COMPLETED_JOBS_LOG: 'ajCompletedJobsLog',
-
-        // ── Auto-Jobs v2 runtime (own keys, never the AJ_* / AUTOJOBS_* set) ──
-        // Pipeline progress, driven by the v2 orchestrator and consumed by the
+        // ── Auto Jobs runtime ────────────────────────────────────────────────
+        // Pipeline progress, driven by the orchestrator and consumed by the
         // popup Flow Map highlight. Shape:
         //   { running, cycle, node, startedAt, updatedAt, error? }
-        // `node` is one of AJV2.NODE.* — the flowchart node currently executing.
-        AJV2_PIPELINE_STATE: 'ajv2PipelineState',
+        // `node` is one of AJ.NODE.* — the flowchart node currently executing.
+        AJ_PIPELINE_STATE: 'ajPipelineState',
         // The job board the pipeline produced this cycle. Shape:
         //   { cycle, computedAt,
         //     markets: [{ slot, reachable, refreshed, jobCount, reason }],
-        //     jobs: [{ id, name, type, serverName, marketSlot,
+        //     jobs: [{ id, name, type, status, serverName, marketSlot, marketId,
         //              rewardCredits, eligible, skipReason }] }
         // `markets` lets the UI group jobs per market (incl. reachable-but-
-        // empty / unreachable ones). `eligible` is null until
-        // CHECK_JOBS_CONDITION runs, then bool; `skipReason` is the
-        // human-readable reason a job was marked SKIP.
-        AJV2_JOB_QUEUE: 'ajv2JobQueue',
-        // Bugged-job registry the pipeline reads and (later) writes itself.
+        // empty / unreachable ones). `status` is 'AVAILABLE' | 'TAKEN' (TAKEN =
+        // in-progress). `eligible` is null until CHECK_JOBS_CONDITION runs, then
+        // bool; `skipReason` is the human-readable reason a job was marked SKIP.
+        AJ_JOB_QUEUE: 'ajJobQueue',
+        // Bugged-job registry the pipeline reads and writes itself.
         // Shape: { [jobId]: { reason, since } }.
-        AJV2_BUGGED_JOBS: 'ajv2BuggedJobs',
+        AJ_BUGGED_JOBS: 'ajBuggedJobs',
         // Per-server user overrides set from the Network Map context menu.
         // Shape: { [serverName]: { skip: bool, disabledTypes: { [jobType]: true } } }
         // Read by CHECK_JOBS_CONDITION: a skipped server rejects all its jobs;
         // a disabled type rejects that job type on that server only.
-        AJV2_SERVER_OVERRIDES: 'ajv2ServerOverrides',
-        // Global Master Switches set from the v2 "Master Switches" panel.
+        AJ_SERVER_OVERRIDES: 'ajServerOverrides',
+        // Global Master Switches set from the "Master Switches" panel.
         // Shape: { markets: { home, dark, srm }, jobTypes: { [FLOW.*]: bool } }.
         // A value of `false` disables that market/type globally (no jobs from a
         // disabled market are accepted; a disabled type is rejected everywhere).
         // Absent / undefined === enabled (the default is "everything on").
-        AJV2_MASTER_SWITCHES: 'ajv2MasterSwitches',
+        AJ_MASTER_SWITCHES: 'ajMasterSwitches',
         // ICE WALL solver's learned shape→click-cell database (persisted by the
         // isolated auto-ice-wall bridge on behalf of the MAIN solver).
         // Shape: { [shapeKey]: { cells:[{dc,dr,mirror,revealed,g}], click:{dc,dr,mirror}, learnedAt, hits } }
@@ -416,14 +339,10 @@
         // Multi-alarm
         ALARMS: 'alarms',
 
-        // Auto-jobs
+        // Auto Jobs — isolated settings (START/STOP + future config). The
+        // UI tab reads/writes this key; the orchestrator's loop is driven
+        // by its `enabled` flag.
         AUTOJOBS_SETTINGS: 'autoJobsSettings',
-        SERVER_PRIORITIES: 'serverPriorities',
-
-        // Auto-jobs v2 — isolated settings (START/STOP, future config). The
-        // v2 UI tab reads/writes this key only; the v1 orchestrator never
-        // touches it, so toggling v2 cannot enable/disable the live runtime.
-        AUTOJOBS_V2_SETTINGS: 'autoJobsV2Settings',
 
         // Auto-send merc
         AUTO_SEND_MERC: 'autoSendMerc',
@@ -454,7 +373,7 @@
     };
 
     // ──────────────────────────────────────────────────────────────────────
-    // Job/flow type identifiers (used by FLOW_DISPATCH in auto-jobs)
+    // Job/flow type identifiers (used by the Auto Jobs pipeline + flow modules)
     // ──────────────────────────────────────────────────────────────────────
     const FLOW = {
         FILE_DECRYPTION: 'file_decryption',
@@ -497,37 +416,26 @@
     const LIMITS = {
         LOG_RING_PER_MODULE: 200,
         ERRORS_RING: 200,
-        BUGGED_JOB_TTL_MS: 2 * 60 * 60 * 1000,
-        AUTOJOBS_STATE_TTL_MS: 5 * 60 * 1000,
-        // Buffer added to a server's K/D MaintenanceTimer before we attempt to
-        // reach it again. Covers timer-text rounding + WS staleness.
-        KD_BUFFER_MS: 5 * 60 * 1000,
-        // Default cooldown between distinct auto-jobs actions (state
-        // transitions, flow start, heavy SAI clicks). Per-call override
-        // available via cooldown.gate(label, { override: ms }).
-        ACTION_COOLDOWN_MS: 3000,
-        STATE_HISTORY_RING: 50,
-        COMPLETED_LOG_RING: 50,
     };
 
-    // D4RK servers that don't have a Logs section at all. Planner rejects
-    // log_download / log_deletion against these up-front. Keep in sync with
-    // what the game actually exposes — there's no lazy-learning fallback
-    // (the old probe was racy and permanently poisoned legitimate servers
-    // on a single timing miss).
+    // D4RK servers that don't have a Logs section at all. The log_download /
+    // log_deletion flows reject these up-front. Keep in sync with what the
+    // game actually exposes — there's no lazy-learning fallback (the old probe
+    // was racy and permanently poisoned legitimate servers on a single timing
+    // miss).
     const NO_LOGS_SERVERS = ['D4RK RM7CE', 'D4RK 2IV2', 'D4RK RM7MI'];
 
     // ──────────────────────────────────────────────────────────────────────
-    // Auto-Jobs v2 pipeline contract
+    // Auto Jobs pipeline contract
     // ──────────────────────────────────────────────────────────────────────
     // Single source of truth shared by the isolated-world orchestrator (which
     // executes the nodes) and the popup Flow Map (which draws + highlights
     // them). Both reference these ids; the Flow Map keeps the (x,y) layout,
     // the orchestrator keeps the execution sequence — neither hard-codes the
     // string ids.
-    const AJV2 = {
+    const AJ = {
         // Envelope `type` stamped on the packet that flows stage→stage.
-        PACKET_TYPE: 'ajv2/packet',
+        PACKET_TYPE: 'aj/packet',
 
         // Flowchart node ids. Modules + decision diamonds + delay nodes.
         NODE: {
@@ -544,19 +452,19 @@
             JOB_SKIP: 'job-skip',          // in-progress job is bugged → skip the cycle
             CHECK_CONDITION: 'check-condition',
             JOB_ACCEPTION: 'job-acception',
-            JOB_FLOW: 'job-flow',          // selector — dispatches each TAKEN job to its flow-v2 module
-            // file_decryption sub-flow. The MAIN flow-v2 module reports its
-            // current step via MSG.AUTOJOBS_V2.FLOW_STEP; the orchestrator
-            // relays it into AJV2_PIPELINE_STATE so the Flow Map lights it.
+            JOB_FLOW: 'job-flow',          // selector — dispatches each TAKEN job to its flow module
+            // file_decryption sub-flow. The MAIN flow module reports its
+            // current step via MSG.AUTOJOBS.FLOW_STEP; the orchestrator
+            // relays it into AJ_PIPELINE_STATE so the Flow Map lights it.
             FD_READ_FORMAT: 'fd-read-format',
             FD_CHECK_LOADOUT: 'fd-check-loadout',  // decision: can we (get capability to) decrypt?
             FD_INSTALL_SW: 'fd-install-sw',
             FD_OPEN_DOWNLOADS: 'fd-open-downloads',
             FD_SOLVE: 'fd-solve',
             FD_COMPLETE: 'fd-complete',
-            // ── SAI sub-flows. Each flow-v2 module posts its current step via
-            // MSG.AUTOJOBS_V2.FLOW_STEP; the orchestrator relays it into
-            // AJV2_PIPELINE_STATE so the Flow Map lights it. All SAI flows share
+            // ── SAI sub-flows. Each flow module posts its current step via
+            // MSG.AUTOJOBS.FLOW_STEP; the orchestrator relays it into
+            // AJ_PIPELINE_STATE so the Flow Map lights it. All SAI flows share
             // the shape: <P>_ACCESS (connect + grant/hack login, pure WS) →
             // <P>_<ACTION> (the get.* + mutate.* WS loop) → <P>_COMPLETE
             // (job.complete). decrypt_extract adds <P>_SOLVE (the minigame).
@@ -582,7 +490,7 @@
             LD_ACCESS: 'ld-access', LD_DELETE: 'ld-delete', LD_COMPLETE: 'ld-complete',
             // decrypt_extract (SAI download + minigame solve)
             DE_ACCESS: 'de-access', DE_DOWNLOAD: 'de-download', DE_SOLVE: 'de-solve', DE_COMPLETE: 'de-complete',
-            MARK_AS_BUGGED: 'mark-as-bugged',      // job can't be done → written to AJV2_BUGGED_JOBS
+            MARK_AS_BUGGED: 'mark-as-bugged',      // job can't be done → written to AJ_BUGGED_JOBS
             DELAY_CYCLE: 'delay-cycle',
         },
 
@@ -606,7 +514,7 @@
             // __cor3AcceptJob serialises the bursts and does set.endpoint
             // preflight per remote market; we pace the posts so the
             // job.take RPCs don't pile up faster than the server accepts them
-            // (matches the 1.2s cadence v1's bulk-accept used).
+            // (a steady ~1.2s cadence).
             ACCEPT_PACING_MS: 1200,
             // Max time the orchestrator parks on a single JOB_FLOW dispatch
             // awaiting FLOW_RESULT before giving up and marking the job bugged.
@@ -615,7 +523,7 @@
             // Total JOB_FLOW attempts allowed for a TAKEN job before it is marked
             // bugged. 2 = one initial try + one retry next cycle. A transient
             // (retryable) failure is retried until this many attempts have failed,
-            // then the job is written to AJV2_BUGGED_JOBS (no TTL — permanent until
+            // then the job is written to AJ_BUGGED_JOBS (no TTL — permanent until
             // the user clears it). flow-busy / cancelled do not count as attempts.
             // The counter is kept in memory by the orchestrator (reset on STOP /
             // reload), not persisted.
@@ -623,5 +531,5 @@
         },
     };
 
-    root.COR3.constants = { MSG, STORAGE_LOCAL, STORAGE_SYNC, FLOW, LOG_LEVEL, CATEGORY, LIMITS, NO_LOGS_SERVERS, AJV2 };
+    root.COR3.constants = { MSG, STORAGE_LOCAL, STORAGE_SYNC, FLOW, LOG_LEVEL, CATEGORY, LIMITS, NO_LOGS_SERVERS, AJ };
 })();

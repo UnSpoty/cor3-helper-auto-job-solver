@@ -1,4 +1,4 @@
-// Auto-Jobs v2 — pipeline stages.
+// Auto Jobs — pipeline stages.
 //
 // Seven discrete "modules", one per flowchart box, each with the SAME
 // contract:
@@ -7,42 +7,41 @@
 //
 // A single "packet" envelope flows through them, getting enriched at each
 // stage (see createPacket() for its shape). The orchestrator
-// (auto-jobs-v2.js) owns the loop, decides the order, drives the Flow Map
+// (auto-jobs.js) owns the loop, decides the order, drives the Flow Map
 // highlight, and persists pipeline progress; the stages here are pure data
-// work — read the shared game state, compute, write the v2-owned outputs.
+// work — read the shared game state, compute, write the Auto-Jobs-owned outputs.
 //
 // ctx is supplied by the orchestrator:
 //     { store, bus, C, log: { debug, info, warn, error } }
 //   - store : COR3.Store
 //   - bus   : COR3.Bus
 //   - C     : COR3.constants
-//   - log   : routes to the orchestrator's logger (module id 'auto-jobs-v2'),
-//             so every stage's output lands in the v2 Activity Log.
+//   - log   : routes to the orchestrator's logger (module id 'auto-jobs'),
+//             so every stage's output lands in the Activity Log.
 //
-// v2 rules honored here (see CLAUDE.md): no fallbacks, no silent skips. A
+// Design rules honored here (see CLAUDE.md): no fallbacks, no silent skips. A
 // missing precondition throws (GET_SERVERS without a Network Map) or is
 // recorded with an explicit reason on the packet (an unreachable market, a
 // job that fails a condition) and logged — never quietly dropped.
 //
 // Shared, read-only game inputs: NM_GRAPH + the three market envelopes.
 // The only command this pipeline issues is a generic market refresh
-// (MSG.GAME.REFRESH_*) — the same one the UI Refresh buttons and v1
-// auto-refresh use; it is NOT a v1 auto-jobs message, and the resulting
-// writes land in the data modules' keys, never v2's.
+// (MSG.GAME.REFRESH_*) — the same one the UI Refresh buttons and auto-refresh
+// use; the resulting writes land in the data modules' keys.
 
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
     if (!root.COR3 || !root.COR3.constants) return;
     const C = root.COR3.constants;
     const SL = C.STORAGE_LOCAL;
-    const AJV2 = C.AJV2;
+    const AJ = C.AJ;
 
     // ──────────────────────────────────────────────────────────────────────
     // Packet envelope
     // ──────────────────────────────────────────────────────────────────────
     function createPacket(cycle) {
         return {
-            type: AJV2.PACKET_TYPE,
+            type: AJ.PACKET_TYPE,
             cycle,
             startedAt: Date.now(),
             // Append-only journey log — each stage stamps one entry. Lets the
@@ -76,8 +75,8 @@
             buggedJobs: null,         // { [jobId]: { reason, since } }
 
             // ── filled by CHECK_JOBS_CONDITION ──
-            serverOverrides: null,    // AJV2_SERVER_OVERRIDES snapshot used this cycle
-            masterSwitches: null,     // AJV2_MASTER_SWITCHES snapshot used this cycle
+            serverOverrides: null,    // AJ_SERVER_OVERRIDES snapshot used this cycle
+            masterSwitches: null,     // AJ_MASTER_SWITCHES snapshot used this cycle
             evaluations: null,        // { [jobId]: { eligible, skipReason } }
             eligible: null,           // [jobId, …] (the final do-able list)
 
@@ -92,7 +91,7 @@
     }
 
     // ──────────────────────────────────────────────────────────────────────
-    // Market slot table — the three markets v2 knows about. Each is a server;
+    // Market slot table — the three markets Auto Jobs knows about. Each is a server;
     // home is always reachable, dark/srm reachability is the game-reported
     // availability flag (false === "no path / market-not-reachable").
     // ──────────────────────────────────────────────────────────────────────
@@ -115,8 +114,8 @@
     ];
 
     // ──────────────────────────────────────────────────────────────────────
-    // Job-shape helpers (label/locate a raw market job). Minimal v2-owned
-    // parsing of the game's job object — NOT ported from v1's planner.
+    // Job-shape helpers (label/locate a raw market job). Minimal Auto-Jobs-owned
+    // parsing of the game's job object — bespoke, not a port.
     // ──────────────────────────────────────────────────────────────────────
     const JOB_TYPE_KEYWORDS = {
         [C.FLOW.FILE_DECRYPTION]:  ['file decryption'],
@@ -138,7 +137,7 @@
         return null;
     }
 
-    // Job types whose MAIN-world flow-v2 module is wired. Only these are
+    // Job types whose MAIN-world flow module is wired. Only these are
     // accepted off the board: accepting a type with no flow — including a
     // null/unrecognised type — would consume a market slot that then sits
     // TAKEN forever (the orchestrator can neither complete nor recover it).
@@ -147,7 +146,7 @@
     // that the server silently no-ops would let the flow "complete" a job the
     // game never marks finishable → an unbounded re-dispatch loop. Keep
     // file_upload jobs unaccepted (visible on the board) until the wire is
-    // verified live; the flow-v2-file-upload module stays registered, just not
+    // verified live; the flow-file-upload module stays registered, just not
     // dispatched. Re-add C.FLOW.FILE_UPLOAD here once verified.
     const WIRED_FLOW_TYPES = new Set([
         C.FLOW.FILE_DECRYPTION,
@@ -168,7 +167,7 @@
     }
 
     // Extract the File Decryption target (a file name or a bare extension) from
-    // a raw market job's conditions. v2-owned parsing — NOT v1's resolveJobParams.
+    // a raw market job's conditions. Auto-Jobs-owned parsing — bespoke, not a port.
     // Returns the string the flow matches in Downloads, or null if absent.
     function fileConditionForDecrypt(rawJob) {
         const items = rawJob && rawJob.conditions && Array.isArray(rawJob.conditions.items)
@@ -191,11 +190,11 @@
     // SAI-flow target resolvers. The target (which IPs / files / logs) lives in
     // the PRIMARY condition item's `details`, which is null on AVAILABLE board
     // jobs and POPULATES only once the job is TAKEN (verified live — see
-    // tmp_research/sai-wire-capture.md). Shapes (live ip_cleanup + v1
-    // resolveJobParams): ip_* → details.ips[]; file_* → details.fileNames[] |
+    // tmp_research/sai-wire-capture.md). Shapes (from a live ip_cleanup
+    // capture): ip_* → details.ips[]; file_* → details.fileNames[] |
     // fileName | files[].name (by NAME — the flow maps name→fileId via get.files);
     // log_* → details.logSeqs[] (int) and/or logNames[] | logName.
-    // v2-owned parsing, NOT a v1 port. Each returns a de-duped array (possibly
+    // Auto-Jobs-owned parsing, not a port. Each returns a de-duped array (possibly
     // empty → the orchestrator bugs the job: no resolvable target).
     function conditionItems(rawJob) {
         return (rawJob && rawJob.conditions && Array.isArray(rawJob.conditions.items)) ? rawJob.conditions.items : [];
@@ -296,7 +295,7 @@
 
     // MODULE:GET_SERVERS — collect every server from the Network Map graph.
     const getServers = {
-        id: AJV2.NODE.GET_SERVERS,
+        id: AJ.NODE.GET_SERVERS,
         async run(packet, ctx) {
             const graph = await ctx.store.local.getOne(SL.NM_GRAPH, null);
             if (!graph || !Array.isArray(graph.servers)) {
@@ -319,7 +318,7 @@
     // SAI access, and is it on K/D cooldown. Also resolves which markets are
     // reachable (a market is a server too).
     const checkAccess = {
-        id: AJV2.NODE.CHECK_ACCESS,
+        id: AJ.NODE.CHECK_ACCESS,
         async run(packet, ctx) {
             if (!packet.servers) throw new Error('CHECK_ACCESS: packet.servers missing (GET_SERVERS must run first)');
 
@@ -369,14 +368,14 @@
     // in `recentJobs` tagged status:'TAKEN' (= in-progress). We pull BOTH and
     // stamp each rawJob with a source-derived status so JOB_QUEUE /
     // HAVE_TASKS_IN_PROGRESS / JOB_ACCEPTION can route on it. Other recentJobs
-    // states (FAILED/EXPIRED/COMPLETED/ready-to-claim) are out of v2's current
+    // states (FAILED/EXPIRED/COMPLETED/ready-to-claim) are out of the current pipeline's
     // scope and intentionally not collected.
     const updateMarkets = {
-        id: AJV2.NODE.UPDATE_MARKETS,
+        id: AJ.NODE.UPDATE_MARKETS,
         async run(packet, ctx) {
             if (!packet.marketReachability) throw new Error('UPDATE_MARKETS: packet.marketReachability missing (CHECK_ACCESS must run first)');
 
-            const timeout = AJV2.LOOP.MARKET_REFRESH_TIMEOUT_MS;
+            const timeout = AJ.LOOP.MARKET_REFRESH_TIMEOUT_MS;
             const markets = [];
             const rawJobs = [];
 
@@ -445,7 +444,7 @@
     // jobs into the queue entry shape and publishes it for the UI (eligibility
     // unknown at this point).
     const jobQueue = {
-        id: AJV2.NODE.JOB_QUEUE,
+        id: AJ.NODE.JOB_QUEUE,
         async run(packet, ctx) {
             if (!packet.rawJobs) throw new Error('JOB_QUEUE: packet.rawJobs missing (UPDATE_MARKETS must run first)');
 
@@ -472,7 +471,7 @@
             }));
             packet.queue = queue;
 
-            await ctx.store.local.setOne(SL.AJV2_JOB_QUEUE, {
+            await ctx.store.local.setOne(SL.AJ_JOB_QUEUE, {
                 cycle: packet.cycle,
                 computedAt: Date.now(),
                 markets: packet.markets,
@@ -500,9 +499,9 @@
     // condition check can exclude them. The script writes to this store later;
     // for now it's read-only here.
     const buggedJobs = {
-        id: AJV2.NODE.BUGGED_JOBS,
+        id: AJ.NODE.BUGGED_JOBS,
         async run(packet, ctx) {
-            const bugged = await ctx.store.local.getOne(SL.AJV2_BUGGED_JOBS, {});
+            const bugged = await ctx.store.local.getOne(SL.AJ_BUGGED_JOBS, {});
             packet.buggedJobs = (bugged && typeof bugged === 'object') ? bugged : {};
             const n = Object.keys(packet.buggedJobs).length;
             ctx.log.debug(`BUGGED_JOBS → ${n} bugged job(s) on record`);
@@ -523,16 +522,16 @@
     //     • server not on K/D cooldown      (only when the job has a server)
     //     • server accessible               (only when the job has a server)
     //   CONFIG reasons (pure user switches) — computed by the SHARED evaluator
-    //   COR3.ajv2Eligibility.configSkipReason so the popup Job List can
+    //   COR3.ajEligibility.configSkipReason so the popup Job List can
     //   re-derive them live the instant a switch changes:
-    //     • market disabled globally        → AJV2_MASTER_SWITCHES
-    //     • job type disabled globally       → AJV2_MASTER_SWITCHES
-    //     • user SKIP on the server          → AJV2_SERVER_OVERRIDES
-    //     • job type disabled on the server  → AJV2_SERVER_OVERRIDES
+    //     • market disabled globally        → AJ_MASTER_SWITCHES
+    //     • job type disabled globally       → AJ_MASTER_SWITCHES
+    //     • user SKIP on the server          → AJ_SERVER_OVERRIDES
+    //     • job type disabled on the server  → AJ_SERVER_OVERRIDES
     // A missing related server is NOT a skip reason — download/solve job types
     // legitimately have none (their file lands in the Downloads widget).
     const checkCondition = {
-        id: AJV2.NODE.CHECK_CONDITION,
+        id: AJ.NODE.CHECK_CONDITION,
         async run(packet, ctx) {
             if (!packet.queue) throw new Error('CHECK_CONDITION: packet.queue missing (JOB_QUEUE must run first)');
             if (!packet.accessibility) throw new Error('CHECK_CONDITION: packet.accessibility missing (CHECK_ACCESS must run first)');
@@ -541,15 +540,15 @@
             // no-tasks-in-progress path — its own required input, from the real
             // source (no prior-stage coupling).
             if (!packet.buggedJobs) {
-                packet.buggedJobs = await ctx.store.local.getOne(SL.AJV2_BUGGED_JOBS, {});
+                packet.buggedJobs = await ctx.store.local.getOne(SL.AJ_BUGGED_JOBS, {});
             }
 
-            const overrides = await ctx.store.local.getOne(SL.AJV2_SERVER_OVERRIDES, {});
-            const switches = await ctx.store.local.getOne(SL.AJV2_MASTER_SWITCHES, {});
+            const overrides = await ctx.store.local.getOne(SL.AJ_SERVER_OVERRIDES, {});
+            const switches = await ctx.store.local.getOne(SL.AJ_MASTER_SWITCHES, {});
             packet.serverOverrides = overrides;
             packet.masterSwitches = switches;
 
-            const evalConfig = root.COR3.ajv2Eligibility.configSkipReason;
+            const evalConfig = root.COR3.ajEligibility.configSkipReason;
 
             const evaluations = {};
             const eligible = [];
@@ -594,7 +593,7 @@
             packet.evaluations = evaluations;
             packet.eligible = eligible;
 
-            await ctx.store.local.setOne(SL.AJV2_JOB_QUEUE, {
+            await ctx.store.local.setOne(SL.AJ_JOB_QUEUE, {
                 cycle: packet.cycle,
                 computedAt: Date.now(),
                 markets: packet.markets,
@@ -609,7 +608,7 @@
     // MODULE:JOB_ACCEPTION — accept jobs off the board via the game's
     // market/job.take RPC (MAIN's __cor3AcceptJob, reached through the generic
     // MSG.GAME.ACCEPT_JOB window message — same shared game infrastructure
-    // UPDATE_MARKETS uses for REFRESH_*; NOT a v1-auto-jobs message).
+    // UPDATE_MARKETS uses for REFRESH_*; a generic game-refresh message).
     //
     // Acceptance set = jobs that passed CHECK_CONDITION (eligible) AND are
     // still AVAILABLE on the board (status 'AVAILABLE' — never re-accept a
@@ -624,12 +623,12 @@
     // on its own). Acceptance is confirmed asynchronously — the accepted jobs
     // flip to status 'TAKEN', which the next UPDATE_MARKETS cycle observes.
     const jobAcception = {
-        id: AJV2.NODE.JOB_ACCEPTION,
+        id: AJ.NODE.JOB_ACCEPTION,
         async run(packet, ctx) {
             if (!packet.eligible) throw new Error('JOB_ACCEPTION: packet.eligible missing (CHECK_CONDITION must run first)');
 
             const eligibleSet = new Set(packet.eligible);
-            // Only accept jobs whose flow-v2 module is wired (WIRED_FLOW_TYPES);
+            // Only accept jobs whose flow module is wired (WIRED_FLOW_TYPES);
             // a null/unwired type that slips through eligibility would be taken
             // and then sit TAKEN forever (no flow can complete it).
             const acceptable = packet.queue.filter((j) =>
@@ -645,7 +644,7 @@
             // in the queue do we accept the other-type jobs.
             // A BUGGED file_decryption is excluded: a decrypt with no owned
             // covering software is accepted, bugged, and then sits TAKEN in the
-            // market forever (v2 never dismisses). Without this exclusion it
+            // market forever (Auto Jobs never dismisses). Without this exclusion it
             // would keep decryptionPending permanently true and STARVE every SAI
             // job type from acceptance for the rest of the session.
             const bugged = packet.buggedJobs || {};
@@ -672,7 +671,7 @@
                 ctx.bus.window.post(C.MSG.GAME.ACCEPT_JOB, { jobId: job.id, marketId: job.marketId });
                 packet.accepted.push(job.id);
                 ctx.log.debug(`JOB_ACCEPTION · take ${job.id} (${job.type || 'unknown'}) @ ${job.marketSlot}`);
-                if (i < toAccept.length - 1) await pacedDelay(AJV2.LOOP.ACCEPT_PACING_MS, ctx.alive);
+                if (i < toAccept.length - 1) await pacedDelay(AJ.LOOP.ACCEPT_PACING_MS, ctx.alive);
             }
 
             // One revert after the whole batch — remote-market accepts may have
@@ -690,8 +689,8 @@
         return rest;
     }
 
-    root.COR3.autoJobsV2 = root.COR3.autoJobsV2 || {};
-    root.COR3.autoJobsV2.pipeline = {
+    root.COR3.autoJobs = root.COR3.autoJobs || {};
+    root.COR3.autoJobs.pipeline = {
         createPacket,
         stamp,
         MARKET_SLOTS,

@@ -23,7 +23,7 @@ wire format.
 - **Daily Ops** — countdown to next reset, streak/level info.
 
 ### Automation
-- **Auto-Jobs** — end-to-end orchestrator that scans Home / Dark / SRM
+- **Auto Jobs** — end-to-end orchestrator that scans Home / Dark / SRM
   markets, qualifies jobs against per-server reachability and K/D state,
   accepts them in batches, opens the Network Map, connects through the right
   server, navigates SAI, and runs the matching flow:
@@ -86,7 +86,7 @@ wire format.
 | **Overview** | Daily ops timer, Home + Dark + SRM market resets, active expedition, pending decisions |
 | **Stash** | Capacity bar, item list |
 | **Mercs** | Roster with cost / risk badges, Auto-send toggles |
-| **Auto-Jobs** | Master toggle, current state pill, queue, rejected jobs with reasons, source filters (Home / Dark / SRM), debug mode, state-transition timeline, activity log |
+| **Auto Jobs** | Master toggle, current state pill, queue, rejected jobs with reasons, source filters (Home / Dark / SRM), debug mode, state-transition timeline, activity log |
 | **Alarms** | Existing alarms + form to add a new one |
 | **Modules** | Every registered module with on/off + log toggle, grouped by category |
 | **Logs** | Live stream from all modules with module + level filters |
@@ -113,7 +113,7 @@ cor3-helper/
     ├── modules/
     │   ├── data/          ← 9 modules, one per WS payload
     │   ├── automation/    ← timers, auto-refresh, auto-jobs, auto-send-merc, …
-    │   ├── game/          ← network-map, server-connect, sai-navigator, 9 flows
+    │   ├── game/          ← desktop-window, auto-jobs-bridge, loadout-panel, 9 Auto Jobs flows
     │   ├── solvers/       ← decrypt, daily-ops, ice-wall
     │   └── appearance/    ← system-messages, background, network-fog, map-fx
     ├── ui/                ← popup.html + popup.css + components/ + sections/

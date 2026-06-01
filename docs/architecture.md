@@ -28,13 +28,13 @@ and the runtime API. They communicate over `window.postMessage`.
 ```
 ┌────────────────────────────────────────────────┐
 │ UI  (src/ui/popup.html + popup.css + shell.js) │
-│  • 6 tabs — Overview, Expeditions, Auto-Jobs,  │
-│    Auto-Jobs v2, Modules, Logs                 │
+│  • 6 tabs — Overview, Expeditions, Auto Jobs,  │
+│    Auto Jobs, Modules, Logs                 │
 │  • components — icons, timer, module-card,     │
 │    log-viewer, network-map                     │
-│  • Auto-Jobs v2 UI: sections/auto-jobs-v2/*    │
+│  • Auto Jobs UI: sections/auto-jobs/*    │
 │    (network-map, job-list, flow-map, log-      │
-│    export) on COR3.uiComponentsV2.*            │
+│    export) on COR3.uiComponents.*            │
 ├────────────────────────────────────────────────┤
 │ Isolated content (src/entry/content.js)        │
 │  • 12 data modules (auth, expeditions,         │
@@ -45,7 +45,7 @@ and the runtime API. They communicate over `window.postMessage`.
 │    merc, auto-choose-decision, auto-decrypt,   │
 │    auto-ice-wall, auto-simple-decrypt, daily-  │
 │    ops, auto-jobs (+ auto-jobs/ helpers),      │
-│    auto-jobs-v2 (+ auto-jobs-v2/pipeline),     │
+│    auto-jobs (+ auto-jobs/pipeline),     │
 │    runtime-bridge                              │
 │  • 4 appearance modules                        │
 ├────────────────────────────────────────────────┤
@@ -53,10 +53,9 @@ and the runtime API. They communicate over `window.postMessage`.
 │  • interceptors: ws-interceptor (wraps WS),    │
 │    http-interceptor (wraps fetch + XHR),       │
 │    solver-loader                               │
-│  • game core: network-map, server-connect,     │
-│    sai-navigator, auto-jobs-v2-bridge,         │
+│  • game core: desktop-window, auto-jobs-bridge,│
 │    loadout-panel                               │
-│  • flows-core + 9 flow modules                 │
+│  • 9 Auto Jobs flow modules (+ _sai-flow base) │
 │  • 4 solver modules (decrypt, daily-ops,       │
 │    ice-wall, simple-decrypt)                   │
 ├────────────────────────────────────────────────┤
@@ -80,7 +79,7 @@ The order matters: core primitives must exist before modules use them.
 
 ```
 1.  src/shared/platform.js           ← isFirefox / isChromium runtime detect
-2.  src/shared/constants.js          ← MSG, STORAGE_*, FLOW, CATEGORY, AJV2 enums
+2.  src/shared/constants.js          ← MSG, STORAGE_*, FLOW, CATEGORY, AJ enums
 3.  src/shared/build-info.js         ← commit/date stamp
 4.  src/shared/dom.js                ← sleep, waitForEl, click, react-input
 5.  src/shared/ws-frames.js          ← Socket.IO v4 parser
@@ -96,19 +95,15 @@ The order matters: core primitives must exist before modules use them.
 15. src/interceptors/ws-interceptor.js
 16. src/interceptors/http-interceptor.js
 17. src/interceptors/solver-loader.js
-18. src/modules/game/network-map.js
-19. src/modules/game/server-connect.js
-20. src/modules/game/sai-navigator.js
-21. src/modules/game/desktop-window.js       ← COR3.game.desktop window helper (plain IIFE, not a Module)
-22. src/modules/game/auto-jobs-v2-bridge.js  ← v2 NM context-menu endpoint (plain IIFE, not a Module)
-23. src/modules/game/loadout-panel.js        ← site-embedded loadout UI
-24. src/modules/game/flows/_shared.js
-25-33. src/modules/game/flows/*      ← 9 flow modules
-34. src/modules/solvers/decrypt.js
-35. src/modules/solvers/daily-ops.js    ← Game Center Daily Ops solver
-36. src/modules/solvers/ice-wall.js     ← SAI Porter-lite r4 ICE WALL solver
-37. src/modules/solvers/simple-decrypt.js
-38. src/entry/content-early.js       ← Registry.boot()
+18. src/modules/game/desktop-window.js       ← COR3.game.desktop window helper (plain IIFE, not a Module)
+19. src/modules/game/auto-jobs-bridge.js     ← Auto Jobs NM context-menu endpoint (plain IIFE, not a Module)
+20. src/modules/game/loadout-panel.js        ← site-embedded loadout UI
+21-30. src/modules/game/flows/auto-jobs/*    ← 9 Auto Jobs flow modules (file-decryption first, then _sai-flow base + 8 SAI flows)
+31. src/modules/solvers/decrypt.js
+32. src/modules/solvers/daily-ops.js    ← Game Center Daily Ops solver
+33. src/modules/solvers/ice-wall.js     ← SAI Porter-lite r4 ICE WALL solver
+34. src/modules/solvers/simple-decrypt.js
+35. src/entry/content-early.js       ← Registry.boot()
 ```
 
 ### Isolated content_scripts (`content_scripts[1]`, isolated world, `run_at: document_idle`)
@@ -125,18 +120,16 @@ The order matters: core primitives must exist before modules use them.
 32.  src/modules/automation/auto-ice-wall.js
 33.  src/modules/automation/auto-simple-decrypt.js
 34.  src/modules/automation/daily-ops.js
-35-40. src/modules/automation/auto-jobs/*  ← v1 helpers (action-cooldown, log-export, reachability, planner, executor, orchestrator) — NOT Registry modules
-41.  src/modules/automation/auto-jobs.js
-42.  src/modules/automation/auto-jobs-v2/pipeline.js  ← v2 stages (plain objects)
-43.  src/modules/automation/auto-jobs-v2.js           ← v2 orchestrator (Module)
-44.  src/modules/automation/runtime-bridge.js
-45-48. src/modules/appearance/*      ← 4 appearance modules
-49.  src/entry/content.js            ← Registry.boot() + log-bridge
+35.  src/modules/automation/auto-jobs/pipeline.js  ← Auto Jobs pipeline stages (plain objects)
+36.  src/modules/automation/auto-jobs.js           ← Auto Jobs orchestrator (Module)
+37.  src/modules/automation/runtime-bridge.js
+38-41. src/modules/appearance/*      ← 4 appearance modules
+42.  src/entry/content.js            ← Registry.boot() + log-bridge
 ```
 
-> Load order matters: `auto-jobs-v2/pipeline.js` must load **before**
-> `auto-jobs-v2.js` — the orchestrator reads the stages off
-> `COR3.autoJobsV2.pipeline` at `start()`.
+> Load order matters: `auto-jobs/pipeline.js` must load **before**
+> `auto-jobs.js` — the orchestrator reads the stages off
+> `COR3.autoJobs.pipeline` at `start()`.
 
 ### Service worker (`background.service_worker`, Chrome) / `background.scripts` (Firefox)
 
@@ -189,36 +182,37 @@ The Module base class provides:
 - `info(msg, ctx)` / `debug` / `warn` / `error` — go through `Logger.push()`,
   honor the per-module `logsEnabled` toggle
 
-## Auto-Jobs v2 subsystem (orchestrator + stages)
+## Auto Jobs subsystem (orchestrator + stages)
 
-Auto-Jobs v2 is a ground-up rewrite of the job pipeline and uses a different
+Auto Jobs is a ground-up rewrite of the job pipeline and uses a different
 shape from the rest of the codebase — worth understanding before touching it.
 (Rules and status live in [CLAUDE.md → Active work](../CLAUDE.md); the full
 pipeline diagram lives in [pipelines.md](pipelines.md).)
 
 - **One Module, many stages.** Exactly one registered `COR3.Module`
-  (`auto-jobs-v2`, the *orchestrator*, in
-  `src/modules/automation/auto-jobs-v2.js`) owns START/STOP and runs an
+  (`auto-jobs`, the *orchestrator*, in
+  `src/modules/automation/auto-jobs.js`) owns START/STOP and runs an
   infinite loop. The pipeline "modules" are NOT registered modules — they are
-  plain stage objects on `COR3.autoJobsV2.pipeline.stages.*`
-  (`src/modules/automation/auto-jobs-v2/pipeline.js`), each with the uniform
+  plain stage objects on `COR3.autoJobs.pipeline.stages.*`
+  (`src/modules/automation/auto-jobs/pipeline.js`), each with the uniform
   contract `async run(packet, ctx) -> packet`.
-- **Packet envelope.** A single growing object (`type: 'ajv2/packet'`) flows
+- **Packet envelope.** A single growing object (`type: 'aj/packet'`) flows
   stage→stage, getting enriched at each hop. The orchestrator owns ordering,
   cancellation (a generation token invalidates an in-flight cycle on STOP),
   and Flow-Map highlighting.
-- **Node ids are shared truth.** `constants.AJV2.NODE.*` names every flowchart
+- **Node ids are shared truth.** `constants.AJ.NODE.*` names every flowchart
   node. The orchestrator stamps the active node onto
-  `STORAGE_LOCAL.AJV2_PIPELINE_STATE`; the popup Flow Map
-  (`COR3.uiComponentsV2.flowMap`) reads the same ids to highlight the live
+  `STORAGE_LOCAL.AJ_PIPELINE_STATE`; the popup Flow Map
+  (`COR3.uiComponents.flowMap`) reads the same ids to highlight the live
   stage.
-- **Isolation.** v2 runs in the isolated world, owns only `AJV2_*` /
-  `AUTOJOBS_V2_SETTINGS` keys, logs under id `auto-jobs-v2`, and reads only
+- **Isolation.** The orchestrator runs in the isolated world, owns only
+  `AJ_*` / `AUTOJOBS_SETTINGS` keys, logs under id `auto-jobs`, and reads only
   shared read-only game state (`NM_GRAPH` + the three market envelopes). The
-  only commands it posts are generic `MSG.GAME.*` (REFRESH_*, ACCEPT_JOB,
-  REVERT_ENDPOINT_TO_HOME) — never v1 auto-jobs messages.
-- **MAIN-world bridge.** `src/modules/game/auto-jobs-v2-bridge.js` (a plain
-  IIFE, not a Module) is the MAIN endpoint for the v2 Network-Map context menu
+  commands it posts are generic `MSG.GAME.*` (REFRESH_*, ACCEPT_JOB,
+  COMPLETE_JOB, REVERT_ENDPOINT_TO_HOME, REQUEST_NM_MAP) + its own
+  `MSG.AUTOJOBS.*`.
+- **MAIN-world bridge.** `src/modules/game/auto-jobs-bridge.js` (a plain
+  IIFE, not a Module) is the MAIN endpoint for the Network-Map context menu
   (Open SAI / Open Market). It drives the flows through client functions + direct
   WS rather than DOM coordinate clicks: `COR3.game.desktop`
   (`src/modules/game/desktop-window.js`) opens the windows via React handlers,
@@ -227,7 +221,7 @@ pipeline diagram lives in [pipelines.md](pipelines.md).)
   `__cor3SaiLoginWithAccess`) or, with no grant, by **hacking** the server
   (`COR3.game.loadout.ensureHack` installs HACK software → click the hack-tool →
   the standalone solver wins the minigame → use the granted access). Phase 2's job
-  execution (`JOB_FLOW` → `flow-v2-*`) will extend this bridge.
+  execution (`JOB_FLOW` → `flow-*`) will extend this bridge.
 
 ## Cross-world communication
 

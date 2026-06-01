@@ -36,20 +36,18 @@ Run any of these in the MCP browser console:
 
 | Probe | World | What it tells you |
 |---|---|---|
-| `window.COR3.Registry.list().length` | isolated **or** MAIN | how many modules registered (expect ~27 isolated, ~18 MAIN; the v2 `auto-jobs-v2-bridge` is a plain IIFE, not counted) |
+| `window.COR3.Registry.list().length` | isolated **or** MAIN | how many modules registered (expect ~26 isolated, ~14 MAIN; the `auto-jobs-bridge` and `desktop-window` IIFEs are not counted) |
 | `window.COR3.Registry.snapshot()` | either | full list with `{id, category, dependsOn, started, enabled}` |
-| `window.COR3.Registry.get('auto-jobs')?.started` | isolated | whether auto-jobs is currently active |
-| `Object.keys(window.COR3.game ?? {})` | MAIN | should print `['networkMap','serverConnect','sai','flows','loadout','desktop']` (`desktop` = the v2 window helper) |
+| `Object.keys(window.COR3.game ?? {})` | MAIN | should print `['loadout','desktop']` (the Auto Jobs game-core helpers) |
 | `await chrome.storage.local.get('cor3_logs')` | isolated/popup | full per-module ring buffers |
-| `await chrome.storage.local.get(['autoJobsState','autoJobsQueue','buggedJobIds'])` | isolated/popup | auto-jobs (v1) runtime |
-| `await chrome.storage.local.get(['ajv2PipelineState','ajv2JobQueue','ajv2BuggedJobs'])` | isolated/popup | **Auto-Jobs v2** runtime: `ajv2PipelineState.node` = the live flowchart node; `ajv2JobQueue.jobs[].status` = `AVAILABLE`/`TAKEN` |
-| `window.COR3.Registry.get('auto-jobs-v2')?.started` | isolated | whether the v2 orchestrator loop is running |
-| `Object.keys(window.COR3.autoJobsV2?.pipeline?.stages ?? {})` | isolated | the v2 stage objects (getServers, checkAccess, updateMarkets, jobQueue, buggedJobs, checkCondition, jobAcception) |
-| `await chrome.storage.sync.get(['autoJobsSettings','autoJobsV2Settings','modules','autoSendMerc'])` | isolated/popup | user prefs + module state (incl. v2 `{enabled}`) |
+| `await chrome.storage.local.get(['ajPipelineState','ajJobQueue','ajBuggedJobs'])` | isolated/popup | **Auto Jobs** runtime: `ajPipelineState.node` = the live flowchart node; `ajJobQueue.jobs[].status` = `AVAILABLE`/`TAKEN` |
+| `window.COR3.Registry.get('auto-jobs')?.started` | isolated | whether the orchestrator loop is running |
+| `Object.keys(window.COR3.autoJobs?.pipeline?.stages ?? {})` | isolated | the stage objects (getServers, checkAccess, updateMarkets, jobQueue, buggedJobs, checkCondition, jobAcception) |
+| `await chrome.storage.sync.get(['autoJobsSettings','modules','autoSendMerc'])` | isolated/popup | user prefs + module state (Auto Jobs is `{enabled}`) |
 | `window.__cor3WsInterceptorActive` | MAIN | confirms WS wrap is installed |
 | `window.__cor3LastMarketId` | MAIN | last home market id seen by interceptor |
 | `window.__cor3CachedMercIds` | MAIN | cached mercenary IDs for configure cascade |
-| `window.__pipelineLocked`, `window.__autoJobsActive`, `window.__jobManagerAbort` | MAIN | flow-runner / UI-lock flags |
+| `window.__cor3Abort`, `window.__cor3FlowLock`, `window.__cor3SaiSession` | MAIN | Auto Jobs flow abort flag / cross-module busy guard / shared SAI batch session |
 
 ### Forcing actions from the console
 
@@ -58,33 +56,17 @@ Run any of these in the MCP browser console:
 window.postMessage({ type: 'COR3_REFRESH_MARKET' }, '*');
 window.postMessage({ type: 'COR3_REFRESH_DARK_MARKET' }, '*');
 
-// Open Network Map + scrape servers
-window.postMessage({ type: 'COR3_OPEN_NETWORK_MAP' }, '*');
+// Re-request the Network Map graph (interceptor replies COR3_NM_GRAPH,
+// which the orchestrator persists to STORAGE_LOCAL.NM_GRAPH)
+window.postMessage({ type: 'COR3_REQUEST_NM_MAP' }, '*');
 
-// Stop a stuck flow
-window.postMessage({ type: 'COR3_ABORT_JOB_FLOW' }, '*');
-
-// Manually trigger a flow (FOR DEBUGGING — bypasses the auto-jobs queue)
-window.postMessage({
-    type: 'COR3_START_IP_INJECTION_FLOW',  // wrong — see flows.md
-    type: 'COR3_START_IP_JOB_FLOW',
-    jobId: 'fake-id', marketId: '019d3ea4-…',
-    serverName: 'RM7-S4L4', ips: ['10.0.0.1'],
-}, '*');
-
-// Clear bugged-job blacklist
-chrome.storage.local.set({ buggedJobIds: {} });
-
-// Reset auto-jobs state to idle (use only when stuck)
-chrome.storage.local.set({ autoJobsState: { status: 'idle', updatedAt: Date.now() } });
-
-// ── Auto-Jobs v2 ──
-// Start / stop the v2 loop (from isolated or popup console — the orchestrator
+// ── Auto Jobs ──
+// Start / stop the loop (from isolated or popup console — the orchestrator
 // reacts to the sync key; the runtime message makes it immediate on Firefox).
-chrome.storage.sync.set({ autoJobsV2Settings: { enabled: true } });
-chrome.runtime.sendMessage({ action: 'toggleAutoJobsV2', settings: { enabled: true } });
-// Clear the v2 bugged registry
-chrome.storage.local.set({ ajv2BuggedJobs: {} });
+chrome.storage.sync.set({ autoJobsSettings: { enabled: true } });
+chrome.runtime.sendMessage({ action: 'toggleAutoJobs', settings: { enabled: true } });
+// Clear the bugged registry
+chrome.storage.local.set({ ajBuggedJobs: {} });
 ```
 
 ### F12 dump helper
@@ -166,23 +148,20 @@ next tick. `src/entry/background.js → isNoReceiverError()` filters this
 specific message so it doesn't flood the SW's `cor3LogError` log; any
 other exception still logs.
 
-### "Auto-jobs status is stuck in `solving` and never completes"
+### "Auto Jobs parks on a JOB_FLOW and never moves on"
 
-Likely causes:
-1. Solver minigame DOM didn't appear (90 s timeout in flow). Check the
-   relevant flow in `src/modules/game/flows/<type>.js`.
-2. K/D was missed on the target server — auto-jobs accepted before
-   network-map could detect it. Check `kdSkipServers` map (in-memory only).
-3. Server became unreachable mid-flow (route via K/D server). The flow
-   posts `COR3_SERVER_UNREACHABLE` which auto-jobs handles.
-4. Watchdog should kick in at 3 min and bug the job. If you don't see
-   `solving watchdog 3min` in `cor3_logs['auto-jobs']`, the orchestrator
-   itself has a bug.
+The orchestrator dispatches a TAKEN job via `MSG.AUTOJOBS.FLOW_START` and parks
+on `FLOW_RESULT`. Likely causes:
+1. Solver minigame DOM didn't appear. Check the relevant flow in
+   `src/modules/game/flows/auto-jobs/<type>.js` and `cor3_logs['flow-<type>']`.
+2. The flow never replied. After `AJ.LOOP.FLOW_TIMEOUT_MS` (5 min) the
+   orchestrator gives up and writes the job to `AJ_BUGGED_JOBS`.
 
-**Force-recover:**
+**Force-recover:** STOP from the popup (sends `FLOW_ABORT`), or from the console:
 ```js
-window.postMessage({ type: 'COR3_ABORT_JOB_FLOW' }, '*');
-chrome.storage.local.set({ autoJobsState: { status: 'idle', updatedAt: Date.now() } });
+chrome.storage.sync.set({ autoJobsSettings: { enabled: false } });
+chrome.runtime.sendMessage({ action: 'toggleAutoJobs', settings: { enabled: false } });
+chrome.storage.local.set({ ajBuggedJobs: {} });   // un-bug everything
 ```
 
 ### "Popup shows no data"
@@ -337,22 +316,23 @@ After any code change:
 1. Open cor3.gg, log in, wait for "WS connected".
 2. Expect popup Overview tab to show daily ops timer + market timers within
    ~10 s (initial-fetch cascade is staggered by 1–6 s).
-3. Open Auto-Jobs tab → toggle ON.
-4. Network Map should open in-game; both market windows open with Job tabs.
-5. If a qualifying job is on the board, expect (within a minute):
-   - `[auto-jobs] tick: scanning markets` log line
-   - `Accept: sending N request(s)…`
-   - `accept-batch n=N` state transition
-   - `flow START FileDecryption` (or other type)
-6. Watch state machine step through `idle → accepting → solving → completing → idle`.
-7. After completion, queue is drained, market refreshes, scan repeats.
+3. Open Auto Jobs tab → toggle ON (requires the decrypt/ICE-WALL solvers ON in
+   Overview, else START is blocked).
+4. Watch the Flow Map highlight step through the pipeline nodes
+   (`GET_SERVERS → CHECK_ACCESS → UPDATE_MARKETS → JOB_QUEUE → …`); the Job List
+   fills from `AJ_JOB_QUEUE`.
+5. If a qualifying AVAILABLE job is on the board, expect (within a minute):
+   - `cor3_logs['auto-jobs']` shows the cycle + `JOB_ACCEPTION · take …` lines.
+   - The job reappears `TAKEN` next cycle and JOB_FLOW dispatches it
+     (`cor3_logs['flow-<type>']`).
+6. On success the flow sends `job.complete`; the job leaves the board.
 
 ## Disabling features without code changes
 
 | Behavior | How |
 |---|---|
-| Disable auto-jobs entirely | Auto-Jobs tab → Stop |
-| Skip a job type | Edit `chrome.storage.sync.autoJobsSettings.enabledJobTypes['file_decryption'] = false` (no UI yet) |
-| Boost a server's priority | `chrome.storage.sync.serverPriorities['RM7-S4L4'] = 999` |
-| Permanently bug a job | `chrome.storage.local.buggedJobIds['<id>'] = {ts: Date.now()+999*3600000, name: '?'}` |
+| Disable Auto Jobs entirely | Auto Jobs tab → Stop |
+| Skip a market / job type globally | Auto Jobs tab → Master Switches panel (writes `STORAGE_LOCAL.ajMasterSwitches`) |
+| Skip a server / a type on one server | Network Map context menu (writes `STORAGE_LOCAL.ajServerOverrides`) |
+| Permanently bug a job | `chrome.storage.local.get('ajBuggedJobs').then(o => chrome.storage.local.set({ ajBuggedJobs: { ...o.ajBuggedJobs, '<id>': { reason: 'manual', since: Date.now() } } }))` |
 | Stop alarms | Overview tab → Add alarm card → Stop all |

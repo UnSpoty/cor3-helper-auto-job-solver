@@ -1,24 +1,24 @@
-// Auto-Jobs v2 — Flow Map (pipeline flowchart + live progress).
+// Auto Jobs — Flow Map (pipeline flowchart + live progress).
 //
-// A Network-Map-style pan/zoom SVG canvas that draws the v2 pipeline as the
+// A Network-Map-style pan/zoom SVG canvas that draws the Auto Jobs pipeline as the
 // flowchart it actually is: module boxes, a decision diamond (QUEUE:EMPTY?),
 // DELAY pills, branch labels (YES/NO) and a loop-back edge. The node ids come
-// from COR3.constants.AJV2.NODE — the SAME ids the orchestrator stamps onto
-// AJV2_PIPELINE_STATE — so this map can highlight exactly which stage the
+// from COR3.constants.AJ.NODE — the SAME ids the orchestrator stamps onto
+// AJ_PIPELINE_STATE — so this map can highlight exactly which stage the
 // runtime is executing right now.
 //
 // Layout is hand-placed (the graph is small, fixed, and cyclic — a generic
 // auto-layout fights the loop edge). The orchestrator owns the execution
 // order; this file owns the picture.
 //
-// Exposes attach() on COR3.uiComponentsV2.flowMap (NOT v1's uiComponents).
+// Exposes attach() on COR3.uiComponents.flowMap (the Auto Jobs Network Map).
 
 (function () {
     const root = window;
     if (!root.COR3 || !root.COR3.constants) return;
     const C = root.COR3.constants;
     const { Store } = root.COR3;
-    const NODE = C.AJV2.NODE;
+    const NODE = C.AJ.NODE;
     const SL = C.STORAGE_LOCAL;
     const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -180,8 +180,8 @@
     // DELAY node → its total duration, so the map can run a local countdown
     // while the orchestrator sleeps (no storage writes happen mid-delay).
     const DELAY_MS = {
-        [NODE.DELAY_INITIAL]: C.AJV2.LOOP.INITIAL_DELAY_MS,
-        [NODE.DELAY_CYCLE]: C.AJV2.LOOP.CYCLE_DELAY_MS,
+        [NODE.DELAY_INITIAL]: C.AJ.LOOP.INITIAL_DELAY_MS,
+        [NODE.DELAY_CYCLE]: C.AJ.LOOP.CYCLE_DELAY_MS,
     };
 
     function svgEl(name, attrs) {
@@ -355,7 +355,7 @@
     }
 
     function attach(container) {
-        container.classList.add('ajv2-flow-host');
+        container.classList.add('aj-flow-host');
         container.innerHTML = '';
 
         const byId = new Map(NODES.map((n) => [n.id, n]));
@@ -373,11 +373,11 @@
         const worldH = maxY + PAD;
         const CANVAS_H = 420;
 
-        const wrap = htmlEl('div', 'ajv2-flow');
+        const wrap = htmlEl('div', 'aj-flow');
 
-        const titleRow = htmlEl('div', 'ajv2-flow-head');
+        const titleRow = htmlEl('div', 'aj-flow-head');
         titleRow.appendChild(htmlEl('span', 'card-label', 'Flow Map'));
-        const status = htmlEl('span', 'muted xs ajv2-flow-status', 'idle');
+        const status = htmlEl('span', 'muted xs aj-flow-status', 'idle');
         titleRow.appendChild(status);
         wrap.appendChild(titleRow);
 
@@ -568,9 +568,9 @@
 
         // Live progress from the orchestrator.
         const localUnsub = Store.local.onChanged((changes) => {
-            if (changes[SL.AJV2_PIPELINE_STATE]) renderState(changes[SL.AJV2_PIPELINE_STATE].newValue);
+            if (changes[SL.AJ_PIPELINE_STATE]) renderState(changes[SL.AJ_PIPELINE_STATE].newValue);
         });
-        Store.local.getOne(SL.AJV2_PIPELINE_STATE, null).then(renderState);
+        Store.local.getOne(SL.AJ_PIPELINE_STATE, null).then(renderState);
 
         requestAnimationFrame(() => fit());
 
@@ -596,6 +596,6 @@
         return [parts.slice(0, mid).join('_'), parts.slice(mid).join('_')];
     }
 
-    root.COR3.uiComponentsV2 = root.COR3.uiComponentsV2 || {};
-    root.COR3.uiComponentsV2.flowMap = { attach };
+    root.COR3.uiComponents = root.COR3.uiComponents || {};
+    root.COR3.uiComponents.flowMap = { attach };
 })();

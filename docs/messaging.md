@@ -79,17 +79,14 @@ the game-module helpers.
 | `GAME.OPEN_CONTAINER` | `COR3_OPEN_CONTAINER` | `{ expeditionId }` | `expeditions.open.container`. |
 | `GAME.COLLECT_ALL` | `COR3_COLLECT_ALL` | `{ expeditionId }` | `expeditions.collect.all`. |
 | `GAME.ACCEPT_JOB` | `COR3_ACCEPT_JOB` | `{ jobId, marketId }` | `market.job.take` (endpoint-preflight in the interceptor). |
-| `GAME.COMPLETE_JOB` | `COR3_COMPLETE_JOB` | `{ jobId, marketId }` | `market.job.complete`. Sent by v1 auto-jobs and by Auto-Jobs v2's flow-v2 modules after a job's minigame finishes. |
+| `GAME.COMPLETE_JOB` | `COR3_COMPLETE_JOB` | `{ jobId, marketId }` | `market.job.complete`. Sent by the Auto Jobs flow modules after a job's minigame finishes. |
 | `GAME.RESPOND_DECISION` | `COR3_RESPOND_DECISION` | `{ expeditionId, messageId, selectedOption }` | `expeditions.respond.event`. |
-| `GAME.OPEN_NETWORK_MAP` | `COR3_OPEN_NETWORK_MAP` | `null` | clicks the taskbar `TabBarItem-NETWORK_MAP`; on success scrapes the server list. |
-| `GAME.OPEN_MARKET_JOBS` | `COR3_OPEN_MARKET_JOBS` | `{ home: bool, dark: bool }` | sequentially opens home market and/or dark market job tabs. |
-| `GAME.REQUEST_NM_SERVERS` | `COR3_REQUEST_NM_SERVERS` | `null` | ensure NM open + scrape server list (sends `GAME.NM_SERVERS` back). |
-| `GAME.NM_SERVERS` | `COR3_NM_SERVERS` | `{ servers: string[] }` | **inverse direction** — MAIN → isolated. Auto-jobs merges into `STORAGE_LOCAL.NM_SERVERS`. |
-| `GAME.REFRESH_DARK_MARKET` / `GAME.REFRESH_SRM_MARKET` | `COR3_REFRESH_DARK_MARKET` / `COR3_REFRESH_SRM_MARKET` | `null` | set endpoint to the dark / SRM7-M server, then `get.options`. Used by auto-refresh and Auto-Jobs v2's UPDATE_MARKETS. |
-| `GAME.REQUEST_NM_MAP` | `COR3_REQUEST_NM_MAP` | `null` | request `network-map.get.map`; reply lands in `STORAGE_LOCAL.NM_GRAPH` (BFS-depth graph). |
-| `GAME.NM_GRAPH` | `COR3_NM_GRAPH` | `{ home, currentEndpointId, servers:[…] }` | **inverse** — MAIN → isolated, the parsed graph. |
+| `GAME.REFRESH_DARK_MARKET` / `GAME.REFRESH_SRM_MARKET` | `COR3_REFRESH_DARK_MARKET` / `COR3_REFRESH_SRM_MARKET` | `null` | set endpoint to the dark / SRM7-M server, then `get.options`. Used by auto-refresh and Auto Jobs's UPDATE_MARKETS. |
+| `GAME.REQUEST_NM_MAP` | `COR3_REQUEST_NM_MAP` | `null` | request `network-map.get.map`; the interceptor replies `GAME.NM_GRAPH` (which the orchestrator persists to `STORAGE_LOCAL.NM_GRAPH`). |
+| `GAME.NM_GRAPH` | `COR3_NM_GRAPH` | `{ home, currentEndpointId, servers:[…] }` | **inverse** — MAIN → isolated, the parsed BFS-depth graph. The Auto Jobs orchestrator subscribes and persists it. |
 | `GAME.REQUEST_LOADOUT` | `COR3_REQUEST_LOADOUT` | `null` | join `loadout` room → server replies `loadout/get.options` (→ `STORAGE_LOCAL.LOADOUT`). |
-| `GAME.REVERT_ENDPOINT_TO_HOME` | `COR3_REVERT_ENDPOINT_TO_HOME` | `null` | reset the NM endpoint back to HOME. Posted at the end of a bulk-accept batch (v1 auto-jobs and Auto-Jobs v2's JOB_ACCEPTION) that may have left the endpoint on DARK/SRM. |
+| `GAME.RESCAN_NETWORK_MAP` | `rescanNetworkMap` | `null` | runtime action (popup → content). The orchestrator relays it to `REQUEST_NM_MAP`. The popup Network Map "Refresh" button fires it. |
+| `GAME.REVERT_ENDPOINT_TO_HOME` | `COR3_REVERT_ENDPOINT_TO_HOME` | `null` | reset the NM endpoint back to HOME. Posted at the end of a bulk-accept batch (Auto Jobs's JOB_ACCEPTION) that may have left the endpoint on DARK/SRM. |
 
 ### Off-enum
 
@@ -121,67 +118,41 @@ Direction: bidirectional. `START_*` and `STOP_*` are isolated → MAIN; `DAILY_H
 
 ---
 
-## MSG.JOB — Job-flow dispatch
+## MSG.JOB — Game-core log channel
 
-Direction: depends on entry. Each `START_*` is isolated → MAIN (auto-jobs
-orchestrator → flow module). `MINIGAME_DONE` / `TIMEOUT` / `KD_DETECTED` /
-`SERVER_UNREACHABLE` / `LOG` / `AUTOJOBS_ACTIVE_CHANGED` are MAIN → isolated
-or both.
+`MSG.JOB` is now a single channel: the interceptor's human-readable game-action
+log, which the Auto Jobs bridge mirrors into the Activity Log.
 
-### Start types (isolated → MAIN)
-
-| Constant | Wire string | Payload | Flow file |
+| Constant | Wire string | Payload | Direction |
 |---|---|---|---|
-| `JOB.START_DECRYPTION` | `COR3_START_JOB_FLOW` | `{ jobId, marketId, fileCondition }` | `flows/file-decryption.js` |
-| `JOB.START_IP_INJECTION` | `COR3_START_IP_JOB_FLOW` | `{ jobId, marketId, serverName, ips: string[] }` | `flows/ip-injection.js` |
-| `JOB.START_IP_CLEANUP` | `COR3_START_IP_CLEANUP_FLOW` | `{ jobId, marketId, serverName, ips }` | `flows/ip-cleanup.js` |
-| `JOB.START_UPLOAD` | `COR3_START_UPLOAD_JOB_FLOW` | `{ jobId, marketId, serverName, fileCondition }` | `flows/file-upload.js` |
-| `JOB.START_LOG_DELETION` | `COR3_START_LOG_DELETION_FLOW` | `{ jobId, marketId, serverName, fileCondition: logName, logSeqs: number[] \| null }` | `flows/log-deletion.js` |
-| `JOB.START_LOG_DOWNLOAD` | `COR3_START_LOG_DOWNLOAD_FLOW` | same as deletion | `flows/log-download.js` |
-| `JOB.START_FILE_ELIMINATION` | `COR3_START_FILE_ELIMINATION_FLOW` | `{ jobId, marketId, serverName, fileCondition }` | `flows/file-elimination.js` |
-| `JOB.START_DATA_DOWNLOAD` | `COR3_START_DATA_DOWNLOAD_FLOW` | `{ jobId, marketId, serverName, fileNames: string[] }` | `flows/data-download.js` |
-| `JOB.START_DECRYPT_EXTRACT` | `COR3_START_DECRYPT_EXTRACT_FLOW` | `{ jobId, marketId, serverName, fileCondition }` | `flows/decrypt-extract.js` |
-
-### Signals (MAIN → isolated)
-
-| Constant | Wire string | Payload | Auto-jobs response |
-|---|---|---|---|
-| `JOB.MINIGAME_DONE` | `COR3_JOB_MINIGAME_DONE` | `{ jobId, marketId }` | transition to `completing`, send `COR3_COMPLETE_JOB`. |
-| `JOB.MINIGAME_TIMEOUT` | `COR3_JOB_MINIGAME_TIMEOUT` | `{ jobId, marketId }` | bug the job (2 h TTL), drop from queue, 20 s cooldown. |
-| `JOB.KD_DETECTED` | `COR3_JOB_KD_DETECTED` | `{ serverName, timerText }` | blacklist server for parsed timer + 5 min buffer. |
-| `JOB.SERVER_UNREACHABLE` | `COR3_SERVER_UNREACHABLE` | `{ serverName, blockedByKD?: [{serverName, timerText}] }` | blacklist for max(30 min, longest K/D). |
-| `JOB.LOG` | `COR3_JOB_LOG` | `{ msg, level }` | append to `STORAGE_LOCAL.AUTOJOBS_LOG` (100-entry ring). |
-| `JOB.ABORT` | `COR3_ABORT_JOB_FLOW` | `null` | (isolated → MAIN) — sets `window.__jobManagerAbort`, terminates current flow. |
-| `JOB.AUTOJOBS_ACTIVE_CHANGED` | `COR3_AUTOJOBS_ACTIVE_CHANGED` | `{ active: bool }` | (isolated → MAIN) — toggles UI lock that prevents NM close while auto-jobs is on. |
+| `JOB.LOG` | `COR3_JOB_LOG` | `{ msg, level }` | MAIN → isolated. Posted by the WS interceptor (accept/complete RPCs, SAI login verdicts). The `auto-jobs-bridge` mirrors entries into the Activity Log while an Auto Jobs action runs. |
 
 ### Off-enum
 
-- `COR3_JOB_MANAGER_READY` — MAIN → isolated, signals that flow modules booted; auto-jobs uses this to drain queue / resume mid-state.
-- `COR3_REQ_DUMP` — debug: F12 `__cor3Dump()` posts this from MAIN; isolated content used to dump state but the new architecture has no handler yet — adding one is a TODO.
+- `COR3_JOB_MANAGER_READY` — MAIN → isolated, signals that flow modules booted.
 - `COR3_FETCH_DAILY_OPS` — MAIN → isolated, fired by interceptor on WS open; daily-ops module fetches `svc-corie.cor3.gg/api/user-daily-claim`.
-- `COR3_LOCK_UI` / `COR3_UNLOCK_UI` — aliases for AUTOJOBS_ACTIVE_CHANGED; flows-core listens.
 - `COR3_LOG_REMOTE` — MAIN → isolated, log-bridge envelope. `{ moduleId, entry: {ts, level, msg, ctx} }`. Logger ingests it.
-- `COR3_ACCEPT_JOB_SEND_FAILED` — MAIN → isolated, fired when `wsSend` returned false during accept. Auto-jobs (v1 and v2) can observe it.
 
 ---
 
-## MSG.AUTOJOBS_V2 — Auto-Jobs v2 control
+## MSG.AUTOJOBS — Auto Jobs control
 
-Owned entirely by Auto-Jobs v2; never overlaps v1's `toggleAutoJobs`. See
-[pipelines.md → Auto-Jobs v2](pipelines.md). v2 does NOT add WS/game RPCs of
+Owned entirely by the Auto Jobs subsystem. See
+[pipelines.md → Auto Jobs](pipelines.md). It does NOT add WS/game RPCs of
 its own — for accept/refresh/endpoint it reuses the generic `MSG.GAME.*`
-messages (`ACCEPT_JOB`, `REVERT_ENDPOINT_TO_HOME`, `REFRESH_*`).
+messages (`ACCEPT_JOB`, `COMPLETE_JOB`, `REVERT_ENDPOINT_TO_HOME`, `REFRESH_*`,
+`REQUEST_NM_MAP`).
 
 | Constant | Wire string | Direction | Payload | What it does |
 |---|---|---|---|---|
-| `AUTOJOBS_V2.TOGGLE` | `toggleAutoJobsV2` | popup → isolated (runtime) | `{ settings: { enabled } }` | fired alongside the `AUTOJOBS_V2_SETTINGS` sync write so the orchestrator starts/stops its loop immediately (Firefox sync.onChanged can be flaky cross-context). |
-| `AUTOJOBS_V2.OPEN_SAI_ACTION` | `ajv2OpenSai` | popup → isolated (runtime) | `{ serverName, serverId, serverType }` | NM context-menu "Open SAI". Orchestrator forwards to the MAIN bridge — **refused while the loop runs**. `serverId` (from `NM_GRAPH`) is required for the WS connect; `serverType` (the server's `serverTypeName`, e.g. "CEDRT private") lets the hack path pick HACK software. |
-| `AUTOJOBS_V2.OPEN_MARKET_ACTION` | `ajv2OpenMarket` | popup → isolated (runtime) | `{ serverName, serverId, serverType }` | NM context-menu "Open Market". Same refuse-while-running guard. `serverName`/`serverId` are `null` for the HOME market (`serverType` unused). |
-| `AUTOJOBS_V2.OPEN_SAI` | `COR3_AJV2_OPEN_SAI` | isolated → MAIN (window) | `{ serverName, serverId, serverType }` | handled by `auto-jobs-v2-bridge.js` — **no DOM coordinate clicks**: opens the Network Map window (`COR3.game.desktop.openAppAndWait`), connects via `__cor3SetEndpoint` (WS `set.endpoint`), opens the SAI terminal, then `saiAccess()` gains access — **Active Access** (`__cor3SaiGetLoginStatus` → `__cor3SaiLoginWithAccess`, a `task_access` grant, no password/passhack) or, with no grant, **hacks** the server (`COR3.game.loadout.ensureHack(serverType)` installs HACK software → click hack-tool row → solver wins the minigame → poll `get.login.status` for the new grant → `login.with-access`). |
-| `AUTOJOBS_V2.OPEN_MARKET` | `COR3_AJV2_OPEN_MARKET` | isolated → MAIN (window) | `{ serverName, serverId, serverType }` | handled by the bridge — same client-fn window-open + WS `set.endpoint` connect, then invokes the panel's Market control via `COR3.game.desktop.invokeReactClick` (text button for HOME, chest icon for DARK/SRM). `serverId` is `null` for HOME (no connect). |
-| `AUTOJOBS_V2.FLOW_START` | `COR3_AJV2_FLOW_START` | isolated → MAIN (window) | `{ jobId, marketId, jobType, fileCondition, fileId?, serverName? }` | JOB_FLOW dispatch. The MAIN `flow-v2-*` module for `jobType` executes the job. **Field is `jobType` not `type`** — `Bus.window` builds the envelope as `Object.assign({type}, payload)`, so a payload `type` would clobber the Bus message id and never be delivered. |
-| `AUTOJOBS_V2.FLOW_RESULT` | `COR3_AJV2_FLOW_RESULT` | MAIN → isolated (window) | `{ jobId, marketId, success, didWork, reason }` | flow outcome. `success&&didWork` = completed; `success&&!didWork` = can't do it → bugged; `success:false` = failure → bugged. |
-| `AUTOJOBS_V2.FLOW_STEP` | `COR3_AJV2_FLOW_STEP` | MAIN → isolated (window) | `{ jobId, node }` | live sub-step report (`node` ∈ `AJV2.NODE.fd-*`). The orchestrator relays it to `AJV2_PIPELINE_STATE` so the Flow Map highlights the current step inside JOB_FLOW. |
+| `AUTOJOBS.TOGGLE` | `toggleAutoJobs` | popup → isolated (runtime) | `{ settings: { enabled } }` | fired alongside the `AUTOJOBS_SETTINGS` sync write so the orchestrator starts/stops its loop immediately (Firefox sync.onChanged can be flaky cross-context). |
+| `AUTOJOBS.OPEN_SAI_ACTION` | `ajOpenSai` | popup → isolated (runtime) | `{ serverName, serverId, serverType }` | NM context-menu "Open SAI". Orchestrator forwards to the MAIN bridge — **refused while the loop runs**. `serverId` (from `NM_GRAPH`) is required for the WS connect; `serverType` (the server's `serverTypeName`, e.g. "CEDRT private") lets the hack path pick HACK software. |
+| `AUTOJOBS.OPEN_MARKET_ACTION` | `ajOpenMarket` | popup → isolated (runtime) | `{ serverName, serverId, serverType }` | NM context-menu "Open Market". Same refuse-while-running guard. `serverName`/`serverId` are `null` for the HOME market (`serverType` unused). |
+| `AUTOJOBS.OPEN_SAI` | `COR3_AJ_OPEN_SAI` | isolated → MAIN (window) | `{ serverName, serverId, serverType }` | handled by `auto-jobs-bridge.js` — **no DOM coordinate clicks**: opens the Network Map window (`COR3.game.desktop.openAppAndWait`), connects via `__cor3SetEndpoint` (WS `set.endpoint`), opens the SAI terminal, then `saiAccess()` gains access — **Active Access** (`__cor3SaiGetLoginStatus` → `__cor3SaiLoginWithAccess`, a `task_access` grant, no password/passhack) or, with no grant, **hacks** the server (`COR3.game.loadout.ensureHack(serverType)` installs HACK software → click hack-tool row → solver wins the minigame → poll `get.login.status` for the new grant → `login.with-access`). |
+| `AUTOJOBS.OPEN_MARKET` | `COR3_AJ_OPEN_MARKET` | isolated → MAIN (window) | `{ serverName, serverId, serverType }` | handled by the bridge — same client-fn window-open + WS `set.endpoint` connect, then invokes the panel's Market control via `COR3.game.desktop.invokeReactClick` (text button for HOME, chest icon for DARK/SRM). `serverId` is `null` for HOME (no connect). |
+| `AUTOJOBS.FLOW_START` | `COR3_AJ_FLOW_START` | isolated → MAIN (window) | `{ jobId, marketId, jobType, fileCondition, fileId?, serverName? }` | JOB_FLOW dispatch. The MAIN `flow-*` module for `jobType` executes the job. **Field is `jobType` not `type`** — `Bus.window` builds the envelope as `Object.assign({type}, payload)`, so a payload `type` would clobber the Bus message id and never be delivered. |
+| `AUTOJOBS.FLOW_RESULT` | `COR3_AJ_FLOW_RESULT` | MAIN → isolated (window) | `{ jobId, marketId, success, didWork, reason }` | flow outcome. `success&&didWork` = completed; `success&&!didWork` = can't do it → bugged; `success:false` = failure → bugged. |
+| `AUTOJOBS.FLOW_STEP` | `COR3_AJ_FLOW_STEP` | MAIN → isolated (window) | `{ jobId, node }` | live sub-step report (`node` ∈ `AJ.NODE.fd-*`). The orchestrator relays it to `AJ_PIPELINE_STATE` so the Flow Map highlights the current step inside JOB_FLOW. |
 
 Acceptance confirmation is **not** a dedicated message: an accepted job leaves
 the market board's `jobs[]` and reappears in `recentJobs[]` with
@@ -202,7 +173,7 @@ the market board's `jobs[]` and reappears in `recentJobs[]` with
 | `darkMarketAvailable` | `boolean` | `data/dark-market.js` | flips false on `WS.DARK_MARKET_UNREACHABLE`. |
 | `srmMarketData` | `{marketId, jobs, recentJobs, …}` | `data/srm-market.js` | SRM7-M market. + `srmMarketDataUpdatedAt`. |
 | `srmMarketAvailable` | `boolean` | `data/srm-market.js` | reachability flag (mirrors dark). |
-| `loadoutData` | `{ …snapshot, _derived:{decryptExtensions, capabilities, canBoot} }` | `data/loadout.js` | from `loadout/get.options`. `_derived` is computed up-front so Auto-Jobs doesn't recompute each cycle. |
+| `loadoutData` | `{ …snapshot, _derived:{decryptExtensions, capabilities, canBoot} }` | `data/loadout.js` | from `loadout/get.options`. `_derived` is computed up-front so Auto Jobs doesn't recompute each cycle. |
 | `stashData` | `{items, currentUsage, maxCapacity}` | `data/stash.js` | + `stashDataUpdatedAt`. |
 | `mercenariesData` | `Merc[] \| {mercenaries: Merc[]}` | `data/mercenaries.js` | + `mercenariesUpdatedAt`. |
 | `mercConfigData` | `{[mercId]: {totalCost, riskScore, ...}}` | `data/merc-config.js` | merged per-merc; + `mercConfigUpdatedAt`. |
@@ -230,36 +201,23 @@ the market board's `jobs[]` and reappears in `recentJobs[]` with
 
 | Key | Shape | Owner |
 |---|---|---|
-| `networkMapServers` | `string[]` | `auto-jobs.js` (merged from `MSG.GAME.NM_SERVERS`) |
-| `networkMapGraph` | `{ home, currentEndpointId, servers:[{id,name,depth,faction,…}] }` | `network-map.js` (from `network-map.get.map`, BFS-depth). Read-only shared input for both v1 and Auto-Jobs v2. |
+| `networkMapGraph` | `{ home, currentEndpointId, servers:[{id,name,depth,faction,…}] }` | `auto-jobs.js` orchestrator persists it (from the WS interceptor's `network-map.get.map`, BFS-depth). Read-only shared input. |
 
-### Auto-jobs runtime
+### Auto Jobs runtime
 
-| Key | Shape | Owner |
-|---|---|---|
-| `autoJobsState` | `{status, jobId, marketId, jobName, jobType, serverName, ips, fileCondition, fileNames, logSeqs, updatedAt}` | `auto-jobs.js` |
-| `autoJobsQueue` | resolved-job descriptors | `auto-jobs.js` |
-| `autoJobsLog` | `[{ts, msg, level}]` 100-entry ring | `auto-jobs.js` (centralized Logger is canonical) |
-| `buggedJobIds` | `{[jobId]: {ts, name}}` 2 h TTL | `auto-jobs.js` |
-| `autoJobsPendingConfirm` | confirm payload from solver, with `ts` | `auto-jobs.js` (debug mode) |
-| `autoJobsConfirmResult` | `{requestTs, approved}` | popup writes it |
-
-### Auto-Jobs v2 runtime
-
-v2 owns these keys exclusively — it never reads or writes the v1 `autoJobs*` /
-`aj*` keys above. Constants live under `STORAGE_LOCAL.AJV2_*`.
+Constants live under `STORAGE_LOCAL.AJ_*`.
 
 | Key | Shape | Owner |
 |---|---|---|
-| `ajv2PipelineState` | `{ running, cycle, node, startedAt, updatedAt, error? }` | `auto-jobs-v2.js`. `node` ∈ `AJV2.NODE.*` — drives the Flow Map highlight. |
-| `ajv2JobQueue` | `{ cycle, computedAt, markets:[{slot, reachable, refreshed, jobCount, takenCount, reason}], jobs:[{id, name, type, status, serverName, marketSlot, marketId, rewardCredits, eligible, skipReason}] }` | `auto-jobs-v2/pipeline.js` (JOB_QUEUE / CHECK_CONDITION). `status` = `'AVAILABLE'` (board) or `'TAKEN'` (in-progress); `eligible` is null until CHECK_CONDITION runs. |
-| `ajv2BuggedJobs` | `{ [jobId]: { reason, since } }` | written by JOB_FLOW's `_markBugged`; read by the pipeline (CHECK_CONDITION) + the Job List (shows a **BUGGED** pill live). The UI writes it too: per-job ✕ (un-bug) and the header **Clear Bugged** button (`= {}`). |
-| `ajv2ServerOverrides` | `{ [serverName]: { skip: bool, disabledTypes: { [jobType]: true } } }` | NM context menu → read by CHECK_CONDITION + Job List (live). |
-| `ajv2MasterSwitches` | `{ markets: { home, dark, srm }, jobTypes: { [FLOW.*]: bool } }` | Master Switches panel. `false` = disabled globally (absent = on). Read by CHECK_CONDITION (acceptance) + Job List/Network Map (live display). |
+| `ajPipelineState` | `{ running, cycle, node, startedAt, updatedAt, error? }` | `auto-jobs.js`. `node` ∈ `AJ.NODE.*` — drives the Flow Map highlight. |
+| `ajJobQueue` | `{ cycle, computedAt, markets:[{slot, reachable, refreshed, jobCount, takenCount, reason}], jobs:[{id, name, type, status, serverName, marketSlot, marketId, rewardCredits, eligible, skipReason}] }` | `auto-jobs/pipeline.js` (JOB_QUEUE / CHECK_CONDITION). `status` = `'AVAILABLE'` (board) or `'TAKEN'` (in-progress); `eligible` is null until CHECK_CONDITION runs. |
+| `ajBuggedJobs` | `{ [jobId]: { reason, since } }` | written by JOB_FLOW's `_markBugged`; read by the pipeline (CHECK_CONDITION) + the Job List (shows a **BUGGED** pill live). The UI writes it too: per-job ✕ (un-bug) and the header **Clear Bugged** button (`= {}`). |
+| `ajServerOverrides` | `{ [serverName]: { skip: bool, disabledTypes: { [jobType]: true } } }` | NM context menu → read by CHECK_CONDITION + Job List (live). |
+| `ajMasterSwitches` | `{ markets: { home, dark, srm }, jobTypes: { [FLOW.*]: bool } }` | Master Switches panel. `false` = disabled globally (absent = on). Read by CHECK_CONDITION (acceptance) + Job List/Network Map (live display). |
 
 > **Config eligibility is shared.** The market/type/server-override part of a
-> job's verdict is computed by `COR3.ajv2Eligibility.configSkipReason(job,
-> switches, overrides)` (`src/shared/ajv2-eligibility.js`, loaded in BOTH the
+> job's verdict is computed by `COR3.ajEligibility.configSkipReason(job,
+> switches, overrides)` (`src/shared/aj-eligibility.js`, loaded in BOTH the
 > isolated content world and the popup). The pipeline stamps the *data* part it
 > alone can compute (bugged / K-D / accessibility) onto each queue job as
 > `dataSkipReason`; the popup re-derives the config part live so a toggle
@@ -287,9 +245,7 @@ v2 owns these keys exclusively — it never reads or writes the v1 `autoJobs*` /
 |---|---|---|---|
 | `selectedTheme` | string | `'default'` | (unused; UI ships a single theme) |
 | `alarms` | `Alarm[]` | `[]` | popup `alarms` section + `automation/timers.js` |
-| `autoJobsSettings` | `{enabled, debugMode, markets:{home,dark}, enabledJobTypes}` | `{enabled:false, debugMode:false, markets:{home:true,dark:true}, enabledJobTypes:{}}` | `auto-jobs.js` (v1) |
-| `autoJobsV2Settings` | `{enabled}` | `{enabled:false}` | `auto-jobs-v2.js` — the ONLY sync key v2 owns; toggling it starts/stops the v2 loop (alongside `MSG.AUTOJOBS_V2.TOGGLE`). |
-| `serverPriorities` | `{[serverName]: number}` | `{}` | `auto-jobs.js` (used by queue sort; UI for editing not built yet) |
+| `autoJobsSettings` | `{enabled}` | `{enabled:false}` | `auto-jobs.js` — the only sync key Auto Jobs owns; toggling it starts/stops the loop (alongside `MSG.AUTOJOBS.TOGGLE`). |
 | `autoSendMerc` | `{enabled, autoChooseMerc, mercenaryId, mercenaryName, disabledReason}` | `{enabled:false, autoChooseMerc:true}` | `auto-send-merc.js`, mercenaries section |
 | `autoDecryptEnabled` | bool | `false` | `auto-decrypt.js` |
 | `autoIceWallEnabled` | bool | `false` | `auto-ice-wall.js` — toggle gates the SAI Porter-lite r4 watcher. |
@@ -307,44 +263,43 @@ v2 owns these keys exclusively — it never reads or writes the v1 `autoJobs*` /
 
 ## FLOW — Job type identifiers
 
-These are strings used by `auto-jobs.detectJobType()` (matched against
-job name keywords) and by the `FLOW_DISPATCH` table to pick the right
-START_*_FLOW message.
+These are the job-type strings produced by the pipeline's `detectJobType()`
+(`auto-jobs/pipeline.js`) and carried as `jobType` on `MSG.AUTOJOBS.FLOW_START`
+when the orchestrator dispatches a TAKEN job to its MAIN `flow-*` module.
 
-| Constant | Value | START_* msg | Payload |
-|---|---|---|---|
-| `FLOW.FILE_DECRYPTION` | `file_decryption` | `JOB.START_DECRYPTION` | `{fileCondition}` (no server — local file open) |
-| `FLOW.IP_INJECTION` | `ip_injection` | `JOB.START_IP_INJECTION` | `{serverName, ips}` |
-| `FLOW.IP_CLEANUP` | `ip_cleanup` | `JOB.START_IP_CLEANUP` | `{serverName, ips}` |
-| `FLOW.FILE_UPLOAD` | `file_upload` | `JOB.START_UPLOAD` | `{serverName, fileCondition}`. Note: keyword match key is `data_upload`. |
-| `FLOW.LOG_DELETION` | `log_deletion` | `JOB.START_LOG_DELETION` | `{serverName, fileCondition: logName, logSeqs}` |
-| `FLOW.LOG_DOWNLOAD` | `log_download` | `JOB.START_LOG_DOWNLOAD` | same |
-| `FLOW.FILE_ELIMINATION` | `file_elimination` | `JOB.START_FILE_ELIMINATION` | `{serverName, fileCondition}` |
-| `FLOW.DATA_DOWNLOAD` | `data_download` | `JOB.START_DATA_DOWNLOAD` | `{serverName, fileNames: string[]}` |
-| `FLOW.DECRYPT_EXTRACT` | `decrypt_extract` | `JOB.START_DECRYPT_EXTRACT` | `{serverName, fileCondition}` |
+| Constant | Value | Flow module (`src/modules/game/flows/auto-jobs/`) |
+|---|---|---|
+| `FLOW.FILE_DECRYPTION` | `file_decryption` | `file-decryption.js` (local file open — no server) |
+| `FLOW.IP_INJECTION` | `ip_injection` | `ip-injection.js` |
+| `FLOW.IP_CLEANUP` | `ip_cleanup` | `ip-cleanup.js` |
+| `FLOW.FILE_UPLOAD` | `file_upload` | `file-upload.js` (= data_upload) |
+| `FLOW.LOG_DELETION` | `log_deletion` | `log-deletion.js` |
+| `FLOW.LOG_DOWNLOAD` | `log_download` | `log-download.js` |
+| `FLOW.FILE_ELIMINATION` | `file_elimination` | `file-elimination.js` |
+| `FLOW.DATA_DOWNLOAD` | `data_download` | `data-download.js` |
+| `FLOW.DECRYPT_EXTRACT` | `decrypt_extract` | `decrypt-extract.js` |
 
-> **Note:** the `JOB_TYPE_KEYWORDS` table in `auto-jobs.js` includes
-> `data_upload` as an alias that maps to the file-upload flow. Adding a
-> new flow needs entries in three places: `JOB_TYPE_KEYWORDS`,
-> `resolveJobParams` switch, and `FLOW_DISPATCH` table.
+> **Adding a new flow** needs: a `detectJobType()` case + condition parsing in
+> `auto-jobs/pipeline.js`, a new `flow-*` module under `flows/auto-jobs/`, and
+> wiring into the orchestrator's JOB_FLOW batch dispatch.
 
 ---
 
-## AJV2 — Auto-Jobs v2 flowchart nodes & loop cadence
+## AJ — Auto Jobs flowchart nodes & loop cadence
 
-Lives in `constants.AJV2`. The single source of truth shared between the v2
-orchestrator (execution order + `AJV2_PIPELINE_STATE.node`) and the popup Flow
+Lives in `constants.AJ`. The single source of truth shared between the
+orchestrator (execution order + `AJ_PIPELINE_STATE.node`) and the popup Flow
 Map (which boxes to draw and highlight).
 
 | Field | Value | Notes |
 |---|---|---|
-| `AJV2.PACKET_TYPE` | `'ajv2/packet'` | `type` stamped on the packet that flows stage→stage. |
-| `AJV2.NODE.*` | top-level: `start`, `delay-initial`, `get-servers`, `check-access`, `update-markets`, `job-queue`, `queue-empty`, `have-tasks-in-progress`, `bugged-jobs`, `job-skip`, `check-condition`, `job-acception`, `job-flow`, `delay-cycle`; file_decryption sub-flow: `fd-read-format`, `fd-check-loadout`, `fd-install-sw`, `fd-open-downloads`, `fd-solve`, `fd-complete`, `mark-as-bugged` | flowchart node ids. The `fd-*` sub-steps are reported live by the MAIN flow via `FLOW_STEP` and highlighted on the Flow Map. |
-| `AJV2.LOOP.INITIAL_DELAY_MS` | `10000` | one-time delay after START before the first cycle. |
-| `AJV2.LOOP.CYCLE_DELAY_MS` | `30000` | gap between cycles. |
-| `AJV2.LOOP.MARKET_REFRESH_TIMEOUT_MS` | `6000` | UPDATE_MARKETS wait for a refreshed market frame before logging loud & moving on. |
-| `AJV2.LOOP.ACCEPT_PACING_MS` | `1200` | gap between successive `ACCEPT_JOB` posts in JOB_ACCEPTION. |
-| `AJV2.LOOP.FLOW_TIMEOUT_MS` | `300000` | max time JOB_FLOW parks on one `FLOW_RESULT` before bugging the job. |
+| `AJ.PACKET_TYPE` | `'aj/packet'` | `type` stamped on the packet that flows stage→stage. |
+| `AJ.NODE.*` | top-level: `start`, `delay-initial`, `get-servers`, `check-access`, `update-markets`, `job-queue`, `queue-empty`, `have-tasks-in-progress`, `bugged-jobs`, `job-skip`, `check-condition`, `job-acception`, `job-flow`, `delay-cycle`; file_decryption sub-flow: `fd-read-format`, `fd-check-loadout`, `fd-install-sw`, `fd-open-downloads`, `fd-solve`, `fd-complete`, `mark-as-bugged` | flowchart node ids. The `fd-*` sub-steps are reported live by the MAIN flow via `FLOW_STEP` and highlighted on the Flow Map. |
+| `AJ.LOOP.INITIAL_DELAY_MS` | `10000` | one-time delay after START before the first cycle. |
+| `AJ.LOOP.CYCLE_DELAY_MS` | `30000` | gap between cycles. |
+| `AJ.LOOP.MARKET_REFRESH_TIMEOUT_MS` | `6000` | UPDATE_MARKETS wait for a refreshed market frame before logging loud & moving on. |
+| `AJ.LOOP.ACCEPT_PACING_MS` | `1200` | gap between successive `ACCEPT_JOB` posts in JOB_ACCEPTION. |
+| `AJ.LOOP.FLOW_TIMEOUT_MS` | `300000` | max time JOB_FLOW parks on one `FLOW_RESULT` before bugging the job. |
 
 ---
 
@@ -357,8 +312,8 @@ Used by Module Manager UI for grouping. Each module declares one in its
 |---|---|---|
 | `CATEGORY.CORE` | `core` | `runtime-bridge` |
 | `CATEGORY.DATA` | `data` | 12 data modules (auth, expeditions, archived-expeditions, decisions, market, dark-market, srm-market, stash, loadout, mercenaries, merc-config, expedition-config) |
-| `CATEGORY.AUTOMATION` | `automation` | timers, auto-refresh, auto-send-merc, auto-choose-decision, auto-decrypt, auto-ice-wall, auto-simple-decrypt, daily-ops, auto-jobs, auto-jobs-v2, runtime-bridge |
-| `CATEGORY.GAME` | `game` | network-map, server-connect, sai-navigator, loadout-panel, flows-core, 9 flows (the `auto-jobs-v2-bridge` and `desktop-window.js` IIFEs are GAME-world `COR3.game.*` helpers, NOT registered Modules) |
+| `CATEGORY.AUTOMATION` | `automation` | timers, auto-refresh, auto-send-merc, auto-choose-decision, auto-decrypt, auto-ice-wall, auto-simple-decrypt, daily-ops, auto-jobs, auto-jobs, runtime-bridge |
+| `CATEGORY.GAME` | `game` | loadout-panel, 9 Auto Jobs flow modules (the `auto-jobs-bridge` and `desktop-window.js` IIFEs are GAME-world `COR3.game.*` helpers, NOT registered Modules) |
 | `CATEGORY.SOLVER` | `solver` | solver-decrypt, solver-daily-ops, solver-ice-wall, solver-simple-decrypt |
 | `CATEGORY.APPEARANCE` | `appearance` | 4 appearance modules |
 | `CATEGORY.UI` | `ui` | (UI sections aren't Modules — they live in popup context separately) |
@@ -371,9 +326,9 @@ Used by Module Manager UI for grouping. Each module declares one in its
 |---|---|---|
 | `LIMITS.LOG_RING_PER_MODULE` | `200` | Logger ring buffer size per module |
 | `LIMITS.ERRORS_RING` | `200` | `cor3_errors` size cap |
-| `LIMITS.AUTOJOBS_LOG_RING` | `100` | `autoJobsLog` size cap |
-| `LIMITS.BUGGED_JOB_TTL_MS` | `2 * 3600 * 1000` (2 h) | bugged-job blacklist TTL |
-| `LIMITS.AUTOJOBS_STATE_TTL_MS` | `5 * 60 * 1000` (5 min) | restore mid-state on reload only if recent |
+
+> Auto Jobs loop/timeout tunables live under `constants.AJ.LOOP.*` (see the AJ
+> section above), not `LIMITS`.
 
 ---
 

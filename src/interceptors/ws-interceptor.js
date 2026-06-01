@@ -498,9 +498,9 @@
         //     the bridge's SAI access orchestration.
         //   • login.with-access — the server's verdict on our login. The bridge
         //     only logged that the request was SENT, so surface the real
-        //     success/failure here (on MSG.JOB.LOG, which the v2 bridge mirrors).
+        //     success/failure here (on MSG.JOB.LOG, which the bridge mirrors).
         //   • get.summary / get.transit / get.files / get.logs — the SAI tab
-        //     reads, relayed to MSG.WS.SAI_* so an Auto-Jobs v2 flow can awaitBus
+        //     reads, relayed to MSG.WS.SAI_* so an Auto Jobs flow can awaitBus
         //     the reply (no DOM scrape). Wire shapes in tmp_research/sai-wire-capture.md.
         //   • transit.add/remove · file.download/delete · log.download/delete —
         //     mutation verdicts, relayed on a single MSG.WS.SAI_ACTION channel
@@ -1168,7 +1168,7 @@
     };
 
     // ─── SAI (Server Admin Interface) RPC ─────────────────────────────
-    // Granular helpers so the v2 bridge can orchestrate the full server-access
+    // Granular helpers so the bridge can orchestrate the full server-access
     // flow (active-access login OR hack-the-server). Server login uses ACTIVE
     // ACCESS — a grant from a job — via sai.login.with-access {serverId,
     // accessGrantId}; the password path (sai.login.attempt) spends
@@ -1203,7 +1203,7 @@
         return wsSendRpc('sai', 'hack.start', { serverId });
     };
 
-    // SAI subsystem ops (transit / files / logs) for the Auto-Jobs v2 flows.
+    // SAI subsystem ops (transit / files / logs) for the Auto Jobs flows.
     // Each is the WS request the in-game SAI terminal sends when you open a tab
     // or click a row — captured live (tmp_research/sai-wire-capture.md). The
     // reads' replies are relayed to MSG.WS.SAI_* (the flow awaitBus's them); the
@@ -1298,7 +1298,7 @@
     // before our preflight, instead of always slamming them back to HOME.
     let currentEndpoint = HOME_SERVER_ID;
     // Monotonic counter bumped on every CHANGE of currentEndpoint (ours OR the
-    // game's; optimistic-outbound OR server-corrected). The v2 SAI session-reuse
+    // game's; optimistic-outbound OR server-corrected). The SAI session-reuse
     // guard reads it: a remote-market refresh (auto-refresh) flips the endpoint
     // off a server and back, which tears down that server's SAI login even
     // though the endpoint mirror reads back as the same id — the epoch having
@@ -1310,7 +1310,7 @@
         endpointEpoch++;
     }
     // Expose for diagnostic logging from sibling modules (server-connect dbg
-    // line) + the v2 session-reuse guard. Read-only mirrors; the lets above
+    // line) + the session-reuse guard. Read-only mirrors; the lets above
     // remain the source of truth.
     Object.defineProperty(root, '__cor3CurrentEndpoint', { get: () => currentEndpoint, configurable: true });
     Object.defineProperty(root, '__cor3EndpointEpoch', { get: () => endpointEpoch, configurable: true });
@@ -1614,7 +1614,7 @@
         // NOTE: START_DECRYPT / STOP_DECRYPT are owned solely by solver-decrypt.js,
         // which now ref-counts owners ('user' vs 'flow'). A duplicate handler here
         // that flipped __solverAbort/__solverActive directly would bypass that
-        // ref-counting and let a v2 flow's STOP kill the user's standalone watcher.
+        // ref-counting and let a flow's STOP kill the user's standalone watcher.
         'COR3_KEEP_ALIVE': () => root.__cor3KeepAlive(),
         [MSG.GAME.ACCEPT_JOB]: (e) => root.__cor3AcceptJob(e.jobId, e.marketId),
         'COR3_COMPLETE_JOB': (e) => root.__cor3CompleteJob(e.jobId, e.marketId),

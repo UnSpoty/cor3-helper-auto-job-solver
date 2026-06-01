@@ -644,7 +644,7 @@
             else return;
             // Only RESOLVE on success. A snapshot that doesn't yet reflect the
             // mutation is NOT proof of failure — an unrelated/early loadout
-            // frame (concurrent refresh, native-UI change, the headless v2 flow
+            // frame (concurrent refresh, native-UI change, the headless Auto Jobs flow
             // driving the same helpers) can arrive before our change applies.
             // Leave the pending mutation armed: the watchdog timer fires the
             // no-reply toast if it never applies, and a later success snapshot
@@ -732,8 +732,8 @@
             return issues;
         }
 
-        // ─── Programmatic API for Auto-Jobs v2 (headless, no UI) ──────────
-        // Exposed via COR3.game.loadout so the v2 file-decryption flow can ask
+        // ─── Programmatic API for Auto Jobs (headless, no UI) ──────────
+        // Exposed via COR3.game.loadout so the file-decryption flow can ask
         // "can we decrypt <ext>?" and "make us able to" without driving the
         // panel UI. Reuses _checkInstallFeasibility + the __cor3Loadout* WS
         // helpers. No toasts, no i18n — pure logic + the supplied log fn.
@@ -787,7 +787,7 @@
         // needs it. If it isn't in yet (the user never opened the Loadout panel
         // this session), REQUEST it over WS (join-room loadout → loadout/get.options
         // → MSG.WS.LOADOUT → this._snapshot) and wait, instead of bailing with
-        // 'no-loadout-snapshot'. So ensureDecrypt/ensureHack — and thus the v2
+        // 'no-loadout-snapshot'. So ensureDecrypt/ensureHack — and thus the Auto Jobs
         // flows + the SAI bridge — work without manually warming the panel.
         async _ensureSnapshot(timeoutMs, log) {
             if (this._snapshot) return true;
@@ -1364,7 +1364,7 @@
     const loadoutPanel = new LoadoutPanelModule();
     Registry.register(loadoutPanel);
 
-    // Headless loadout API for Auto-Jobs v2's flow-v2 modules (MAIN world).
+    // Headless loadout API for Auto Jobs's flow modules (MAIN world).
     root.COR3.game = root.COR3.game || {};
     root.COR3.game.loadout = {
         getSnapshot: () => loadoutPanel._snapshot,

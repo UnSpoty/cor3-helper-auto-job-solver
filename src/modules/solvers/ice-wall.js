@@ -1362,6 +1362,15 @@
             clearOverlay();
             root.__iceWallActive = false;
             root.__iceWallAbort = false;
+            // Lost-wakeup guard: if an owner re-armed us in the narrow window
+            // between the abort being detected and this teardown, restart
+            // instead of dying (mirrors solver-decrypt).
+            if (root.__iceWallOwners && root.__iceWallOwners.size > 0) {
+                mod.debug(`owner present after teardown ([${[...root.__iceWallOwners].join(', ')}]) — restarting watch loop`);
+                root.__iceWallActive = true;
+                watchLoop(mod);
+                return;
+            }
             mod.info('ice-wall solver stopped');
         }
     }
@@ -1386,19 +1395,32 @@
             }));
             Bus.window.post(MSG.SOLVER.ICE_WALL_DB_REQUEST, null);
 
-            this.track(Bus.window.on(MSG.SOLVER.START_ICE_WALL, () => {
-                if (root.__iceWallActive && !root.__iceWallAbort) {
-                    this.debug('start ignored — already active');
-                    return;
-                }
-                root.__iceWallAbort = false;
+            // Owner-aware lifecycle (mirrors solver-decrypt). Two independent
+            // owners can ask this solver to run: 'user' (the standalone Auto
+            // ICE WALL toggle, auto-ice-wall.js) and 'flow' (an Auto Jobs flow
+            // / the Open-SAI hack path that needs the minigame solved). The
+            // watch loop runs while ANY owner is present; a STOP removes only
+            // that one owner and aborts the loop only once the set is empty. So
+            // a flow ending (owner 'flow') leaves a user's standalone watcher
+            // running — but a flow that STARTED it with the user toggle OFF
+            // (no 'user' owner) correctly stops it again.
+            root.__iceWallOwners = root.__iceWallOwners || new Set();
+
+            this.track(Bus.window.on(MSG.SOLVER.START_ICE_WALL, (env) => {
+                const owner = (env && env.owner) ? env.owner : 'user';
+                root.__iceWallOwners.add(owner);
+                root.__iceWallAbort = false;          // cancel any pending abort
+                if (root.__iceWallActive) { this.debug(`start ignored — already active (owner ${owner})`); return; }
                 root.__iceWallActive = true;
-                this.info('ice-wall solver started');
+                this.info(`ice-wall solver started (owner ${owner})`);
                 watchLoop(this);
             }));
-            this.track(Bus.window.on(MSG.SOLVER.STOP_ICE_WALL, () => {
+            this.track(Bus.window.on(MSG.SOLVER.STOP_ICE_WALL, (env) => {
+                const owner = (env && env.owner) ? env.owner : 'user';
+                root.__iceWallOwners.delete(owner);
+                if (root.__iceWallOwners.size > 0) { this.debug(`stop from '${owner}' ignored — still owned by [${[...root.__iceWallOwners].join(', ')}]`); return; }
                 root.__iceWallAbort = true;
-                this.info('ice-wall solver stop requested');
+                this.info(`ice-wall solver stop requested (owner ${owner})`);
             }));
         }
     }

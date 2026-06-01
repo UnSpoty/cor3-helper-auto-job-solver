@@ -332,9 +332,9 @@
         async start() {
             // Owner-aware lifecycle. Two independent owners can ask this solver to
             // run: 'user' (the standalone Auto-decrypt toggle, auto-decrypt.js) and
-            // 'flow' (an Auto-Jobs v2 flow that needs a minigame solved). The watch
+            // 'flow' (an Auto Jobs flow that needs a minigame solved). The watch
             // loop runs while ANY owner is present; a STOP removes only that one
-            // owner and aborts the loop only once the set is empty. So a v2 flow
+            // owner and aborts the loop only once the set is empty. So a flow
             // ending (owner 'flow') never kills the user's standalone watcher (owner
             // 'user'), and a user toggling off never kills an in-progress flow.
             root.__decryptOwners = root.__decryptOwners || new Set();

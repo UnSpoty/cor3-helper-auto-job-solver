@@ -1,12 +1,11 @@
-// Auto-Jobs v2 — File Decryption flow (MAIN world).
+// Auto Jobs — File Decryption flow (MAIN world).
 //
-// The v2 equivalent of v1's flows/file-decryption.js, written from scratch
-// per the v2 rules (no port, no fallbacks, log under its own id). It is the
+// Per the design rules: no fallbacks, log under its own id. It is the
 // MAIN-world executor for the JOB_FLOW node when the job type is
 // file_decryption — the most unique flow because it manages the loadout
 // before it can solve.
 //
-// Protocol (see constants.AJV2 / MSG.AUTOJOBS_V2):
+// Protocol (see constants.AJ / MSG.AUTOJOBS):
 //   isolated orchestrator → FLOW_START { jobId, marketId, type, fileCondition }
 //   this module            → FLOW_RESULT { jobId, marketId, success, didWork, reason }
 //
@@ -21,7 +20,7 @@
 //      mounts (config-hack / ICE WALL / Simple Decrypt).
 //   4. Run the standalone solvers (START_* — generic MSG.SOLVER infra) and
 //      wait for the minigame to close. The orchestrator is parked on
-//      FLOW_RESULT the whole time, so the v2 loop is effectively paused for
+//      FLOW_RESULT the whole time, so the loop is effectively paused for
 //      the duration of the minigame (the "JOB-FLOW must stop during Decrypt"
 //      requirement).
 //   5. Send job.complete and report success.
@@ -36,8 +35,8 @@
     if (!root.COR3 || !root.COR3.constants || !root.COR3.Bus) return;
     const { Module, Bus, Registry, dom, constants: C } = root.COR3;
     const MSG = C.MSG;
-    const AJV2 = MSG.AUTOJOBS_V2;
-    const NODE = C.AJV2.NODE;
+    const AJ = MSG.AUTOJOBS;
+    const NODE = C.AJ.NODE;
 
     function game() { return root.COR3.game || {}; }
 
@@ -107,20 +106,19 @@
     }
 
     const SOLVER_START = [MSG.SOLVER.START_DECRYPT, MSG.SOLVER.START_ICE_WALL, MSG.SOLVER.START_SIMPLE_DECRYPT];
-    // We drive the solvers under the 'flow' owner. solver-decrypt / solver-simple-
-    // decrypt ref-count owners, so STOP here removes only 'flow' — a user with the
-    // standalone Auto-decrypt / Auto-simple-decrypt toggle on (owner 'user') keeps
-    // their watcher after this flow. STOP_ICE_WALL is still omitted: the ICE WALL
-    // solver is a standalone always-on watcher (auto-ice-wall, default on) with NO
-    // owner ref-counting, so stopping it here would kill that watcher.
-    const SOLVER_STOP = [MSG.SOLVER.STOP_DECRYPT, MSG.SOLVER.STOP_SIMPLE_DECRYPT];
+    // We drive the solvers under the 'flow' owner. All three solvers ref-count
+    // owners, so STOP here removes only 'flow' — a user with the standalone
+    // Auto-decrypt / Auto-simple-decrypt / Auto ICE WALL toggle on (owner 'user')
+    // keeps their watcher after this flow. We DO stop ICE WALL: with Auto ICE WALL
+    // OFF (no 'user' owner), the watcher this flow started must not survive it.
+    const SOLVER_STOP = [MSG.SOLVER.STOP_DECRYPT, MSG.SOLVER.STOP_ICE_WALL, MSG.SOLVER.STOP_SIMPLE_DECRYPT];
     function startSolvers() { for (const m of SOLVER_START) Bus.window.post(m, { owner: 'flow' }); }
     function stopSolvers() { for (const m of SOLVER_STOP) Bus.window.post(m, { owner: 'flow' }); }
 
     // Returns the FLOW_RESULT body (minus jobId/marketId). `step(node)` reports
     // the live sub-step to the orchestrator so the Flow Map can highlight it.
     async function runFileDecryption(job, say) {
-        const step = (node) => Bus.window.post(AJV2.FLOW_STEP, { jobId: job.jobId, node });
+        const step = (node) => Bus.window.post(AJ.FLOW_STEP, { jobId: job.jobId, node });
 
         // ── MODULE:FD_READ_FORMAT ──
         step(NODE.FD_READ_FORMAT);
@@ -151,10 +149,10 @@
             return { success: true, didWork: false, retryable, reason: cap.reason };
         }
 
-        // v2-private abort flag (NOT v1's shared __jobManagerAbort) — reset at the
-        // start of each flow; FLOW_ABORT sets it true. Kept separate from v1 so a
-        // concurrent v1 flow can't clear our abort, nor we theirs.
-        root.__cor3AbortV2 = false;
+        // private abort flag (not a shared global) — reset at the
+        // start of each flow; FLOW_ABORT sets it true. Reset per flow so a
+        // concurrent flow cannot clear our abort, nor we theirs.
+        root.__cor3Abort = false;
 
         startSolvers();
         try {
@@ -179,20 +177,20 @@
 
             const appearDeadline = Date.now() + 90_000;
             let appeared = false;
-            while (Date.now() < appearDeadline && !root.__cor3AbortV2) {
+            while (Date.now() < appearDeadline && !root.__cor3Abort) {
                 if (findMinigame()) { appeared = true; break; }
                 await dom.sleep(250);
             }
-            if (root.__cor3AbortV2) { say('warn', 'aborted by orchestrator before minigame opened'); return { success: false, retryable: true, reason: 'aborted' }; }
+            if (root.__cor3Abort) { say('warn', 'aborted by orchestrator before minigame opened'); return { success: false, retryable: true, reason: 'aborted' }; }
             if (!appeared) { say('warn', 'minigame did not appear within 90s'); return { success: false, retryable: true, reason: 'minigame-did-not-appear' }; }
 
             say('info', 'minigame open — waiting for solver to finish');
-            // Bounded by the v2 abort flag: on STOP / FLOW_TIMEOUT the
-            // orchestrator posts FLOW_ABORT (→ __cor3AbortV2), so this can
+            // Bounded by the abort flag: on STOP / FLOW_TIMEOUT the
+            // orchestrator posts FLOW_ABORT (→ __cor3Abort), so this can
             // never spin forever on a minigame the solver fails to close (which
             // would otherwise hang the flow and leave `busy` stuck true).
-            while (findMinigame() && !root.__cor3AbortV2) await dom.sleep(200);
-            if (root.__cor3AbortV2) { say('warn', 'aborted by orchestrator during solve'); return { success: false, retryable: true, reason: 'aborted' }; }
+            while (findMinigame() && !root.__cor3Abort) await dom.sleep(200);
+            if (root.__cor3Abort) { say('warn', 'aborted by orchestrator during solve'); return { success: false, retryable: true, reason: 'aborted' }; }
 
             // ── MODULE:FD_COMPLETE ──
             step(NODE.FD_COMPLETE);
@@ -205,39 +203,39 @@
         }
     }
 
-    // Cross-module busy guard. ALL v2 flow modules (this one + every defineFlow
+    // Cross-module busy guard. ALL Auto Jobs flow modules (this one + every defineFlow
     // SAI flow) share ONE lock so at most one flow ever runs at a time. The
     // orchestrator already serialises dispatch (it parks on each FLOW_RESULT),
     // but on a FLOW_TIMEOUT it aborts and moves on while the old flow is still
     // unwinding; a per-module flag would let the next cycle's DIFFERENT-type flow
-    // start concurrently and reset the shared __cor3AbortV2 out from under the
+    // start concurrently and reset the shared __cor3Abort out from under the
     // aborting flow. A single global lock makes that next flow reply 'flow-busy'
     // and wait one cycle until the old one finishes, so only one flow ever touches
     // the SAI session / abort flag. `jobId` is the in-flight job (FLOW_ABORT matches it).
-    const lock = (root.__cor3FlowV2Lock = root.__cor3FlowV2Lock || { busy: false, jobId: null });
+    const lock = (root.__cor3FlowLock = root.__cor3FlowLock || { busy: false, jobId: null });
 
-    class FileDecryptionV2Flow extends Module {
+    class FileDecryptionFlow extends Module {
         constructor() {
             super({
-                id: 'flow-v2-file-decryption',
-                name: 'Flow v2: File Decryption',
+                id: 'flow-file-decryption',
+                name: 'Flow: File Decryption',
                 category: C.CATEGORY.GAME,
                 dependsOn: ['loadout-panel'],
-                owns: { busTypes: [AJV2.FLOW_START, AJV2.FLOW_RESULT, AJV2.FLOW_ABORT] },
+                owns: { busTypes: [AJ.FLOW_START, AJ.FLOW_RESULT, AJ.FLOW_ABORT] },
             });
         }
 
         async start() {
-            this.track(Bus.window.on(AJV2.FLOW_START, async (env) => {
+            this.track(Bus.window.on(AJ.FLOW_START, async (env) => {
                 // `jobType` (not `type`): the Bus envelope's own `type` field is
-                // the message id (COR3_AJV2_FLOW_START), so the job's type rides
+                // the message id (COR3_AJ_FLOW_START), so the job's type rides
                 // on a differently-named key.
                 if (!env || env.jobType !== C.FLOW.FILE_DECRYPTION) return;  // not this flow's type
                 if (lock.busy) {
                     this.warn(`FLOW_START ignored — a flow is already running (job ${env.jobId})`);
                     // flow-busy is transient (the previous job is still solving):
                     // tell the orchestrator to retry this job, NOT to bug it.
-                    Bus.window.post(AJV2.FLOW_RESULT, { jobId: env.jobId, marketId: env.marketId, success: false, retryable: true, reason: 'flow-busy' });
+                    Bus.window.post(AJ.FLOW_RESULT, { jobId: env.jobId, marketId: env.marketId, success: false, retryable: true, reason: 'flow-busy' });
                     return;
                 }
                 lock.busy = true;
@@ -246,11 +244,11 @@
                 this.info(`FLOW_START file_decryption job=${env.jobId} file="${env.fileCondition}"`);
                 try {
                     const r = await runFileDecryption(env, say);
-                    Bus.window.post(AJV2.FLOW_RESULT, Object.assign({ jobId: env.jobId, marketId: env.marketId }, r));
+                    Bus.window.post(AJ.FLOW_RESULT, Object.assign({ jobId: env.jobId, marketId: env.marketId }, r));
                     this.info(`FLOW_RESULT job=${env.jobId} → ${JSON.stringify(r)}`);
                 } catch (e) {
                     this.error(`flow crashed for job ${env.jobId}`, { error: String(e), stack: e && e.stack });
-                    Bus.window.post(AJV2.FLOW_RESULT, { jobId: env.jobId, marketId: env.marketId, success: false, reason: 'flow-crash' });
+                    Bus.window.post(AJ.FLOW_RESULT, { jobId: env.jobId, marketId: env.marketId, success: false, reason: 'flow-crash' });
                 } finally {
                     lock.busy = false;
                     lock.jobId = null;
@@ -262,14 +260,14 @@
             // sending job.complete. The SAI/Downloads helpers gate their own
             // loops on the same flag, so a parked openFolder/findFile unblocks
             // too. runFileDecryption resets the flag to false on its next start.
-            this.track(Bus.window.on(AJV2.FLOW_ABORT, (env) => {
+            this.track(Bus.window.on(AJ.FLOW_ABORT, (env) => {
                 if (env && env.jobId === lock.jobId) {
-                    root.__cor3AbortV2 = true;
+                    root.__cor3Abort = true;
                     this.warn(`FLOW_ABORT — aborting running job ${env.jobId}`);
                 }
             }));
         }
     }
 
-    Registry.register(new FileDecryptionV2Flow());
+    Registry.register(new FileDecryptionFlow());
 })();

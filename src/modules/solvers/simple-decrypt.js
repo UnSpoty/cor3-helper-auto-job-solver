@@ -120,9 +120,9 @@
         async start() {
             // Owner-aware lifecycle — mirrors solver-decrypt. 'user' = the
             // standalone Auto-simple-decrypt toggle (auto-simple-decrypt.js);
-            // 'flow' = an Auto-Jobs v2 flow. The loop runs while any owner is
+            // 'flow' = an Auto Jobs flow. The loop runs while any owner is
             // present; a STOP removes only that owner and aborts only when the set
-            // empties, so a v2 flow ending never kills the user's standalone watcher.
+            // empties, so a flow ending never kills the user's standalone watcher.
             root.__simpleDecryptOwners = root.__simpleDecryptOwners || new Set();
 
             this.track(Bus.window.on(MSG.SOLVER.START_SIMPLE_DECRYPT, (env) => {

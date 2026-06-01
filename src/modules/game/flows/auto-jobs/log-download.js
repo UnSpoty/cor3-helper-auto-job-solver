@@ -1,16 +1,17 @@
-// Auto-Jobs v2 — Log Deletion flow (MAIN world). jobType: log_deletion
-// (DeleteLog). Delete the job's target log(s) from the server, pure WS. Logs
-// are keyed by `seq` (details.logSeqs preferred; logNames → seq via get.logs).
-// (log.delete payload {serverId, seq} inferred from the consistent delete/remove
-// pattern — file.delete/transit.remove were verified live.)
+// Auto Jobs — Log Download flow (MAIN world). jobType: log_download
+// (DownloadLog). Download the job's target log(s) into Downloads, pure WS.
+// Logs are keyed by `seq`; the job carries details.logSeqs (preferred) and/or
+// logNames (resolved to seqs via get.logs by message match). No minigame.
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
-    if (!root.COR3 || !root.COR3.constants || !root.COR3.autoJobsV2 || !root.COR3.autoJobsV2.saiFlow) return;
+    if (!root.COR3 || !root.COR3.constants || !root.COR3.autoJobs || !root.COR3.autoJobs.saiFlow) return;
     const C = root.COR3.constants;
-    const NODE = C.AJV2.NODE;
-    const SF = root.COR3.autoJobsV2.saiFlow;
+    const NODE = C.AJ.NODE;
+    const SF = root.COR3.autoJobs.saiFlow;
     const NO_LOGS = new Set(C.NO_LOGS_SERVERS || []);
 
+    // Resolve the target log seqs: explicit job.logSeqs, else match job.logNames
+    // against the live get.logs messages.
     async function resolveSeqs(job, h) {
         const seqs = Array.isArray(job.logSeqs) ? job.logSeqs.filter((s) => Number.isInteger(s)) : [];
         if (seqs.length) return seqs;
@@ -28,39 +29,38 @@
     }
 
     SF.defineFlow({
-        id: 'flow-v2-log-deletion',
-        name: 'Flow v2: Log Deletion',
-        jobType: C.FLOW.LOG_DELETION,
+        id: 'flow-log-download',
+        name: 'Flow: Log Download',
+        jobType: C.FLOW.LOG_DOWNLOAD,
         // job: { jobId, marketId, jobType, serverId, serverType, serverName, logSeqs:[…], logNames:[…] }
         async run(job, h) {
             if (job.serverName && NO_LOGS.has(job.serverName)) return { success: true, didWork: false, reason: `server "${job.serverName}" has no Logs subsystem` };
 
-            h.step(NODE.LD_ACCESS);
+            h.step(NODE.LG_ACCESS);
             const acc = await h.ensureAccess(job.serverId, job.serverType, job.serverName);
             if (!acc.ok) return { success: false, retryable: acc.retryable !== false, reason: acc.reason };
             if (h.abort()) return { success: false, retryable: true, reason: 'aborted' };
 
-            h.step(NODE.LD_DELETE);
+            h.step(NODE.LG_DOWNLOAD);
             const seqs = await resolveSeqs(job, h);
-            // No target log resolved → the logs are already gone from the server →
-            // the deletion goal is met → complete (the server validates on
-            // job.complete; a name mismatch is rejected and re-dispatched). Never a
-            // permanent bug for a job that is likely already done.
-            if (!seqs.length) return { success: true, didWork: true, reason: 'no target log present — goal met' };
+            // No target log identified this cycle (not on the server yet, or a
+            // name-match miss) → RETRY rather than permanently bug a download that
+            // may become possible once the log appears.
+            if (!seqs.length) return { success: false, retryable: true, reason: 'no target log seq resolved from job — retrying' };
 
-            let deleted = 0;
+            let downloaded = 0;
             for (const seq of seqs) {
                 if (h.abort()) return { success: false, retryable: true, reason: 'aborted' };
-                const r = await h.awaitAction(15000, () => root.__cor3SaiLogDelete(job.serverId, seq));
+                const r = await h.awaitAction(15000, () => root.__cor3SaiLogDownload(job.serverId, seq));
                 const ok = r && !r.error;
-                if (ok) deleted++;
-                h.say('info', `log.delete seq=${seq} → ${ok ? 'deleted' : 'failed'}`);
+                if (ok) downloaded++;
+                h.say('info', `log.download seq=${seq} → ${ok ? 'downloaded' : 'failed'}`);
             }
-            if (deleted === 0) return { success: false, retryable: true, reason: 'no log deleted (all failed)' };
+            if (downloaded === 0) return { success: false, retryable: true, reason: 'no log downloaded (all failed)' };
 
-            h.step(NODE.LD_COMPLETE);
+            h.step(NODE.LG_COMPLETE);
             h.complete();
-            h.say('info', `Log Deletion: deleted ${deleted}/${seqs.length} on "${job.serverName}"`);
+            h.say('info', `Log Download: downloaded ${downloaded}/${seqs.length} from "${job.serverName}"`);
             return { success: true, didWork: true };
         },
     });

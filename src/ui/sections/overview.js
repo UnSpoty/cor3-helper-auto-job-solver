@@ -11,14 +11,13 @@
 //   • Alarms (collapsible <details>, default closed) — list + add form
 //   • Versions footer (web / system)
 //
-// Render architecture mirrors auto-jobs.js: the DOM skeleton is built
-// ONCE per activate() and kept alive while the tab is active. Sub-section
-// refreshes mutate only the specific text / attribute / list nodes
-// captured in `panel.nodes`, so a WS payload landing in chrome.storage
-// doesn't cause a visible repaint of the whole tab. The old design did
-// container.innerHTML='' on every Store.local change — with AUTOJOBS_STATE
-// and AUTOJOBS_QUEUE ticking through the orchestrator's state machine,
-// that produced visible flickering on a popup that nobody touched.
+// Render architecture: the DOM skeleton is built ONCE per activate() and
+// kept alive while the tab is active. Sub-section refreshes mutate only the
+// specific text / attribute / list nodes captured in `panel.nodes`, so a WS
+// payload landing in chrome.storage doesn't cause a visible repaint of the
+// whole tab. The old design did container.innerHTML='' on every Store.local
+// change — with the Auto Jobs board (AJ_JOB_QUEUE) ticking each cycle, that
+// produced visible flickering on a popup that nobody touched.
 //
 // Active expeditions and pending decisions live in the Expeditions tab.
 
@@ -106,7 +105,7 @@
             Store.sync.getOne(C.STORAGE_SYNC.AUTO_DECRYPT_ENABLED, false),
             // ICE WALL defaults ON to MATCH the solver module (auto-ice-wall.js
             // reads `true`): the toggle was showing OFF while the solver actually
-            // ran — the source of "v2 doesn't list ICE WALL as off".
+            // ran — the source of "Auto Jobs does not list ICE WALL as off".
             Store.sync.getOne(C.STORAGE_SYNC.AUTO_ICE_WALL_ENABLED, true),
             Store.sync.getOne(C.STORAGE_SYNC.AUTO_SIMPLE_DECRYPT_ENABLED, false),
             Store.sync.getOne(C.STORAGE_SYNC.DISABLE_SYSTEM_MESSAGES, false),
@@ -598,18 +597,18 @@
     // any market payload arrives (jobs, reset time, or reachability).
     async function refreshMarkets() {
         if (!panel) return;
-        const [market, dark, darkAvail, srm, srmAvail, queue, state] = await Promise.all([
+        const [market, dark, darkAvail, srm, srmAvail, board] = await Promise.all([
             Store.local.getOne(C.STORAGE_LOCAL.MARKET),
             Store.local.getOne(C.STORAGE_LOCAL.DARK_MARKET),
             Store.local.getOne(C.STORAGE_LOCAL.DARK_MARKET_AVAILABLE, true),
             Store.local.getOne(C.STORAGE_LOCAL.SRM_MARKET),
             Store.local.getOne(C.STORAGE_LOCAL.SRM_MARKET_AVAILABLE, true),
-            Store.local.getOne(C.STORAGE_LOCAL.AUTOJOBS_QUEUE, []),
-            Store.local.getOne(C.STORAGE_LOCAL.AUTOJOBS_STATE, { status: 'idle' }),
+            Store.local.getOne(C.STORAGE_LOCAL.AJ_JOB_QUEUE, null),
         ]);
-        applyMarket('home', market, true,      false, queue, state);
-        applyMarket('dark', dark,   darkAvail, true,  queue, state);
-        applyMarket('srm',  srm,    srmAvail,  true,  queue, state);
+        const boardJobs = (board && Array.isArray(board.jobs)) ? board.jobs : [];
+        applyMarket('home', market, true,      false, boardJobs);
+        applyMarket('dark', dark,   darkAvail, true,  boardJobs);
+        applyMarket('srm',  srm,    srmAvail,  true,  boardJobs);
     }
 
     // Update ONLY the breakdown text for all three market cards. Used
@@ -618,41 +617,41 @@
     // refreshMarkets because we don't touch timer instances.
     async function refreshInProgress() {
         if (!panel) return;
-        const [market, dark, darkAvail, srm, srmAvail, queue, state] = await Promise.all([
+        const [market, dark, darkAvail, srm, srmAvail, board] = await Promise.all([
             Store.local.getOne(C.STORAGE_LOCAL.MARKET),
             Store.local.getOne(C.STORAGE_LOCAL.DARK_MARKET),
             Store.local.getOne(C.STORAGE_LOCAL.DARK_MARKET_AVAILABLE, true),
             Store.local.getOne(C.STORAGE_LOCAL.SRM_MARKET),
             Store.local.getOne(C.STORAGE_LOCAL.SRM_MARKET_AVAILABLE, true),
-            Store.local.getOne(C.STORAGE_LOCAL.AUTOJOBS_QUEUE, []),
-            Store.local.getOne(C.STORAGE_LOCAL.AUTOJOBS_STATE, { status: 'idle' }),
+            Store.local.getOne(C.STORAGE_LOCAL.AJ_JOB_QUEUE, null),
         ]);
-        applyBreakdown('home', market, true,      false, queue, state);
-        applyBreakdown('dark', dark,   darkAvail, true,  queue, state);
-        applyBreakdown('srm',  srm,    srmAvail,  true,  queue, state);
+        const boardJobs = (board && Array.isArray(board.jobs)) ? board.jobs : [];
+        applyBreakdown('home', market, true,      false, boardJobs);
+        applyBreakdown('dark', dark,   darkAvail, true,  boardJobs);
+        applyBreakdown('srm',  srm,    srmAvail,  true,  boardJobs);
     }
 
-    function computeBreakdown(data, available, canBeUnreachable, queue, state) {
+    function computeBreakdown(data, available, canBeUnreachable, boardJobs) {
         const unreachable = canBeUnreachable && available === false;
         const jobs = (data && Array.isArray(data.jobs)) ? data.jobs : [];
         const myMarketId = data && data.marketId;
-        const inProgress = (queue || []).filter((q) => q.marketId === myMarketId).length
-            + (state && state.marketId === myMarketId && state.status === 'solving' ? 1 : 0);
+        // In-progress = Auto Jobs board entries for this market tagged TAKEN.
+        const inProgress = (boardJobs || []).filter((j) => j.marketId === myMarketId && j.status === 'TAKEN').length;
         return unreachable
             ? ` · ${t('overview.unreachable')}`
             : ` · ${jobs.length} ${t('overview.avail')}${inProgress > 0 ? ` · ${inProgress} ${t('overview.inProgress')}` : ''}`;
     }
 
-    function applyBreakdown(which, data, available, canBeUnreachable, queue, state) {
+    function applyBreakdown(which, data, available, canBeUnreachable, boardJobs) {
         const n = panel.markets[which];
         if (!n) return;
-        n.breakdownLabel.textContent = `${n.baseLabel}${computeBreakdown(data, available, canBeUnreachable, queue, state)}`;
+        n.breakdownLabel.textContent = `${n.baseLabel}${computeBreakdown(data, available, canBeUnreachable, boardJobs)}`;
     }
 
-    function applyMarket(which, data, available, canBeUnreachable, queue, state) {
+    function applyMarket(which, data, available, canBeUnreachable, boardJobs) {
         const n = panel.markets[which];
         if (!n) return;
-        applyBreakdown(which, data, available, canBeUnreachable, queue, state);
+        applyBreakdown(which, data, available, canBeUnreachable, boardJobs);
         const unreachable = canBeUnreachable && available === false;
         if (!unreachable && data && data.nextJobsResetAt) {
             placeTimer(n.timerHolder, data.nextJobsResetAt);
@@ -751,11 +750,10 @@
         // (see logs-panel.js for the same pattern).
         //
         // Dispatcher granularity: each storage key drives the narrowest
-        // refresh that depends on it. AUTOJOBS_STATE / AUTOJOBS_QUEUE only
-        // affect the in-progress count on market breakdown lines, so they
-        // route to refreshInProgress (no timer reinstantiation). Same idea
-        // for EXPEDITIONS — it only widens the Alarms timer-source dropdown,
-        // not the alarm list itself.
+        // refresh that depends on it. AJ_JOB_QUEUE only affects the in-progress
+        // count on market breakdown lines, so it routes to refreshInProgress
+        // (no timer reinstantiation). Same idea for EXPEDITIONS — it only
+        // widens the Alarms timer-source dropdown, not the alarm list itself.
         mount(container) {
             unsubLocal = Store.local.onChanged((changes) => {
                 if (!container.classList.contains('active')) return;
@@ -769,8 +767,7 @@
                 if (changes[C.STORAGE_LOCAL.SRM_MARKET_AVAILABLE])   hits.add('markets');
                 if (changes[C.STORAGE_LOCAL.WEB_VERSION])            hits.add('versions');
                 if (changes[C.STORAGE_LOCAL.SYSTEM_VERSION])         hits.add('versions');
-                if (changes[C.STORAGE_LOCAL.AUTOJOBS_QUEUE])         hits.add('inProgress');
-                if (changes[C.STORAGE_LOCAL.AUTOJOBS_STATE])         hits.add('inProgress');
+                if (changes[C.STORAGE_LOCAL.AJ_JOB_QUEUE])           hits.add('inProgress');
                 if (changes[C.STORAGE_LOCAL.EXPEDITIONS])            hits.add('expeditions');
                 if (hits.has('daily'))      refreshDaily();
                 if (hits.has('markets'))    refreshMarkets();

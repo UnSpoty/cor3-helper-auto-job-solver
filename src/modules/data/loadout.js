@@ -5,7 +5,7 @@
 // loadout/get.options frame, fired in reply to our join-room) and
 // persists it under STORAGE_LOCAL.LOADOUT. The raw snapshot is stored
 // as-is so future modules / popup can mine it freely; we also compute
-// a few derived fields up-front so the Auto-Jobs planner doesn't have
+// a few derived fields up-front so the Auto Jobs planner doesn't have
 // to recompute them every cycle:
 //
 //   decryptExtensions  Set of file extensions the currently EQUIPPED

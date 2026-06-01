@@ -24,8 +24,8 @@
             return { debug: 0, info: 1, ok: 1, separator: 1, warn: 2, error: 3 }[l || 'info'] ?? 1;
         }
         function passes(modId, entry) {
-            // moduleFilter may be an exact id (string) or a RegExp (e.g. the v2
-            // tab matches `auto-jobs-v2` + `flow-v2-*`).
+            // moduleFilter may be an exact id (string) or a RegExp (e.g. the Auto Jobs
+            // tab matches `auto-jobs` + `flow-*`).
             if (moduleFilter) {
                 if (moduleFilter instanceof RegExp) { if (!moduleFilter.test(modId)) return false; }
                 else if (modId !== moduleFilter) return false;

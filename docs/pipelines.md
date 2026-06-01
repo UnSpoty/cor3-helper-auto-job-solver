@@ -6,232 +6,19 @@ contracts see [module-spec.md](module-spec.md).
 
 ---
 
-## 1. Auto-Jobs (the big one)
+## 1. Auto Jobs
 
-State machine in `src/modules/automation/auto-jobs.js`. States:
-`idle | accepting | solving | completing`.
-
-### Boot
-
-```
-chrome.storage.sync.modules → Settings.load()
-chrome.storage.sync.autoJobsSettings → settings
-chrome.storage.local.autoJobsState → state (if status !== 'idle' AND age < 5 min)
-chrome.storage.local.autoJobsQueue → queue (filter out bugged jobs)
-chrome.storage.local.buggedJobIds → buggedJobs (drop expired entries)
-
-if settings.enabled → handleEnabledChange() starts the tick loop
-```
-
-### Tick loop (every 5 s while enabled)
-
-```
-                 ┌────────── watchdogs first ──────────┐
-                 │ accepting > 60 s   → reset to idle  │
-                 │ solving   > 3 min  → bug job + reset│
-                 │ completing > 45 s  → reset          │
-                 └─────────────────────────────────────┘
-                                  ↓
-                 if cooldownUntil > now → return
-                                  ↓
-                 if !debugMode AND queue.length > 0 AND state.idle:
-                    → executeNextFromQueue()
-                                  ↓
-                 if state !== idle → return
-                                  ↓
-                 if 30 s since lastMarketRefreshAt → request market refresh
-                                  ↓
-                 candidates = findCandidates()
-                 if candidates.length > 0:
-                    → acceptCandidatesBatch(candidates)
-```
-
-### Phase: SCAN (`findCandidates()`)
-
-```
-read marketData + darkMarketData from storage
-prune sentAcceptIds (drop ids no longer in either market)
-for each market jobs[]:
-    detectJobType(job) → type or null  (matches name keywords)
-    skip if enabledJobTypes[type] === false
-    skip if job.id in sentAcceptIds (within 3 min TTL)
-    skip if buggedJobs[job.id] (within 2 h TTL)
-    skip if extractServerFromJob(job) is in kdSkipServers
-return [{ ...job, marketId, source: 'home'|'dark', type }]
-```
-
-### Phase: ACCEPT (`acceptCandidatesBatch(candidates)`)
-
-```
-state = { status: 'accepting', jobName: 'Accepting N job(s)' }
-bulkPendingJobs = candidates.map(c => {id, marketId, type, name, apiJob: c})
-bulkSentOrder = []      ← filled as each accept is sent
-bulkAcceptCount = 0     ← incremented as each WS_JOB_ACCEPTED arrives
-bulkAcceptTotal = N
-bulkAcceptStartedAt = now()
-
-for i in 0..N:
-    delay = i * 1200 + 800 + jitter[0..300]
-    after delay:
-        sentAcceptIds[id] = now()
-        bulkSentOrder.push(pending)
-        Bus.window.post('COR3_ACCEPT_JOB', {jobId, marketId})
-
-(MAIN-world WS interceptor sends each accept; game responds with WS_JOB_ACCEPTED;
- isolated world's auto-jobs.onJobAccepted handles each response)
-```
-
-### `onJobAccepted(env)` — one per accept
-
-```
-bulkAcceptCount++
-sentJob = bulkSentOrder.shift()
-if env.error:
-    log + drop
-else:
-    if sentJob already in queue: skip
-    else:
-        taken  = recentJobs.find(r => r.status === 'TAKEN' && r.id === sentJob.id)
-        source = taken ?? sentJob.apiJob
-        r = resolveJobParams(sentJob.type, source)
-        if r.ok:
-            queue.push({jobId, marketId, jobType, jobName, ...r.params})
-        else:
-            log warn ("awaiting full conditions from server")
-            (will be picked up by tryResumeInProgressJob on next market refresh)
-
-if bulkAcceptCount >= bulkAcceptTotal:
-    saveQueue()
-    reset bulk* state
-    state → idle
-    schedule market refresh (500 ms)
-    schedule executeNextFromQueue (1000 ms)
-```
-
-### Phase: EXECUTE (`executeNextFromQueue`)
-
-```
-sortQueueByPriority()    ← serverPriorities; file_decryption is +Infinity
-job = queue[0]
-if jobType not in FLOW_DISPATCH: drop, recurse
-state = { status: 'solving', jobId, marketId, ...job params }
-solvingStartedAt = now()
-
-if debugMode AND FILE_BASED_TYPES.has(jobType):
-    write autoJobsPendingConfirm to storage
-    poll autoJobsConfirmResult for up to 5 min
-    if rejected/timeout: drop job, set 60 s cooldown, reset
-
-dispatchSolveFlow(job) → Bus.window.post(START_*_FLOW, {jobId, marketId, ...})
-                              ↓
-                        (MAIN-world flow module runs the solver)
-                              ↓
-              MINIGAME_DONE or MINIGAME_TIMEOUT comes back
-```
-
-### Phase: COMPLETE (`onMinigameDone` → `onJobCompleted`)
-
-```
-onMinigameDone(env):
-    if state.solving AND env.jobId === state.jobId:
-        state.status = 'completing'
-        completingStartedAt = now()
-        send 'COR3_COMPLETE_JOB' (after 2-3 s human delay)
-                  ↓
-            game responds with WS_JOB_COMPLETED
-                  ↓
-onJobCompleted(env):
-    if state.completing:
-        completedJobIds[state.jobId] = now()  ← prevents tryResume from re-queueing
-        reset state to idle
-        drop job from queue
-        request market refresh (2 s)
-        if queue not empty: executeNextFromQueue (3 s)
-```
-
-### Recovery: `tryResumeInProgressJob` (after every market refresh)
-
-Picks up TAKEN jobs from `recentJobs[]` that aren't already in queue and
-aren't recently completed. Used when:
-- Page reloaded mid-flow (state was solving, jobId set, but queue empty)
-- Accept completed but TAKEN copy didn't carry full conditions yet
-
-```
-read marketData + darkMarketData
-collect jobs where status === 'TAKEN' AND type detectable AND not bugged
-for each:
-    if already in queue: skip
-    if state.jobId === id: skip (current job)
-    if completedJobIds.has(id) AND age < 2 min: skip
-    r = resolveJobParams(type, job)
-    if r.ok: queue.push({...})
-
-if any added: saveQueue + executeNextFromQueue (2 s)
-```
-
-### State transitions diagram
-
-```
-            ┌─────────────────────────────────────────────┐
-            │                                             │
-            ↓                                             │
-        ┌───────┐ tick + candidates ─→ ┌──────────┐       │
-        │ idle  │                      │accepting │       │
-        └───┬───┘                      └─────┬────┘       │
-            │                                │            │
-            │ executeNextFromQueue           │ all WS     │
-            │                                │ accepted   │
-            │                                ↓            │
-            │                            ┌──────┐         │
-            │                            │ idle │         │
-            │                            └───┬──┘         │
-            │                                │            │
-            │ ←──────────────────────────────┘            │
-            ↓                                             │
-        ┌─────────┐ MINIGAME_DONE   ┌───────────┐         │
-        │ solving │ ─────────────→  │completing │         │
-        └────┬────┘                 └─────┬─────┘         │
-             │                            │ JOB_COMPLETED │
-             │                            ↓               │
-             │ MINIGAME_TIMEOUT       ┌──────┐            │
-             │   bug job +            │ idle │ ───────────┘
-             │   20s cooldown         └──────┘
-             │   reset to idle
-             ↓
-         ┌──────┐
-         │ idle │
-         └──────┘
-```
-
-### Cross-references in code
-
-| Phase | File | Function |
-|---|---|---|
-| Boot | `auto-jobs.js` | `init()`, `handleEnabledChange()` |
-| Tick | `auto-jobs.js` | `tick()` |
-| Scan | `auto-jobs.js` | `findCandidates()` |
-| Accept | `auto-jobs.js` | `acceptCandidatesBatch()`, `onJobAccepted()` |
-| Execute | `auto-jobs.js` | `executeNextFromQueue()`, `dispatchSolveFlow()` |
-| Resume | `auto-jobs.js` | `tryResumeInProgressJob()` |
-| Resolver | `auto-jobs.js` | `resolveJobParams()`, `extractServerFromJob()`, `extractIPsFromJob()`, `extractLogSeqsFromJob()` |
-| Flow runner | `flows/_shared.js` | `startFlow()`, `setWatching()`, `sendDone()`, `sendTimeout()` |
-
----
-
-## 1b. Auto-Jobs v2 (rewrite — Phase 1 done, Phase 2 in progress)
-
-A ground-up rewrite of the job pipeline under the **Auto-Jobs v2** tab. NOT a
-refactor of section 1 — different shape, different rules (see
-[CLAUDE.md → Active work](../CLAUDE.md) and
-[architecture.md → Auto-Jobs v2 subsystem](architecture.md#auto-jobs-v2-subsystem-orchestrator--stages)).
+The job pipeline behind the **Auto Jobs** tab (see
+[CLAUDE.md → Auto Jobs subsystem](../CLAUDE.md) and
+[architecture.md → Auto Jobs subsystem](architecture.md#auto-jobs-subsystem-orchestrator--stages)).
 
 **Shape.** One registered Module — the orchestrator
-(`automation/auto-jobs-v2.js`) — owns START/STOP and runs an infinite loop.
+(`automation/auto-jobs.js`) — owns START/STOP and runs an infinite loop.
 Each flowchart box is a plain *stage* object on
-`COR3.autoJobsV2.pipeline.stages.*` (`automation/auto-jobs-v2/pipeline.js`) with
+`COR3.autoJobs.pipeline.stages.*` (`automation/auto-jobs/pipeline.js`) with
 `async run(packet, ctx) -> packet`. A single growing **packet** flows
-stage→stage. The orchestrator stamps the active `AJV2.NODE.*` onto
-`STORAGE_LOCAL.AJV2_PIPELINE_STATE` so the popup Flow Map highlights the live
+stage→stage. The orchestrator stamps the active `AJ.NODE.*` onto
+`STORAGE_LOCAL.AJ_PIPELINE_STATE` so the popup Flow Map highlights the live
 node. Cadence: 10 s initial delay, then a cycle every 30 s. STOP invalidates the
 in-flight cycle via a generation token.
 
@@ -247,30 +34,30 @@ START → DELAY:10s → ┌─ GET_SERVERS → CHECK_SERVERS_ACCESABILITY
                     │                      NO ─┐                       │
                     │              NO ─────────┴→ CHECK_JOBS_CONDITION │
                     │                            → JOB_ACCEPTION       │
-                    │                            → JOB_FLOW  (Phase 2) │
+                    │                            → JOB_FLOW           │
                     └──────────────── DELAY:30s ←──────────────────────┘  (loop)
 ```
 
-### Stages (Phase 1 — implemented, isolated world)
+### Stages (isolated world)
 
-| Node (`AJV2.NODE`) | Stage | What it does |
+| Node (`AJ.NODE`) | Stage | What it does |
 |---|---|---|
 | `GET_SERVERS` | `getServers` | reads `NM_GRAPH`; throws loud if the map was never opened. Copies `home` + `servers[]` onto the packet. |
 | `CHECK_ACCESS` | `checkAccess` | per server: `accessible` / `hasSaiAccess` / `onCooldown` from the graph flags. Resolves market reachability (home always; dark/srm unless their `*_AVAILABLE` flag is `false`). |
 | `UPDATE_MARKETS` | `updateMarkets` | for each **reachable** market: post `MSG.GAME.REFRESH_*`, await a fresh frame (≤6 s), then read the envelope. Pulls BOTH `jobs[]` (tag `status:'AVAILABLE'`) and `recentJobs[]` TAKEN entries (tag `status:'TAKEN'`). Unreachable markets recorded with a reason, not refreshed. |
-| `JOB_QUEUE` | `jobQueue` | normalises rawJobs → queue entries `{id, name, type, status, serverName, marketSlot, marketId, rewardCredits, eligible, skipReason}`; writes `AJV2_JOB_QUEUE` for the UI. |
+| `JOB_QUEUE` | `jobQueue` | normalises rawJobs → queue entries `{id, name, type, status, serverName, marketSlot, marketId, rewardCredits, eligible, skipReason}`; writes `AJ_JOB_QUEUE` for the UI. |
 | `QUEUE_EMPTY?` | (orchestrator) | empty board+in-progress → fall through to DELAY and loop. |
 | `HAVE_TASKS_IN_PROGRESS?` | (orchestrator) | any queue job with `status==='TAKEN'`. |
-| `BUGGED?` | `buggedJobs` + orchestrator | reads `AJV2_BUGGED_JOBS`; if every in-progress job is bugged → `JOB:SKIP` (skip the cycle). |
-| `CHECK_CONDITION` | `checkCondition` | per job, eligibility + explicit `skipReason`. Wired conditions: bugged registry; and (only when the job has a server) server-known / K-D cooldown / accessible / user-SKIP / type-disabled (`AJV2_SERVER_OVERRIDES`). A missing related server is **not** a skip reason. |
+| `BUGGED?` | `buggedJobs` + orchestrator | reads `AJ_BUGGED_JOBS`; if every in-progress job is bugged → `JOB:SKIP` (skip the cycle). |
+| `CHECK_CONDITION` | `checkCondition` | per job, eligibility + explicit `skipReason`. Wired conditions: bugged registry; and (only when the job has a server) server-known / K-D cooldown / accessible / user-SKIP / type-disabled (`AJ_SERVER_OVERRIDES`). A missing related server is **not** a skip reason. |
 | `JOB_ACCEPTION` | `jobAcception` | acceptance set = eligible AND `status==='AVAILABLE'`. Decryption-priority: if any `file_decryption` jobs exist, accept ALL across ALL markets; else accept the other types. Posts `MSG.GAME.ACCEPT_JOB` paced 1.2 s apart, then `MSG.GAME.REVERT_ENDPOINT_TO_HOME` once. Confirmation is async — accepted jobs reappear as `TAKEN` next cycle. |
 
-### Phase 2 — `JOB_FLOW` (MAIN world, in progress)
+### `JOB_FLOW` (MAIN world)
 
 After JOB_ACCEPTION the orchestrator runs `_runJobFlows()`: it selects THIS
 cycle's **batch** of in-progress (TAKEN, non-bugged) jobs (`_selectBatch`),
-dispatches them to their MAIN flow-v2 modules one at a time and **parks on each
-result** — so the v2 loop is paused for the duration of each minigame (the
+dispatches them to their MAIN flow modules one at a time and **parks on each
+result** — so the loop is paused for the duration of each minigame (the
 "JOB-FLOW must stop during Decrypt" rule). Then it falls through to DELAY:30s and
 the next cycle picks the next batch.
 
@@ -302,26 +89,26 @@ then reverts to HOME. (READY_TO_COMPLETE, which runs before JOB_FLOW, is the
 self-healing net for any complete that fails.) The `file_decryption` pick is NOT
 deferred — it has no SAI session, so its flow completes itself as before.
 
-**Dispatch protocol** (v2-only, never the v1 `MSG.JOB.*` channel):
+**Dispatch protocol:**
 
 ```
-orchestrator (isolated) ──FLOW_START { jobId, marketId, jobType, serverId, serverType, serverName, batchKey, deferComplete, <targets> }──▶ flow-v2 module (MAIN)
-orchestrator (isolated) ◀──FLOW_RESULT { jobId, marketId, success, didWork, retryable, reason }── flow-v2 module (MAIN)
+orchestrator (isolated) ──FLOW_START { jobId, marketId, jobType, serverId, serverType, serverName, batchKey, deferComplete, <targets> }──▶ flow module (MAIN)
+orchestrator (isolated) ◀──FLOW_RESULT { jobId, marketId, success, didWork, retryable, reason }── flow module (MAIN)
 ```
 
 - `success:true, didWork:true`  → flow sent `job.complete` (`MSG.GAME.COMPLETE_JOB`).
-- `success:true, didWork:false` → can't do it (e.g. no decrypt capability) → orchestrator `MARK_AS_BUGGED` (`AJV2_BUGGED_JOBS`).
+- `success:true, didWork:false` → can't do it (e.g. no decrypt capability) → orchestrator `MARK_AS_BUGGED` (`AJ_BUGGED_JOBS`).
 - `success:false`               → runtime failure/timeout → `MARK_AS_BUGGED`.
-- timeout (`AJV2.LOOP.FLOW_TIMEOUT_MS`, 5 min) → no result → `MARK_AS_BUGGED`.
+- timeout (`AJ.LOOP.FLOW_TIMEOUT_MS`, 5 min) → no result → `MARK_AS_BUGGED`.
 
 While the flow runs it also posts `FLOW_STEP { jobId, node }` per sub-step; the
-orchestrator relays it to `AJV2_PIPELINE_STATE`, so the **Flow Map highlights the
+orchestrator relays it to `AJ_PIPELINE_STATE`, so the **Flow Map highlights the
 live decrypt step** (READ FORMAT → DECRYPT SW? → INSTALL/SWAP → OPEN DOWNLOADS →
 SOLVE → COMPLETE, or → MARK_AS_BUGGED). The file_decryption sub-flow is drawn as
 its own branch off the JOB_FLOW node.
 
-**`file_decryption` — implemented** (`game/flows/auto-jobs-v2/file-decryption.js`,
-id `flow-v2-file-decryption`). The most unique flow, because it manages the
+**`file_decryption` — implemented** (`game/flows/auto-jobs/file-decryption.js`,
+id `flow-file-decryption`). The most unique flow, because it manages the
 loadout:
 
 1. Parse the file format (extension) from the job's `fileCondition`.
@@ -346,23 +133,23 @@ loadout:
 **Remaining types — TODO:** ip_injection/ip_cleanup (Transit Access),
 file_elimination (FILES), log_deletion/log_download (LOGS),
 data_download/data_upload (Downloads widget), decrypt_extract (download then
-file_decryption logic) — each a new `flow-v2-*` module behind the same protocol,
+file_decryption logic) — each a new `flow-*` module behind the same protocol,
 plus `CLOSE_SAI_TERMINAL`.
 
 ### Cross-references in code
 
 | Part | File | Symbol |
 |---|---|---|
-| Orchestrator / loop | `automation/auto-jobs-v2.js` | `_loop()`, `_runCycle()`, `_ctx()`, `_setNode()` |
-| Stages | `automation/auto-jobs-v2/pipeline.js` | `stages.*`, `createPacket()`, `MARKET_SLOTS` |
-| Node ids / cadence | `shared/constants.js` | `AJV2.NODE`, `AJV2.LOOP` |
-| Flow Map | `ui/sections/auto-jobs-v2/flow-map.js` | `NODES`, `EDGES`, `edgePoints()` |
-| Job List | `ui/sections/auto-jobs-v2/job-list.js` | `render()`, `jobRow()` |
-| JOB_FLOW dispatch | `automation/auto-jobs-v2.js` | `_runJobFlows()`, `_selectBatch()`, `_dispatchFlow()`, `_completeBatchJobs()`, `_markBugged()` |
-| file_decryption flow (MAIN) | `game/flows/auto-jobs-v2/file-decryption.js` | `runFileDecryption()` |
+| Orchestrator / loop | `automation/auto-jobs.js` | `_loop()`, `_runCycle()`, `_ctx()`, `_setNode()` |
+| Stages | `automation/auto-jobs/pipeline.js` | `stages.*`, `createPacket()`, `MARKET_SLOTS` |
+| Node ids / cadence | `shared/constants.js` | `AJ.NODE`, `AJ.LOOP` |
+| Flow Map | `ui/sections/auto-jobs/flow-map.js` | `NODES`, `EDGES`, `edgePoints()` |
+| Job List | `ui/sections/auto-jobs/job-list.js` | `render()`, `jobRow()` |
+| JOB_FLOW dispatch | `automation/auto-jobs.js` | `_runJobFlows()`, `_selectBatch()`, `_dispatchFlow()`, `_completeBatchJobs()`, `_markBugged()` |
+| file_decryption flow (MAIN) | `game/flows/auto-jobs/file-decryption.js` | `runFileDecryption()` |
 | Loadout API (MAIN) | `game/loadout-panel.js` | `COR3.game.loadout.planDecrypt/ensureDecrypt` (DECRYPT/fileTypes) + `planHack/ensureHack` (HACK/serverTypes) |
 | Desktop window helper (MAIN) | `game/desktop-window.js` | `COR3.game.desktop.openApp/openAppAndWait/invokeReactClick/findClickableByText/selectServerTile/findPanelButton` |
-| MAIN bridge | `game/auto-jobs-v2-bridge.js` | Open SAI/Market — client-fn window-open + WS connect (`__cor3SetEndpoint`); `saiAccess()` = Active Access (`__cor3SaiGetLoginStatus`/`__cor3SaiLoginWithAccess`) OR hack (`ensureHack` → click hack-tool → solver → grant). No DOM coordinate clicks |
+| MAIN bridge | `game/auto-jobs-bridge.js` | Open SAI/Market — client-fn window-open + WS connect (`__cor3SetEndpoint`); `saiAccess()` = Active Access (`__cor3SaiGetLoginStatus`/`__cor3SaiLoginWithAccess`) OR hack (`ensureHack` → click hack-tool → solver → grant). No DOM coordinate clicks |
 
 ---
 
@@ -519,8 +306,8 @@ Helpers exposed:
 - `COR3.game.serverConnect.{connect, getSaiForServer}`
 - `COR3.game.sai.{findOrOpenSai, navigateToSection, waitForSaiContent, addIpViaModal, downloadsWatcher, find* row helpers, SEL}`
 - `COR3.game.flows.{isWatching, setWatching, sendDone, sendTimeout, userLog, startFlow}`
-- `COR3.game.desktop.{openApp, openAppAndWait, isAppOpen, invokeReactClick, findClickableByText, findServerTile, selectServerTile, findPanelButton, waitFor}` (v2 bridge — opens windows via React handlers, no DOM coordinate clicks)
-- `COR3.game.loadout.{getSnapshot, decryptExtensions, planDecrypt, ensureDecrypt, hackServerTypes, planHack, ensureHack}` (headless capability/install API for the v2 file-decryption flow + the bridge's Open-SAI hack path)
+- `COR3.game.desktop.{openApp, openAppAndWait, isAppOpen, invokeReactClick, findClickableByText, findServerTile, selectServerTile, findPanelButton, waitFor}` (the bridge — opens windows via React handlers, no DOM coordinate clicks)
+- `COR3.game.loadout.{getSnapshot, decryptExtensions, planDecrypt, ensureDecrypt, hackServerTypes, planHack, ensureHack}` (headless capability/install API for the file-decryption flow + the bridge's Open-SAI hack path)
 
 ---
 

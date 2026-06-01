@@ -29,7 +29,6 @@
             <section class="section" data-tab="overview"     id="section-overview"></section>
             <section class="section" data-tab="expeditions"  id="section-expeditions"></section>
             <section class="section" data-tab="autojobs"     id="section-autojobs"></section>
-            <section class="section" data-tab="autojobsV2"   id="section-autojobs-v2"></section>
             <section class="section" data-tab="modules"      id="section-modules"></section>
             <section class="section" data-tab="logs"         id="section-logs"></section>
         </main>
@@ -51,37 +50,26 @@
 
     <script src="../shared/i18n.js"></script>
     <script src="../shared/i18n-bridge.js"></script>
-    <script src="../shared/ajv2-eligibility.js"></script>
+    <script src="../shared/aj-eligibility.js"></script>
 
     <script src="components/icons.js"></script>
     <script src="components/timer.js"></script>
     <script src="components/module-card.js"></script>
     <script src="components/log-viewer.js"></script>
     <script src="components/pan-zoom.js"></script>
-    <script src="components/network-map.js"></script>
-
-    <!-- Phase 4: orchestrator + log-export run in the isolated content script
-         too, but the popup needs read-only access to STATE_LABELS/STATES and
-         the buildDebugBundle helper. action-cooldown is loaded for symmetry
-         (its Bus posts are no-ops here). -->
-    <script src="../modules/automation/auto-jobs/action-cooldown.js"></script>
-    <script src="../modules/automation/auto-jobs/log-export.js"></script>
-    <script src="../modules/automation/auto-jobs/orchestrator.js"></script>
 
     <script src="sections/overview.js"></script>
     <script src="sections/expeditions.js"></script>
-    <script src="sections/auto-jobs.js"></script>
 
-    <!-- Auto-Jobs v2 — isolated copy. log-export populates
-         COR3.autoJobsV2.logExport, network-map populates
-         COR3.uiComponentsV2.networkMap. Section consumes only those v2
-         namespaces, so toggling v2 cannot affect v1. -->
-    <script src="sections/auto-jobs-v2/log-export.js"></script>
-    <script src="sections/auto-jobs-v2/master-switches.js"></script>
-    <script src="sections/auto-jobs-v2/network-map.js"></script>
-    <script src="sections/auto-jobs-v2/job-list.js"></script>
-    <script src="sections/auto-jobs-v2/flow-map.js"></script>
-    <script src="sections/auto-jobs-v2/section.js"></script>
+    <!-- Auto Jobs section. log-export populates COR3.autoJobs.logExport;
+         network-map populates COR3.uiComponents.networkMap. Load network-map
+         before section.js so the attach API exists when the section mounts. -->
+    <script src="sections/auto-jobs/log-export.js"></script>
+    <script src="sections/auto-jobs/master-switches.js"></script>
+    <script src="sections/auto-jobs/network-map.js"></script>
+    <script src="sections/auto-jobs/job-list.js"></script>
+    <script src="sections/auto-jobs/flow-map.js"></script>
+    <script src="sections/auto-jobs/section.js"></script>
 
     <script src="sections/modules-panel.js"></script>
     <script src="sections/logs-panel.js"></script>

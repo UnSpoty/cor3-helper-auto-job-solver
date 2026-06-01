@@ -504,7 +504,7 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
 ::-webkit-scrollbar-thumb { background: var(--os-color-border-secondary); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--os-color-border); }
 
-/* ─── Auto-Jobs Phase 4 UI ─────────────────────────────────────────────
+/* ─── Auto Jobs Phase 4 UI ─────────────────────────────────────────────
    State-pill colour palette. The canonical state names from
    src/modules/automation/auto-jobs/orchestrator.js are projected onto
    class names by replacing underscores with hyphens (e.g. STATE
@@ -577,22 +577,22 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
    the popup palette stays correct even when new factions ship. */
 .aj-network-host { margin-top: 8px; }
 
-/* ─── Auto-Jobs v2 — Flow Map ─────────────────────────────────────────── */
+/* ─── Auto Jobs — Flow Map ─────────────────────────────────────────── */
 /* Canvas/grid/HUD reuse the .network-map-* classes; only the node/edge
    primitives are flow-specific. */
-.ajv2-flow-host { margin-top: 8px; }
-.ajv2-flow {
+.aj-flow-host { margin-top: 8px; }
+.aj-flow {
     background: var(--os-color-bg-card);
     border: 1px solid var(--os-color-border-secondary);
     border-radius: 6px;
     padding: 8px 10px;
 }
-.ajv2-flow-head {
+.aj-flow-head {
     display: flex;
     justify-content: space-between;
     align-items: center;
 }
-.ajv2-flow .network-map-canvas { margin-top: 6px; }
+.aj-flow .network-map-canvas { margin-top: 6px; }
 
 /* Idle hint (safety; the flowchart always has nodes). */
 .fm-empty { fill: var(--os-color-text-tertiary); font-size: 12px; }
@@ -645,7 +645,7 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
 .fm-node-delay .fm-node-label,
 .fm-node-decision .fm-node-label { text-transform: none; }
 
-/* Active highlight (driven by AJV2_PIPELINE_STATE.node). */
+/* Active highlight (driven by AJ_PIPELINE_STATE.node). */
 .fm-node.is-active { filter: url(#fm-glow); }
 .fm-node.is-active .fm-node-shape {
     stroke: var(--os-color-primary-hex);
@@ -661,48 +661,48 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
     transition: width 0.15s linear;
 }
 
-/* ─── Auto-Jobs v2 — Job List (between Network Map and Flow Map) ───────── */
-.ajv2-jobs-host { margin-top: 8px; }
-.ajv2-jobs {
+/* ─── Auto Jobs — Job List (between Network Map and Flow Map) ───────── */
+.aj-jobs-host { margin-top: 8px; }
+.aj-jobs {
     background: var(--os-color-bg-card);
     border: 1px solid var(--os-color-border-secondary);
     border-radius: 6px;
     padding: 8px 10px;
 }
-.ajv2-jobs-head {
+.aj-jobs-head {
     display: flex;
     justify-content: space-between;
     align-items: center;
     margin-bottom: 6px;
 }
-.ajv2-jobs-head-right { display: flex; align-items: center; gap: 8px; }
-.ajv2-jobs-refresh { padding: 1px 8px; line-height: 1.5; }
-.ajv2-jobs-list {
+.aj-jobs-head-right { display: flex; align-items: center; gap: 8px; }
+.aj-jobs-refresh { padding: 1px 8px; line-height: 1.5; }
+.aj-jobs-list {
     display: flex;
     flex-direction: column;
     gap: 6px;
     max-height: 260px;
     overflow-y: auto;
 }
-.ajv2-jobs-empty { padding: 6px 2px; }
-.ajv2-job {
+.aj-jobs-empty { padding: 6px 2px; }
+.aj-job {
     border: 1px solid var(--os-color-border-secondary);
     border-radius: 5px;
     padding: 6px 8px;
     background: var(--os-color-surface);
 }
-.ajv2-job.is-skip { opacity: 0.6; border-color: rgba(254, 73, 73, 0.4); }
-.ajv2-job-head { display: flex; align-items: center; gap: 6px; }
-.ajv2-job .job-name { font-weight: 600; color: var(--os-color-text); flex: 1; }
-.ajv2-job .job-meta { color: var(--os-color-text-tertiary); font-size: 11px; margin-top: 2px; }
-.ajv2-skip { background: rgba(254, 73, 73, 0.15); color: var(--os-color-danger); }
-.ajv2-skip-reason { color: var(--os-color-danger); margin-top: 3px; }
+.aj-job.is-skip { opacity: 0.6; border-color: rgba(254, 73, 73, 0.4); }
+.aj-job-head { display: flex; align-items: center; gap: 6px; }
+.aj-job .job-name { font-weight: 600; color: var(--os-color-text); flex: 1; }
+.aj-job .job-meta { color: var(--os-color-text-tertiary); font-size: 11px; margin-top: 2px; }
+.aj-skip { background: rgba(254, 73, 73, 0.15); color: var(--os-color-danger); }
+.aj-skip-reason { color: var(--os-color-danger); margin-top: 3px; }
 
-/* Live JOB_FLOW batch — banner + row highlight (AJV2_PIPELINE_STATE.batch).
+/* Live JOB_FLOW batch — banner + row highlight (AJ_PIPELINE_STATE.batch).
    The orchestrator runs every job of one server in a single batch; this shows
    it live: a pulsing banner, a soft outline on the batch rows, and a strong
    "running ▶" highlight on the one being dispatched right now. */
-.ajv2-batch-banner {
+.aj-batch-banner {
     display: flex;
     align-items: center;
     gap: 7px;
@@ -711,36 +711,36 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
     border-radius: 5px;
     background: rgba(118, 193, 209, 0.10);
 }
-.ajv2-batch-dot {
+.aj-batch-dot {
     width: 8px; height: 8px; flex: none;
     border-radius: 50%;
     background: var(--os-color-primary-hex);
     box-shadow: 0 0 6px var(--os-color-primary-hex);
-    animation: ajv2-batch-pulse 1.1s ease-in-out infinite;
+    animation: aj-batch-pulse 1.1s ease-in-out infinite;
 }
-@keyframes ajv2-batch-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
-.ajv2-batch-text { font-size: 12px; font-weight: 600; color: var(--os-color-primary-hex); }
-.ajv2-batch-meta {
+@keyframes aj-batch-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+.aj-batch-text { font-size: 12px; font-weight: 600; color: var(--os-color-primary-hex); }
+.aj-batch-meta {
     margin-left: auto;
     font-size: 11px;
     color: var(--os-color-text-secondary);
     text-transform: uppercase;
     letter-spacing: 0.4px;
 }
-.pill.ajv2-batch { background: rgba(118, 193, 209, 0.15); color: var(--os-color-primary-hex); }
-.pill.ajv2-batch-run { background: var(--os-color-primary-hex); color: var(--os-color-surface); }
-.ajv2-job.is-batch { border-color: rgba(118, 193, 209, 0.45); }
-.ajv2-job.is-running {
+.pill.aj-batch { background: rgba(118, 193, 209, 0.15); color: var(--os-color-primary-hex); }
+.pill.aj-batch-run { background: var(--os-color-primary-hex); color: var(--os-color-surface); }
+.aj-job.is-batch { border-color: rgba(118, 193, 209, 0.45); }
+.aj-job.is-running {
     border-color: var(--os-color-primary-hex);
     box-shadow: 0 0 0 1px var(--os-color-primary-hex), 0 0 8px rgba(118, 193, 209, 0.35);
     background: rgba(118, 193, 209, 0.07);
 }
 
 /* Per-market grouping inside the Job List. */
-.ajv2-jobs-list { gap: 10px; }
-.ajv2-market { display: flex; flex-direction: column; gap: 6px; }
-.ajv2-market.is-unreachable { opacity: 0.7; }
-.ajv2-market-head {
+.aj-jobs-list { gap: 10px; }
+.aj-market { display: flex; flex-direction: column; gap: 6px; }
+.aj-market.is-unreachable { opacity: 0.7; }
+.aj-market-head {
     display: flex;
     align-items: center;
     gap: 6px;
@@ -749,23 +749,23 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
     cursor: pointer;
     user-select: none;
 }
-.ajv2-market-head:hover .ajv2-market-name { color: var(--os-color-text); }
-.ajv2-market-caret {
+.aj-market-head:hover .aj-market-name { color: var(--os-color-text); }
+.aj-market-caret {
     width: 10px;
     font-size: 10px;
     color: var(--os-color-text-tertiary);
 }
-.ajv2-market-name {
+.aj-market-name {
     font-size: 11px;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.4px;
     color: var(--os-color-text-secondary);
 }
-.ajv2-market-count { margin-left: auto; }
-.ajv2-market-empty { padding: 2px 2px 4px; }
-.ajv2-market-jobs { display: flex; flex-direction: column; gap: 6px; }
-.ajv2-market-jobs.collapsed { display: none; }
+.aj-market-count { margin-left: auto; }
+.aj-market-empty { padding: 2px 2px 4px; }
+.aj-market-jobs { display: flex; flex-direction: column; gap: 6px; }
+.aj-market-jobs.collapsed { display: none; }
 
 .network-map-wrap {
     background: var(--os-color-bg-card);
@@ -828,7 +828,7 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
 /* Per-server job-type chips — reuse the Master Switches chip look
    (green = runs here / grey = muted here), just denser inside the menu. */
 .nm-ctx-chips { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 4px 3px; }
-.nm-ctx-chips .ajv2-ms-chip { font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 4px; }
+.nm-ctx-chips .aj-ms-chip { font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 4px; }
 .nm-ctx-reset {
     margin-top: 3px;
     font-size: 10px;
@@ -1023,7 +1023,7 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
 .nm-new-bg      { fill: #fff; }
 .nm-new-text    { font-size: 6px; fill: #000; font-weight: 700; text-anchor: middle; letter-spacing: 0.3px; pointer-events: none; }
 
-/* User-override corner badge (set from the v2 context menu). */
+/* User-override corner badge (set from the context menu). */
 .nm-node.nm-skip { opacity: 0.5; }
 .nm-ov-badge     { pointer-events: none; }
 .nm-skip-bg      { fill: rgba(254, 73, 73, 0.92); stroke: rgba(255, 255, 255, 0.85); stroke-width: 0.5; }
@@ -1167,33 +1167,33 @@ body.theme-amber-console .pill {
     background: transparent !important;
 }
 
-/* Auto-Jobs state pills inherit pill border-radius rules above; force
+/* Auto Jobs state pills inherit pill border-radius rules above; force
    transparent fill so the amber accent reads as outlined text. */
 body.theme-amber-console .aj-state {
     background: transparent !important;
     border: 1px solid currentColor;
 }
 
-/* ── Auto-Jobs v2 — Master Switches ─────────────────────────────────── */
-.ajv2-ms { padding: 0; overflow: hidden; }
-.ajv2-ms-head {
+/* ── Auto Jobs — Master Switches ─────────────────────────────────── */
+.aj-ms { padding: 0; overflow: hidden; }
+.aj-ms-head {
     display: flex; align-items: center; gap: 8px;
     width: 100%; padding: 8px 10px;
     background: transparent; border: 0; cursor: pointer;
     font: inherit; color: var(--os-color-text); text-align: left;
 }
-.ajv2-ms-head:hover { background: var(--os-color-hover-bg); }
-.ajv2-ms-caret { width: 10px; color: var(--os-color-text-tertiary); }
-.ajv2-ms-summary { margin-left: auto; }
-.ajv2-ms-body { padding: 4px 10px 10px; border-top: 1px solid var(--os-color-border); }
-.ajv2-ms-body.collapsed { display: none; }
-.ajv2-ms-group { margin-top: 8px; }
-.ajv2-ms-grp-title {
+.aj-ms-head:hover { background: var(--os-color-hover-bg); }
+.aj-ms-caret { width: 10px; color: var(--os-color-text-tertiary); }
+.aj-ms-summary { margin-left: auto; }
+.aj-ms-body { padding: 4px 10px 10px; border-top: 1px solid var(--os-color-border); }
+.aj-ms-body.collapsed { display: none; }
+.aj-ms-group { margin-top: 8px; }
+.aj-ms-grp-title {
     color: var(--os-color-text-secondary); font-size: 11px; font-weight: 600;
     text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;
 }
-.ajv2-ms-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.ajv2-ms-chip {
+.aj-ms-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.aj-ms-chip {
     padding: 3px 9px; border-radius: 5px;
     font: inherit; font-size: 11px; font-weight: 600;
     color: var(--os-color-text-tertiary);
@@ -1202,8 +1202,8 @@ body.theme-amber-console .aj-state {
     cursor: pointer; text-transform: capitalize;
     transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
 }
-.ajv2-ms-chip:hover { background: var(--os-color-hover-bg); }
-.ajv2-ms-chip.on {
+.aj-ms-chip:hover { background: var(--os-color-hover-bg); }
+.aj-ms-chip.on {
     color: var(--os-color-success, #4ade80);
     border-color: rgba(74, 222, 128, 0.45);
     background: rgba(74, 222, 128, 0.12);
@@ -1213,15 +1213,15 @@ body.theme-amber-console .aj-state {
 .nm-node.nm-market-off { opacity: 0.45; }
 
 /* Jobs — bugged state + un-bug button. */
-.pill.ajv2-bugged {
+.pill.aj-bugged {
     color: var(--os-color-danger); border: 1px solid var(--os-color-danger);
     background: rgba(254, 73, 73, 0.12);
 }
-.ajv2-job.is-bugged { opacity: 0.85; }
-.ajv2-unbug {
+.aj-job.is-bugged { opacity: 0.85; }
+.aj-unbug {
     margin-left: 6px; padding: 0 6px; line-height: 16px;
     font: inherit; font-size: 11px; color: var(--os-color-text-tertiary);
     background: transparent; border: 1px solid var(--os-color-border);
     border-radius: 4px; cursor: pointer;
 }
-.ajv2-unbug:hover { color: var(--os-color-danger); border-color: var(--os-color-danger); }
+.aj-unbug:hover { color: var(--os-color-danger); border-color: var(--os-color-danger); }

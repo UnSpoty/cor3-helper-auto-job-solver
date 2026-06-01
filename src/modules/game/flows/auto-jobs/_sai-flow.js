@@ -1,4 +1,4 @@
-// Auto-Jobs v2 — shared SAI-flow helper (MAIN world).
+// Auto Jobs — shared SAI-flow helper (MAIN world).
 //
 // The 7 SAI job flows (ip_injection, ip_cleanup, file_elimination,
 // data_download, file_upload, log_download, log_deletion) — and the front half
@@ -13,7 +13,7 @@
 //     software (COR3.game.loadout.ensureHack), click the hack-tool row, let the
 //     standalone solver win, then log in with the freshly-minted grant. (The
 //     hack path is the ONLY part that needs the on-screen SAI window — it
-//     mirrors the v2 bridge's saiAccess; the bridge IIFE itself is left
+//     mirrors the bridge's saiAccess; the bridge IIFE itself is left
 //     untouched.)
 //   • getTransit / getFiles / getLogs(serverId) — fire the __cor3SaiGet* WS
 //     helper, resolve its reply data off MSG.WS.SAI_* (no DOM scrape).
@@ -24,8 +24,8 @@
 //     COR3.Module with the EXACT FLOW_START/FLOW_RESULT/FLOW_ABORT + busy-guard
 //     boilerplate of file-decryption.js, and calls spec.run(job, helpers).
 //
-// All v2 rules honored: speaks MSG.AUTOJOBS_V2 directly (no v1 flows infra),
-// logs under each flow's own 'flow-v2-*' id, no silent fallbacks (a missing
+// Speaks MSG.AUTOJOBS directly (no shared flow infra),
+// logs under each flow's own 'flow-*' id, no silent fallbacks (a missing
 // precondition returns an explicit retryable/bug FLOW_RESULT body).
 
 (function () {
@@ -33,14 +33,14 @@
     if (!root.COR3 || !root.COR3.constants || !root.COR3.Bus) return;
     const { Module, Bus, Registry, dom, constants: C } = root.COR3;
     const MSG = C.MSG;
-    const AJV2 = MSG.AUTOJOBS_V2;
+    const AJ = MSG.AUTOJOBS;
     const sleep = (ms) => dom.sleep(ms);
 
-    // ONE cross-module busy guard shared by every v2 flow (this factory's SAI
+    // ONE cross-module busy guard shared by every Auto Jobs flow (this factory's SAI
     // flows + file-decryption.js, which defines the same global). At most one
-    // flow runs at a time across the whole v2 flow subsystem — see the rationale
+    // flow runs at a time across the whole Auto Jobs flow subsystem — see the rationale
     // in file-decryption.js. `jobId` is the in-flight job (FLOW_ABORT matches it).
-    const lock = (root.__cor3FlowV2Lock = root.__cor3FlowV2Lock || { busy: false, jobId: null });
+    const lock = (root.__cor3FlowLock = root.__cor3FlowLock || { busy: false, jobId: null });
 
     // Fire trigger(), resolve with the next Bus.window `type` envelope (or null
     // on timeout). Same primitive file-decryption.js uses for desktop replies.
@@ -84,7 +84,7 @@
     // ── Server access ──────────────────────────────────────────────────────
     const pickGrant = (s) => ((s && s.activeAccesses) || []).find((g) => g.sourceType === 'task_access') || ((s && s.activeAccesses) || [])[0] || null;
 
-    // Hack path (only when no grant). Mirrors auto-jobs-v2-bridge.js saiAccess —
+    // Hack path (only when no grant). Mirrors auto-jobs-bridge.js saiAccess —
     // needs the SAI terminal window open to click the hack-tool row.
     const MINIGAME_SELS = [
         '[data-sentry-element="LogContentStyled"][data-sentry-source-file="config-hack-application.tsx"]',
@@ -94,12 +94,11 @@
     ];
     const findMinigame = () => { for (const s of MINIGAME_SELS) if (document.querySelector(s)) return true; return false; };
     const SOLVER_START = [MSG.SOLVER.START_DECRYPT, MSG.SOLVER.START_ICE_WALL, MSG.SOLVER.START_SIMPLE_DECRYPT];
-    // Driven under the 'flow' owner: solver-decrypt / solver-simple-decrypt
-    // ref-count owners, so STOP removes only 'flow' and leaves a user's standalone
-    // watcher (owner 'user') running. STOP_ICE_WALL omitted — ICE WALL is a
-    // standalone always-on watcher (auto-ice-wall) with no ref-counting that must
-    // survive a flow / cycle (see file-decryption.js).
-    const SOLVER_STOP = [MSG.SOLVER.STOP_DECRYPT, MSG.SOLVER.STOP_SIMPLE_DECRYPT];
+    // Driven under the 'flow' owner: all three solvers ref-count owners, so STOP
+    // removes only 'flow' and leaves a user's standalone watcher (owner 'user')
+    // running. We DO stop ICE WALL here so that, with Auto ICE WALL OFF (no
+    // 'user' owner), the watcher this flow started does not survive the flow.
+    const SOLVER_STOP = [MSG.SOLVER.STOP_DECRYPT, MSG.SOLVER.STOP_ICE_WALL, MSG.SOLVER.STOP_SIMPLE_DECRYPT];
     const startSolvers = () => { for (const m of SOLVER_START) Bus.window.post(m, { owner: 'flow' }); };
     const stopSolvers = () => { for (const m of SOLVER_STOP) Bus.window.post(m, { owner: 'flow' }); };
     function findHackToolRow(D, moduleName) {
@@ -108,7 +107,7 @@
     }
     async function pollForGrant(serverId, timeoutMs) {
         const dl = Date.now() + timeoutMs;
-        while (Date.now() < dl && !root.__cor3AbortV2) {
+        while (Date.now() < dl && !root.__cor3Abort) {
             const g = pickGrant(await root.__cor3SaiGetLoginStatus(serverId));
             if (g) return g;
             await sleep(2000);
@@ -169,7 +168,7 @@
             // Cap below the orchestrator's FLOW_TIMEOUT_MS so it never aborts us
             // mid-poll (which would discard a still-winnable hack); a failed hack
             // just fails ~a minute sooner and retries next cycle.
-            const cap = Math.max(60000, C.AJV2.LOOP.FLOW_TIMEOUT_MS - 60000);
+            const cap = Math.max(60000, C.AJ.LOOP.FLOW_TIMEOUT_MS - 60000);
             const pollMs = Math.min((fresh ? mg.timerDurationMs : 300000) + 15000, cap);
             const grant = await pollForGrant(serverId, pollMs);
             return grant ? { grant } : RETRY('hack-no-grant-after-solve');
@@ -188,7 +187,7 @@
         }
         root.__cor3SetEndpoint(serverId);
         await sleep(1500);
-        if (root.__cor3AbortV2) return { ok: false, retryable: true, reason: 'aborted' };
+        if (root.__cor3Abort) return { ok: false, retryable: true, reason: 'aborted' };
         let status = await root.__cor3SaiGetLoginStatus(serverId);
         if (!status) return { ok: false, retryable: true, reason: 'no-login-status' };
         let grant = pickGrant(status);
@@ -248,34 +247,34 @@
     // busy-guard envelope as file-decryption.js. spec.run(job, helpers) returns
     // the FLOW_RESULT body (minus jobId/marketId).
     function defineFlow(spec) {
-        class V2SaiFlow extends Module {
+        class SaiFlow extends Module {
             constructor() {
                 super({
                     id: spec.id,
                     name: spec.name,
                     category: C.CATEGORY.GAME,
                     dependsOn: spec.dependsOn || ['loadout-panel'],
-                    owns: { busTypes: [AJV2.FLOW_START, AJV2.FLOW_RESULT, AJV2.FLOW_ABORT] },
+                    owns: { busTypes: [AJ.FLOW_START, AJ.FLOW_RESULT, AJ.FLOW_ABORT] },
                 });
             }
             async start() {
-                this.track(Bus.window.on(AJV2.FLOW_START, async (env) => {
+                this.track(Bus.window.on(AJ.FLOW_START, async (env) => {
                     if (!env || env.jobType !== spec.jobType) return;   // not this flow's type
                     if (lock.busy) {
                         this.warn(`FLOW_START ignored — a flow is already running (job ${env.jobId})`);
-                        Bus.window.post(AJV2.FLOW_RESULT, { jobId: env.jobId, marketId: env.marketId, success: false, retryable: true, reason: 'flow-busy' });
+                        Bus.window.post(AJ.FLOW_RESULT, { jobId: env.jobId, marketId: env.marketId, success: false, retryable: true, reason: 'flow-busy' });
                         return;
                     }
                     lock.busy = true;
                     lock.jobId = env.jobId;
-                    // v2-private abort flag (NOT v1's shared __jobManagerAbort) so
-                    // a concurrent v1 flow can't clear our abort, nor we theirs.
-                    root.__cor3AbortV2 = false;   // a prior aborted flow may have left it set
+                    // private abort flag (not a shared global) so
+                    // a concurrent flow cannot clear our abort, nor we theirs.
+                    root.__cor3Abort = false;   // a prior aborted flow may have left it set
                     const say = (lvl, m, ctx) => { const f = this[lvl] || this.info; f.call(this, m, ctx); };
-                    const step = (node) => Bus.window.post(AJV2.FLOW_STEP, { jobId: env.jobId, node });
+                    const step = (node) => Bus.window.post(AJ.FLOW_STEP, { jobId: env.jobId, node });
                     const helpers = {
                         root, dom, C, MSG, sleep, say, step,
-                        abort: () => !!root.__cor3AbortV2,
+                        abort: () => !!root.__cor3Abort,
                         // batchKey is captured from the FLOW_START envelope so a
                         // flow's run() keeps calling ensureAccess(sid, type, name)
                         // unchanged — the per-batch login reuse is transparent.
@@ -296,7 +295,7 @@
                     this.info(`FLOW_START ${spec.jobType} job=${env.jobId} server="${env.serverName || ''}"`);
                     try {
                         const r = await spec.run(env, helpers);
-                        Bus.window.post(AJV2.FLOW_RESULT, Object.assign({ jobId: env.jobId, marketId: env.marketId }, r));
+                        Bus.window.post(AJ.FLOW_RESULT, Object.assign({ jobId: env.jobId, marketId: env.marketId }, r));
                         this.info(`FLOW_RESULT job=${env.jobId} → ${JSON.stringify(r)}`);
                     } catch (e) {
                         this.error(`flow crashed for job ${env.jobId}`, { error: String(e), stack: e && e.stack });
@@ -305,26 +304,26 @@
                         // a TRANSIENT failure and retried, NOT a permanent bug; a
                         // genuinely-impossible job surfaces via an explicit
                         // retryable:false result, not a crash.
-                        Bus.window.post(AJV2.FLOW_RESULT, { jobId: env.jobId, marketId: env.marketId, success: false, retryable: true, reason: 'flow-crash' });
+                        Bus.window.post(AJ.FLOW_RESULT, { jobId: env.jobId, marketId: env.marketId, success: false, retryable: true, reason: 'flow-crash' });
                     } finally {
                         lock.busy = false;
                         lock.jobId = null;
                     }
                 }));
 
-                this.track(Bus.window.on(AJV2.FLOW_ABORT, (env) => {
+                this.track(Bus.window.on(AJ.FLOW_ABORT, (env) => {
                     if (env && env.jobId === lock.jobId) {
-                        root.__cor3AbortV2 = true;
+                        root.__cor3Abort = true;
                         this.warn(`FLOW_ABORT — aborting running job ${env.jobId}`);
                     }
                 }));
             }
         }
-        Registry.register(new V2SaiFlow());
+        Registry.register(new SaiFlow());
     }
 
-    root.COR3.autoJobsV2 = root.COR3.autoJobsV2 || {};
-    root.COR3.autoJobsV2.saiFlow = {
+    root.COR3.autoJobs = root.COR3.autoJobs || {};
+    root.COR3.autoJobs.saiFlow = {
         awaitBus, awaitAction, getTransit, getFiles, getLogs, findDownloadsFileId, ensureAccess, defineFlow,
         startSolvers, stopSolvers, findMinigame,
     };

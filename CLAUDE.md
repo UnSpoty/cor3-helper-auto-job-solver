@@ -11,108 +11,102 @@ Every feature is a `COR3.Module` registered with `COR3.Registry`. Five
 execution contexts share a global `window.COR3.*` namespace via classic
 IIFE-loaded scripts. No build step.
 
-## Active work: Auto-Jobs v2
+## Auto Jobs subsystem
 
-A rewrite of the Auto-Jobs subsystem is in progress under the
-**"Auto-Jobs v2"** tab. Code lives in
-[src/ui/sections/auto-jobs-v2/](src/ui/sections/auto-jobs-v2/) (UI) and
-[src/modules/automation/auto-jobs-v2.js](src/modules/automation/auto-jobs-v2.js)
-+ [src/modules/automation/auto-jobs-v2/pipeline.js](src/modules/automation/auto-jobs-v2/pipeline.js)
+The **Auto Jobs** tab accepts + completes market jobs end to end. Code lives in
+[src/ui/sections/auto-jobs/](src/ui/sections/auto-jobs/) (UI) and
+[src/modules/automation/auto-jobs.js](src/modules/automation/auto-jobs.js)
++ [src/modules/automation/auto-jobs/pipeline.js](src/modules/automation/auto-jobs/pipeline.js)
 (logic), with a MAIN-world bridge at
-[src/modules/game/auto-jobs-v2-bridge.js](src/modules/game/auto-jobs-v2-bridge.js).
-It uses the isolated storage key `STORAGE_SYNC.AUTOJOBS_V2_SETTINGS`. The v2
-namespaces are `COR3.autoJobsV2.*` and `COR3.uiComponentsV2.*`.
+[src/modules/game/auto-jobs-bridge.js](src/modules/game/auto-jobs-bridge.js).
+It uses the isolated storage key `STORAGE_SYNC.AUTOJOBS_SETTINGS`. The logic
+namespace is `COR3.autoJobs.*`; the popup UI registers under
+`COR3.uiComponents.*`.
 
-**Architecture:** ONE registered `COR3.Module` (`auto-jobs-v2`, the
+**Architecture:** ONE registered `COR3.Module` (`auto-jobs`, the
 orchestrator) owns START/STOP and runs an infinite loop; the pipeline "modules"
-are plain stage objects under `COR3.autoJobsV2.pipeline.stages.*`, each with a
+are plain stage objects under `COR3.autoJobs.pipeline.stages.*`, each with a
 uniform `async run(packet, ctx) -> packet` contract. A single growing **packet**
-envelope flows stage→stage. Flowchart node ids live in `constants.AJV2.NODE`
+envelope flows stage→stage. Flowchart node ids live in `constants.AJ.NODE`
 (shared between orchestrator execution and the Flow Map drawing); live progress
-is published to `STORAGE_LOCAL.AJV2_PIPELINE_STATE`. See
-[docs/pipelines.md → Auto-Jobs v2](docs/pipelines.md) for the full diagram.
+is published to `STORAGE_LOCAL.AJ_PIPELINE_STATE`. See
+[docs/pipelines.md → Auto Jobs](docs/pipelines.md) for the full diagram.
 
-**Status (current):**
-- **Phase 1 — DONE (isolated world):** the planning + acceptance half runs end
-  to end: `GET_SERVERS → CHECK_ACCESS → UPDATE_MARKETS → JOB_QUEUE →
-  QUEUE:EMPTY? → HAVE_TASKS_IN_PROGRESS? → BUGGED? → JOB:SKIP →
-  CHECK_CONDITION → JOB_ACCEPTION`. UPDATE_MARKETS reads both the market
-  envelope's `jobs[]` (status `AVAILABLE`) and `recentJobs[]` (status `TAKEN` =
-  in-progress); JOB_ACCEPTION accepts via the generic `MSG.GAME.ACCEPT_JOB` +
-  `REVERT_ENDPOINT_TO_HOME` (decryption-priority, all markets). The bridge
-  currently handles only the Network-Map context-menu Open SAI / Open Market
-  actions, and drives them **without DOM coordinate clicks**: it opens the
-  Network Map / SAI windows via the game's own React handlers
-  (`COR3.game.desktop`, see `src/modules/game/desktop-window.js`) and navigates
-  by direct WS request — Connect = `__cor3SetEndpoint` (`network-map.set.endpoint`).
-  Open SAI then gains access via `saiAccess()`: `__cor3SaiGetLoginStatus` reads
-  `activeAccesses[]` + `hackTools[]`; with an **Active Access** grant it
-  `__cor3SaiLoginWithAccess` (`sai.login.with-access`, no password/passhack);
-  with **no grant** it HACKS the server — `COR3.game.loadout.ensureHack(serverType)`
-  installs a covering HACK software so a hack tool appears, clicks the hack-tool
-  row (mounts the minigame), the standalone solver wins, and the freshly-granted
-  access logs in. The poll budget is sized to the LAUNCHED minigame's own
-  `timerDurationMs` (interceptor `__cor3LastMinigame`), not a hardcode. The only
-  residual screen interaction is selecting a server node (the SVG map exposes no
-  callable selection handler) — one targeted pointer tap on the located tile.
-- **Phase 2 — IN PROGRESS (MAIN world): `JOB_FLOW`.** The orchestrator now
-  dispatches each in-progress (TAKEN) job to a MAIN flow-v2 module via
-  `MSG.AUTOJOBS_V2.FLOW_START` and parks on `FLOW_RESULT` (so the loop pauses
-  for the minigame). A failed/impossible job is written to `AJV2_BUGGED_JOBS`
-  (MARK_AS_BUGGED); completion uses `MSG.GAME.COMPLETE_JOB`.
-  - **`file_decryption` — DONE** (`src/modules/game/flows/auto-jobs-v2/file-decryption.js`,
-    id `flow-v2-file-decryption`): reads the file format, uses the headless
-    loadout API `COR3.game.loadout.ensureDecrypt(ext)` (install/swap owned
-    software or bug-out if none), then finds + opens the file **purely over WS**
-    (no DOM scrape): `__cor3DesktopOpenFolder` (Downloads) → match `files[]` by
+**Planning + acceptance half (isolated world):** `GET_SERVERS → CHECK_ACCESS →
+UPDATE_MARKETS → JOB_QUEUE → QUEUE:EMPTY? → HAVE_TASKS_IN_PROGRESS? → BUGGED? →
+JOB:SKIP → CHECK_CONDITION → JOB_ACCEPTION`. UPDATE_MARKETS reads both the
+market envelope's `jobs[]` (status `AVAILABLE`) and `recentJobs[]` (status
+`TAKEN` = in-progress); JOB_ACCEPTION accepts via the generic
+`MSG.GAME.ACCEPT_JOB` + `REVERT_ENDPOINT_TO_HOME` (decryption-priority, all
+markets). The orchestrator also owns persisting `NM_GRAPH` (it subscribes to
+`MSG.GAME.NM_GRAPH`, fires an initial `REQUEST_NM_MAP`, re-requests on a long
+timer while idle, and relays the popup's `rescanNetworkMap` action).
+
+**JOB_FLOW (MAIN world):** the orchestrator dispatches each in-progress (TAKEN)
+job to a MAIN flow module via `MSG.AUTOJOBS.FLOW_START` and parks on
+`FLOW_RESULT` (so the loop pauses for the minigame). An impossible job is
+written to `AJ_BUGGED_JOBS` (MARK_AS_BUGGED); a transient failure is retried
+once then bugged; completion uses `MSG.GAME.COMPLETE_JOB`. Flow modules live in
+[src/modules/game/flows/auto-jobs/](src/modules/game/flows/auto-jobs/) (ids
+`flow-*`):
+  - **`file_decryption`** (`flows/auto-jobs/file-decryption.js`, id
+    `flow-file-decryption`): reads the file format, uses the headless loadout
+    API `COR3.game.loadout.ensureDecrypt(ext)` (install/swap owned software or
+    bug-out if none), then finds + opens the file **purely over WS** (no DOM
+    scrape): `__cor3DesktopOpenFolder` (Downloads) → match `files[]` by
     name/ext → `__cor3DesktopOpenFile(fileId)`. The raw `open.file` is REQUIRED:
     a cor3.gg update made a DOM double-click open a "File Analysis" info window
     (`desktop.get.file.analysis` → `FileAnalysisProtocolApplication`) instead of
-    the minigame; WS `open.file` starts the minigame directly (verified live).
-    The standalone solvers then win and `job.complete` is sent.
-  - **Remaining types — TODO:** ip_injection/ip_cleanup, file_elimination,
-    log_deletion/log_download, data_download/data_upload, decrypt_extract — each
-    a new `flow-v2-*` module behind the same FLOW_START/FLOW_RESULT protocol.
+    the minigame; WS `open.file` starts the minigame directly. The standalone
+    solvers then win and `job.complete` is sent.
+  - **SAI job types** (ip_injection/ip_cleanup, file_elimination,
+    log_deletion/log_download, data_download/file_upload, decrypt_extract) share
+    a base factory in `flows/auto-jobs/_sai-flow.js`: connect +
+    Active-Access/hack login, then the get.*/mutate.* WS loop, then
+    `job.complete`.
+
+The bridge drives the Network-Map context-menu Open SAI / Open Market actions
+**without DOM coordinate clicks**: it opens the Network Map / SAI windows via
+the game's own React handlers (`COR3.game.desktop`, see
+`src/modules/game/desktop-window.js`) and navigates by direct WS request —
+Connect = `__cor3SetEndpoint` (`network-map.set.endpoint`). Open SAI gains
+access via `saiAccess()`: `__cor3SaiGetLoginStatus` reads `activeAccesses[]` +
+`hackTools[]`; with an **Active Access** grant it `__cor3SaiLoginWithAccess`
+(no password/passhack); with **no grant** it HACKS the server —
+`COR3.game.loadout.ensureHack(serverType)` installs covering HACK software,
+clicks the hack-tool row (mounts the minigame), the standalone solver wins, and
+the freshly-granted access logs in. The only residual screen interaction is
+selecting a server node (the SVG map exposes no callable selection handler) —
+one targeted pointer tap on the located tile.
 
 **Master Switches + eligibility sync.** A collapsible "Master Switches" panel
-(`src/ui/sections/auto-jobs-v2/master-switches.js`) above the Network Map holds
-global market + job-type toggles in `STORAGE_LOCAL.AJV2_MASTER_SWITCHES`. The
+(`src/ui/sections/auto-jobs/master-switches.js`) above the Network Map holds
+global market + job-type toggles in `STORAGE_LOCAL.AJ_MASTER_SWITCHES`. The
 CONFIG part of a job's eligibility (markets/types/server-overrides) lives in ONE
-shared evaluator `COR3.ajv2Eligibility.configSkipReason`
-(`src/shared/ajv2-eligibility.js`, loaded in the isolated world AND the popup).
+shared evaluator `COR3.ajEligibility.configSkipReason`
+(`src/shared/aj-eligibility.js`, loaded in the isolated world AND the popup).
 CHECK_CONDITION uses it for acceptance and stamps the DATA-only part
 (`dataSkipReason`) onto each job; the Job List + Network Map re-derive the config
 part live so toggling a switch / server-skip reflects instantly (no cycle wait).
 
-**Hard rules when working on v2:**
+**Design principles:**
 
-1. **Do NOT port logic from v1 Auto-Jobs.** v2 is a redesign of the
-   pipeline, not a refactor. Files under
-   [src/modules/automation/auto-jobs/](src/modules/automation/auto-jobs/)
-   and [src/ui/sections/auto-jobs.js](src/ui/sections/auto-jobs.js) are
-   reference material only — do not copy state machines, planners,
-   reachability code, queue handling, recovery, or job-flow dispatch
-   into the v2 directory. Write v2 logic from scratch based on the
-   explicit requirements in the conversation.
-2. **No fallbacks. No defensive defaults. No silent degradation.** If
-   v2 needs a piece of state, declare it as a hard requirement. Never
-   write `value || defaultValue`, `try { … } catch (_) {}` to mask
-   missing things, or `if (!x) return` to silently skip work. If a
-   precondition fails, throw or log loudly. v2's behaviour must be
-   exact and auditable — the reader of the code should see the one
-   path it takes, not a tree of "in case X is missing" branches.
-3. **v2 must not touch v1 storage or messages.** Never read or write
-   `AUTOJOBS_SETTINGS`, `AUTOJOBS_STATE`, `AUTOJOBS_QUEUE`,
-   `AJ_REJECTED_JOBS`, `AJ_REACHABILITY`, `AJ_SERVER_READINESS`,
-   `AJ_STATE_HISTORY`, `BUGGED_JOBS`, `SERVER_PRIORITIES`, or send
-   `toggleAutoJobs`/`autoJobsReset`/`clearBuggedJobs` from v2 code.
-   v2 owns its own keys and message actions (`toggleAutoJobsV2` etc.).
-   The only shared, read-only inputs are pure game state: `NM_GRAPH`
-   and the three market envelopes (`MARKET`/`DARK_MARKET`/`SRM_MARKET`).
-4. **Logger module id is `auto-jobs-v2`** (plus `flow-v2-*` for
-   future v2 flow modules). The v2 Activity Log and v2 Download Log
-   filter to these ids. Never log v2 events under the `auto-jobs` id —
-   that would leak into v1's Activity Log.
+1. **No fallbacks. No defensive defaults. No silent degradation.** If the
+   pipeline needs a piece of state, declare it as a hard requirement. Never
+   write `value || defaultValue`, `try { … } catch (_) {}` to mask missing
+   things, or `if (!x) return` to silently skip work. If a precondition fails,
+   throw or log loudly. The behaviour must be exact and auditable — the reader
+   should see the one path it takes, not a tree of "in case X is missing"
+   branches.
+2. **Shared game state is read-only.** The only shared inputs are pure game
+   state: `NM_GRAPH` and the three market envelopes
+   (`MARKET`/`DARK_MARKET`/`SRM_MARKET`). The subsystem owns its own keys
+   (`AJ_PIPELINE_STATE`, `AJ_JOB_QUEUE`, `AJ_BUGGED_JOBS`, `AJ_SERVER_OVERRIDES`,
+   `AJ_MASTER_SWITCHES`) + `AUTOJOBS_SETTINGS`, and its own message actions
+   (`MSG.AUTOJOBS.*`).
+3. **Logger module ids are `auto-jobs`** (orchestrator + pipeline) **and
+   `flow-*`** (the MAIN flow modules). The Activity Log + Download Log filter
+   to these ids.
 
 ## Documentation map
 
@@ -123,7 +117,7 @@ Read these in order when ramping up:
 | [docs/architecture.md](docs/architecture.md) | Execution contexts, boot order, module lifecycle, cross-world topology |
 | [docs/module-spec.md](docs/module-spec.md) | Module contract; templates for each kind of module (data / automation / game / flow / solver / appearance / UI section) |
 | [docs/messaging.md](docs/messaging.md) | Exhaustive enum of MSG / STORAGE_LOCAL / STORAGE_SYNC / FLOW / CATEGORY / LIMITS with payload shapes and producer/consumer mapping |
-| [docs/pipelines.md](docs/pipelines.md) | Diagrams of auto-jobs (v1) state machine, **Auto-Jobs v2** orchestrator+stages pipeline, auto-send-merc, auto-choose-decision, NM→SC→SAI startup, daily-ops fetch, alarms, auto-refresh, Logger |
+| [docs/pipelines.md](docs/pipelines.md) | Diagrams of the **Auto Jobs** orchestrator+stages pipeline, auto-send-merc, auto-choose-decision, daily-ops fetch, alarms, auto-refresh, Logger |
 | [docs/debugging.md](docs/debugging.md) | Live state probes, chrome-devtools-mcp runbook, common issues, smoke-test script |
 | [docs/glossary.md](docs/glossary.md) | Game terms (K/D, SAI, Network Map, etc.), DOM selector reference, Socket.IO frame primer |
 
@@ -154,12 +148,12 @@ cor3-helper/
     │   ├── automation/   10 modules — timers, auto-refresh, auto-send-merc,
     │   │                  auto-choose-decision, auto-decrypt, auto-ice-wall,
     │   │                  auto-simple-decrypt, daily-ops, auto-jobs,
-    │   │                  runtime-bridge — plus auto-jobs/ subdir of helpers
-    │   │                  (action-cooldown, log-export, reachability, planner,
-    │   │                  executor, orchestrator — namespace COR3.autoJobs.*,
-    │   │                  not Registry-registered modules)
-    │   ├── game/         network-map, server-connect, sai-navigator,
-    │   │                  loadout-panel, flows/_shared (id 'flows-core'), 9 flows
+    │   │                  runtime-bridge — plus auto-jobs/pipeline.js (the
+    │   │                  Auto Jobs pipeline stages — namespace
+    │   │                  COR3.autoJobs.pipeline.*, not a Registry-registered
+    │   │                  module)
+    │   ├── game/         desktop-window, auto-jobs-bridge, loadout-panel,
+    │   │                  flows/auto-jobs/ (10 Auto Jobs flow modules + _sai-flow base)
     │   ├── solvers/      decrypt, daily-ops, ice-wall, simple-decrypt
     │   └── appearance/   4 CSS/DOM toggles
     ├── ui/               popup.html + popup.css + shell.js + components/ + sections/
@@ -172,9 +166,9 @@ cor3-helper/
 |---|---|
 | Change how WS frames are parsed | `src/shared/ws-frames.js` |
 | Add a new game-data field to track | new file in `src/modules/data/` + entry in `MSG.WS.*` + entry in `STORAGE_LOCAL.*` |
-| Tweak auto-jobs scheduling | `src/modules/automation/auto-jobs.js` (the big one) |
-| Add a new job type | docs/module-spec.md → "Job flow"; touch `auto-jobs.js`'s `JOB_TYPE_KEYWORDS`, `FLOW_DISPATCH`, `resolveJobParams`; new file in `src/modules/game/flows/` |
-| Adjust the SAI navigation pipeline | `src/modules/game/server-connect.js` (login flow), `src/modules/game/sai-navigator.js` (tab switching, helpers) |
+| Tweak Auto Jobs scheduling / loop | `src/modules/automation/auto-jobs.js` (orchestrator) + `src/modules/automation/auto-jobs/pipeline.js` (stages) |
+| Add a new job type | pipeline.js `detectJobType` + condition parsing; new `flow-*` module in `src/modules/game/flows/auto-jobs/`; wire it into the orchestrator's JOB_FLOW batch dispatch |
+| Adjust the SAI access / navigation | `src/modules/game/auto-jobs-bridge.js` (`saiAccess()` login) + `src/modules/game/flows/auto-jobs/_sai-flow.js` (SAI flow base); WS helpers `__cor3Sai*` in `src/interceptors/ws-interceptor.js` |
 | Tune the decrypt minimax | `src/modules/solvers/decrypt.js` |
 | Add a new popup section | new file in `src/ui/sections/`, `<script>` tag in `src/ui/popup.html`, entry in `TABS` array in `src/ui/shell.js` |
 | Add a new chrome.storage.sync user-pref | enum in `STORAGE_SYNC.*`, UI control in `src/ui/sections/overview.js` (or `expeditions.js` if expedition-related), listener in the consuming module |
@@ -215,12 +209,15 @@ find src -name '*.js' -exec node --check {} \;
 
 ## Behaviour notes
 
-- Auto-jobs full state machine (idle/accepting/solving/completing) with
-  3 watchdogs, K/D blacklist (parsed from timer text + 5 min buffer),
-  bugged-job 2 h TTL, server priorities, debug confirmation gate.
-- 9 job flow types: file_decryption, ip_injection, ip_cleanup,
-  file_upload, log_deletion, log_download, file_elimination, data_download,
-  decrypt_extract.
+- Auto Jobs: a single orchestrator module runs an infinite loop over the
+  pipeline stages, passing one packet stage→stage; per-cycle it refreshes
+  markets, rebuilds the job board, accepts eligible jobs, and dispatches a
+  batch of in-progress (TAKEN) jobs to MAIN flow modules (parking on each
+  FLOW_RESULT). Impossible jobs go to the `AJ_BUGGED_JOBS` registry (no TTL —
+  cleared by the user); transient failures retry once then bug.
+- 9 job flow types (in `src/modules/game/flows/auto-jobs/`): file_decryption,
+  ip_injection, ip_cleanup, file_upload, log_deletion, log_download,
+  file_elimination, data_download, decrypt_extract.
 - Decrypt solver: minimax algorithm against `ParameterCells` (arrow-key
   driven). Submit layer is click-on-cell + ArrowUp + click-SendButton
   (see [docs/glossary.md](docs/glossary.md) → solver-decrypt).
@@ -249,7 +246,6 @@ find src -name '*.js' -exec node --check {} \;
 Quick list of every registered module ID and its world:
 
 **MAIN content_scripts (world: 'MAIN'):**
-- `network-map`, `server-connect`, `sai-navigator`, `flows-core` — game core
 - `loadout-panel` — site-embedded UI: pill anchored next to cor3.gg's
   Notifications widget (via Sentry data-attr, language-independent).
   Opening it auto-powers the system off (`localStorage["loadout-powered"]`
@@ -266,7 +262,11 @@ Quick list of every registered module ID and its world:
   resource conflicts and silent server rejections.
 - `flow-file-decryption`, `flow-ip-injection`, `flow-ip-cleanup`,
   `flow-file-upload`, `flow-log-deletion`, `flow-log-download`,
-  `flow-file-elimination`, `flow-data-download`, `flow-decrypt-extract`
+  `flow-file-elimination`, `flow-data-download`, `flow-decrypt-extract` —
+  the Auto Jobs MAIN flow modules (in `src/modules/game/flows/auto-jobs/`).
+  Each listens on `MSG.AUTOJOBS.FLOW_START` for its job type and replies
+  `FLOW_RESULT`; logs under its own `flow-*` id (the Activity Log filters to
+  `auto-jobs` + `flow-*`). The SAI types share the `_sai-flow.js` base factory.
 - `solver-decrypt`, `solver-daily-ops`, `solver-ice-wall`,
   `solver-simple-decrypt`
 - `desktop-window.js` — MAIN-world `COR3.game.desktop` namespace (NOT a
@@ -276,10 +276,10 @@ Quick list of every registered module ID and its world:
   `invokeReactClick` / `findClickableByText` (click a list row by text —
   SAI access grants / hack tools) / `findServerTile` / `selectServerTile` (one
   targeted pointer tap — the map has no callable selection handler) /
-  `findPanelButton` / `waitFor`. Used by the v2 bridge.
-- `auto-jobs-v2-bridge.js` — MAIN-world endpoint for the v2 Network-Map
-  context menu (Open SAI / Open Market). NOT a registered Module — a plain
-  IIFE listening on `MSG.AUTOJOBS_V2.OPEN_SAI` / `OPEN_MARKET` (payload carries
+  `findPanelButton` / `waitFor`. Used by the bridge.
+- `auto-jobs-bridge.js` — MAIN-world endpoint for the Network-Map context
+  menu (Open SAI / Open Market). NOT a registered Module — a plain IIFE
+  listening on `MSG.AUTOJOBS.OPEN_SAI` / `OPEN_MARKET` (payload carries
   `serverName` + `serverId` + `serverType`). Drives the flows through client
   functions + direct WS instead of DOM coordinate clicks: `COR3.game.desktop`
   to open windows, `__cor3SetEndpoint` (WS `network-map.set.endpoint`) to
@@ -287,15 +287,11 @@ Quick list of every registered module ID and its world:
   (`__cor3SaiGetLoginStatus` → `__cor3SaiLoginWithAccess`) or, with no grant,
   **hacks** the server (`COR3.game.loadout.ensureHack` → click the hack-tool
   row → solver wins the minigame → use the granted access). Logs under id
-  `auto-jobs-v2`.
-- `flow-v2-file-decryption` — MAIN flow-v2 module (Phase 2). Listens on
-  `MSG.AUTOJOBS_V2.FLOW_START` for `file_decryption` jobs, replies
-  `FLOW_RESULT`. Logs under its own id (the v2 Activity Log filters to
-  `auto-jobs-v2` + `flow-v2-*`). `loadout-panel` also exposes a headless
-  `COR3.game.loadout` API — `planDecrypt`/`ensureDecrypt(ext)` (DECRYPT, matched
-  by `fileTypes`) for the file flow, and `planHack`/`ensureHack(serverType)`
-  (HACK, matched by `serverTypes`) for the bridge's Open-SAI hack path — both
-  doing install/swap with the same resource-fit logic.
+  `auto-jobs`. `loadout-panel` also exposes a headless `COR3.game.loadout`
+  API — `planDecrypt`/`ensureDecrypt(ext)` (DECRYPT, matched by `fileTypes`)
+  for the file flow, and `planHack`/`ensureHack(serverType)` (HACK, matched by
+  `serverTypes`) for the Open-SAI hack path — both doing install/swap with the
+  same resource-fit logic.
 
 **Isolated content_scripts:**
 - `auth`, `expeditions`, `archived-expeditions`, `decisions`, `market`,
@@ -303,11 +299,11 @@ Quick list of every registered module ID and its world:
   `merc-config`, `expedition-config` — data
 - `timers`, `auto-refresh`, `auto-send-merc`, `auto-choose-decision`,
   `auto-decrypt`, `auto-ice-wall`, `auto-simple-decrypt`, `daily-ops`,
-  `auto-jobs`, `auto-jobs-v2`, `runtime-bridge` — automation
+  `auto-jobs`, `runtime-bridge` — automation
 - `appearance-system-messages`, `appearance-background`,
   `appearance-network-fog`, `appearance-map-fx` — appearance
 
 Plus synthetic ID `bus` (used by Logger to record traced bus traffic) and
-`registry` (used by Registry's own warn/error logs). The v2 pipeline stages
-(`COR3.autoJobsV2.pipeline.stages.*`) are plain objects, NOT registered
-modules — the `auto-jobs-v2` orchestrator drives them directly.
+`registry` (used by Registry's own warn/error logs). The Auto Jobs pipeline
+stages (`COR3.autoJobs.pipeline.stages.*`) are plain objects, NOT registered
+modules — the `auto-jobs` orchestrator drives them directly.

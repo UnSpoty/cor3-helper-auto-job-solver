@@ -1,13 +1,13 @@
-// Auto-Jobs v2 — File Elimination flow (MAIN world). jobType: file_elimination
+// Auto Jobs — File Elimination flow (MAIN world). jobType: file_elimination
 // (DeleteFile). Delete the job's target file(s) from the server, pure WS.
 // The job carries file NAMES (details.fileNames/fileName); the WS op keys on
 // fileId, so the flow reads get.files and maps name→fileId.
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
-    if (!root.COR3 || !root.COR3.constants || !root.COR3.autoJobsV2 || !root.COR3.autoJobsV2.saiFlow) return;
+    if (!root.COR3 || !root.COR3.constants || !root.COR3.autoJobs || !root.COR3.autoJobs.saiFlow) return;
     const C = root.COR3.constants;
-    const NODE = C.AJV2.NODE;
-    const SF = root.COR3.autoJobsV2.saiFlow;
+    const NODE = C.AJ.NODE;
+    const SF = root.COR3.autoJobs.saiFlow;
 
     const findFile = (files, name) => {
         const n = String(name || '').toLowerCase();
@@ -15,8 +15,8 @@
     };
 
     SF.defineFlow({
-        id: 'flow-v2-file-elimination',
-        name: 'Flow v2: File Elimination',
+        id: 'flow-file-elimination',
+        name: 'Flow: File Elimination',
         jobType: C.FLOW.FILE_ELIMINATION,
         // job: { jobId, marketId, jobType, serverId, serverType, serverName, fileNames:[…] }
         async run(job, h) {
