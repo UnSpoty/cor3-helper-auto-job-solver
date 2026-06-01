@@ -14,11 +14,15 @@
 //                       │            NO ──────────┴→ CHECK_CONDITION      │
 //                       │                            → JOB_ACCEPTION      │
 //                       │                            → JOB_FLOW            │
-//                       └──────────────── DELAY:30s ←─────────────────────┘  (loop)
+//                       └──────────────── DELAY ←──────────────────────────┘  (loop)
+//
+// The inter-cycle DELAY is 30s when idle, but a short CYCLE_DELAY_ACTIVE_MS
+// (~5s) when the cycle did real work (a flow batch ran, or jobs were accepted) —
+// so a chain of in-progress jobs isn't gated by 30s of dead air between each.
 //
 // JOB_FLOW dispatches a BATCH of in-progress (TAKEN) jobs per cycle, then parks
 // on each one's FLOW_RESULT in turn — so the loop pauses for each minigame,
-// then goes to DELAY:30s. The batch is chosen to minimise cycles + logins:
+// then goes to the inter-cycle DELAY. The batch is chosen to minimise cycles + logins:
 // file_decryption FIRST (every TAKEN one — local minigames, no server), else
 // every wired SAI job that targets ONE server (the busiest), run back-to-back
 // so that server is connected + logged into ONCE (the SAI flows share the login
@@ -75,6 +79,7 @@
                         C.MSG.AUTOJOBS_V2.OPEN_SAI_ACTION,
                         C.MSG.AUTOJOBS_V2.OPEN_MARKET_ACTION,
                         C.MSG.AUTOJOBS_V2.REFRESH_BOARD,
+                        C.MSG.AUTOJOBS_V2.CLEAR_LOG,
                         C.MSG.AUTOJOBS_V2.OPEN_SAI,
                         C.MSG.AUTOJOBS_V2.OPEN_MARKET,
                         C.MSG.GAME.REFRESH_MARKET,
@@ -92,6 +97,11 @@
             this._running = false;
             this._runToken = 0;
             this._refreshing = false;   // one-shot Jobs-panel board refresh in flight
+            // In-memory per-job JOB_FLOW attempt counter (jobId → failed attempts).
+            // A transient/retryable flow failure increments it; once it reaches
+            // LOOP.MAX_FLOW_ATTEMPTS the job is bugged instead of retried again.
+            // Deliberately NOT persisted — cleared on STOP/reload (see _stopLoop).
+            this._flowAttempts = new Map();
             this._state = { running: false, cycle: 0, node: null, startedAt: null, updatedAt: null, error: null, batch: null };
         }
 
@@ -122,6 +132,13 @@
             // current markets. Always available (even while the loop is
             // stopped); refused only while the loop runs.
             this.track(Bus.runtime.on(C.MSG.AUTOJOBS_V2.REFRESH_BOARD, () => { this._refreshBoardOnce(); return { success: true }; }));
+
+            // Activity-Log "Clear" — wipe the v2 log ring (module ids
+            // 'auto-jobs-v2' + 'flow-v2-*') here in the isolated world, where the
+            // authoritative in-memory buffer lives. Doing it popup-side would be
+            // re-flushed by this context's ring; routing it here clears buffer +
+            // storage atomically. Always available.
+            this.track(Bus.runtime.on(C.MSG.AUTOJOBS_V2.CLEAR_LOG, () => { this._clearActivityLog(); return { success: true }; }));
 
             const settings = await Store.sync.getOne(SS.AUTOJOBS_V2_SETTINGS, { enabled: false });
             this._applyEnabled(!!settings.enabled);
@@ -167,6 +184,7 @@
             if (!this._running) return;
             this._running = false;
             this._runToken++;  // invalidates any in-flight sleep / cycle
+            this._flowAttempts.clear();  // attempt budget is per-run (in memory only)
             this.info('STOP — pipeline loop cancelled');
             this._writeState({ running: false, node: null, batch: null });
         }
@@ -196,15 +214,23 @@
             let cycle = 0;
             while (this._alive(token)) {
                 cycle++;
+                // active === there is live work to chain (a flow batch ran, or jobs
+                // were accepted this cycle and will be in-progress next refresh).
+                // While active we skip most of the idle DELAY:30s and loop back on
+                // the short active delay, so a chain of in-progress jobs (e.g.
+                // several file_decryptions, one per cycle) isn't gated by 30s of
+                // dead air between each. A crash defaults to the full idle delay.
+                let active = false;
                 try {
-                    await this._runCycle(token, cycle);
+                    active = await this._runCycle(token, cycle);
                 } catch (e) {
                     this.error(`cycle ${cycle} aborted`, { error: String(e) });
                     await this._writeState({ running: true, cycle, node: null, error: String(e && e.message || e) });
                 }
                 if (!this._alive(token)) return;
                 await this._setNode(NODE.DELAY_CYCLE, token, { cycle });
-                if (!(await this._sleep(LOOP.CYCLE_DELAY_MS, token))) return;
+                const delay = active ? LOOP.CYCLE_DELAY_ACTIVE_MS : LOOP.CYCLE_DELAY_MS;
+                if (!(await this._sleep(delay, token))) return;
             }
         }
 
@@ -243,7 +269,7 @@
             await this._setNode(NODE.QUEUE_EMPTY, token, { cycle });
             const empty = !packet.queue || packet.queue.length === 0;
             this.debug(`QUEUE:EMPTY? → ${empty ? 'YES' : 'NO'}`, { jobs: packet.queue ? packet.queue.length : 0 });
-            if (empty) return;  // YES branch → fall through to DELAY:30s
+            if (empty) return false;  // YES branch → idle → fall through to the full DELAY:30s
 
             // QUEUE:HAVE_TASKS_IN_PROGRESS? — any job we've accepted (status
             // TAKEN) is in progress.
@@ -252,6 +278,11 @@
             const hasInProgress = inProgress.length > 0;
             this.debug(`HAVE_TASKS_IN_PROGRESS? → ${hasInProgress ? 'YES' : 'NO'}`, { taken: inProgress.length });
 
+            // JOB_FLOW runs only when at least one in-progress job is resumable.
+            // It is set false in the all-bugged case below — but we STILL fall
+            // through to CHECK_CONDITION + JOB_ACCEPTION, so a bugged in-progress
+            // job never freezes acceptance of new work.
+            let runFlows = true;
             if (hasInProgress) {
                 // MODULE:BUGGED_JOBS (decision) — is the in-progress work
                 // bugged? Reads the bugged registry into the packet, then we
@@ -266,10 +297,14 @@
                     inProgress: inProgress.length, resumable: resumable.length,
                 });
                 if (allBugged) {
-                    // JOB:SKIP — nothing resumable this cycle; loop back.
+                    // JOB:SKIP — no in-progress job is resumable this cycle, so
+                    // skip JOB_FLOW. Crucially we do NOT return here: bugged jobs
+                    // have no TTL (permanent until the user clears them), so a
+                    // single un-doable in-progress job must not halt acceptance of
+                    // fresh AVAILABLE jobs — otherwise the whole subsystem freezes.
                     await this._setNode(NODE.JOB_SKIP, token, { cycle });
-                    this.info(`JOB:SKIP — ${inProgress.length} in-progress job(s), all bugged — skipping cycle`);
-                    return;
+                    this.info(`JOB:SKIP — ${inProgress.length} in-progress job(s), all bugged — skipping JOB_FLOW (still accepting new jobs)`);
+                    runFlows = false;
                 }
             }
 
@@ -281,11 +316,21 @@
             packet = await p.stages.jobAcception.run(packet, ctx);
             if (!this._alive(token)) return;
 
-            // JOB_FLOW — execute ONE in-progress (TAKEN) job in MAIN, then fall
-            // through to DELAY. The orchestrator parks on its FLOW_RESULT, so
-            // the loop is paused for the duration of that job's minigame.
-            await this._setNode(NODE.JOB_FLOW, token, { cycle });
-            await this._runJobFlows(token, cycle, packet);
+            // JOB_FLOW — execute this cycle's BATCH of in-progress (TAKEN) jobs in
+            // MAIN, then fall through to DELAY. The orchestrator parks on each
+            // FLOW_RESULT, so the loop is paused for the duration of the minigame.
+            let dispatched = false;
+            if (runFlows) {
+                await this._setNode(NODE.JOB_FLOW, token, { cycle });
+                dispatched = await this._runJobFlows(token, cycle, packet);
+            }
+            // active → short inter-cycle delay (see _loop). We chain quickly when
+            // a flow batch actually ran this cycle, or when we just accepted jobs
+            // (they become in-progress on the next refresh — pick them up without
+            // 30s of dead air). All-bugged / K-D-postponed-only cycles fall here
+            // with dispatched=false and accepted=0 → full idle delay, no spin.
+            const acceptedCount = (packet.accepted && packet.accepted.length) || 0;
+            return !!dispatched || acceptedCount > 0;
         }
 
         // Claim every in-progress (TAKEN) job the game reports as finishable
@@ -318,7 +363,7 @@
         }
 
         // Run THIS cycle's BATCH of in-progress (TAKEN) jobs back-to-back, then
-        // fall through to DELAY:30s. The batch (see _selectBatch) is either every
+        // fall through to the inter-cycle DELAY. The batch (see _selectBatch) is either every
         // TAKEN file_decryption (absolute priority — local minigames, no login)
         // or every wired SAI job on ONE server. Running a server's jobs in a
         // single pass means it is connected + logged into ONCE (the flows share
@@ -338,14 +383,29 @@
             // but does NOT mutate packet.queue, so without this guard _selectBatch
             // could re-dispatch a just-completed file_decryption and re-open its
             // already-decrypted file (no minigame → wasted ~90s).
-            const inProgress = packet.queue.filter((j) =>
+            const allInProgress = packet.queue.filter((j) =>
                 j.status === 'TAKEN' && !bugged[j.id] && !(j.raw && j.raw.canComplete === true));
-            if (inProgress.length === 0) { this.debug('JOB_FLOW → no in-progress jobs to run'); return; }
+            // #6 — postpone (do NOT dispatch) any SAI job whose target server is on
+            // K/D cooldown or not accessible this cycle: the flow would only burn a
+            // login/hack attempt failing ensureAccess. Postponing is NOT a failed
+            // attempt (the retry budget is untouched) — the job runs unchanged the
+            // moment the server is reachable again.
+            const acc = packet.accessibility || {};
+            const inProgress = [];
+            let postponed = 0;
+            for (const j of allInProgress) {
+                if (this._jobServerReachable(j, acc)) inProgress.push(j);
+                else postponed++;
+            }
+            if (postponed) this.info(`JOB_FLOW → ${postponed} in-progress SAI job(s) postponed (server on K/D / not accessible this cycle)`);
+            // Returns whether a flow batch actually ran (≥1 job dispatched) — the
+            // _loop uses it to chain on the SHORT active delay instead of DELAY:30s.
+            if (inProgress.length === 0) { this.debug('JOB_FLOW → no resumable in-progress jobs to run this cycle'); return false; }
 
             const batch = this._selectBatch(inProgress, p);
             if (batch.jobs.length === 0) {
                 this.info(`JOB_FLOW → ${inProgress.length} in-progress job(s), none of a wired type yet — skipping`);
-                return;
+                return false;
             }
             // batchKey scopes the SAI login reuse: every SAI job in this batch
             // shares ONE server, so the first establishes access and the rest
@@ -412,6 +472,7 @@
                 if (result.cancelled) { this.info(`JOB_FLOW → ${job.id} cancelled (loop stopped)`); return; }
 
                 if (result.success && result.didWork) {
+                    this._flowAttempts.delete(job.id);  // succeeded — reset its retry budget
                     // Action landed. Deferred → queue the complete for the end of
                     // the batch; immediate → the flow already completed it.
                     if (deferComplete) {
@@ -430,11 +491,27 @@
                     }
                     continue;
                 }
-                // TRANSIENT failure (timeout, DOM/loadout not ready, flow-busy):
-                // skip and retry next cycle — do NOT bug. Bugged jobs are permanent
-                // until the user clears them (no TTL), so only a genuine "can't do
-                // this job" (retryable:false / absent) is written to the registry.
-                if (result.retryable) { this.info(`JOB_FLOW → ${job.id} not done this cycle (${result.reason || 'transient'}) — will retry`); continue; }
+                if (result.retryable) {
+                    // flow-busy is the previous job still solving — NOT a real
+                    // attempt at THIS job; retry next cycle without spending its
+                    // budget.
+                    if (result.reason === 'flow-busy') { this.info(`JOB_FLOW → ${job.id} deferred (flow-busy) — will retry`); continue; }
+                    // TRANSIENT failure (timeout, DOM/loadout not ready, server
+                    // action failed): retry up to MAX_FLOW_ATTEMPTS, then bug. A
+                    // genuinely-stuck job (file never appears, hack keeps failing)
+                    // is no longer retried forever — it becomes bugged and stops
+                    // blocking the pipeline (decryption-priority + JOB:SKIP both
+                    // exclude bugged jobs).
+                    const n = (this._flowAttempts.get(job.id) || 0) + 1;
+                    this._flowAttempts.set(job.id, n);
+                    if (n < LOOP.MAX_FLOW_ATTEMPTS) {
+                        this.info(`JOB_FLOW → ${job.id} not done (${result.reason || 'transient'}) — attempt ${n}/${LOOP.MAX_FLOW_ATTEMPTS}, will retry`);
+                        continue;
+                    }
+                    await this._markBugged(job, `failed after ${n} attempts: ${result.reason || 'transient'}`, token);
+                    continue;
+                }
+                // Non-retryable (genuinely can't do this job) → bug immediately.
                 await this._markBugged(job, result.reason || 'flow failed', token);
             }
 
@@ -444,10 +521,12 @@
             if (deferComplete && toComplete.length) await this._completeBatchJobs(toComplete, token);
             // Batch done → clear the live-batch banner (the next cycle's
             // GET_SERVERS also clears it, this just drops it immediately so the
-            // DELAY:30s window shows no stale batch).
+            // DELAY window shows no stale batch).
             await this._writeState({ batch: null });
-            // Whole batch attempted → return → DELAY:30s → next cycle picks the
-            // next batch (next server, or the remaining file_decryption).
+            // Whole batch attempted (≥1 job dispatched) → return true so the loop
+            // chains on the short active delay → next cycle picks the next batch
+            // (next server, or the remaining file_decryption) without 30s of wait.
+            return true;
         }
 
         // Publish the live batch descriptor onto AJV2_PIPELINE_STATE (read by the
@@ -487,6 +566,19 @@
         // file_decryption pick (no SAI login → no batchKey). WIRED_FLOW_TYPES is
         // the same gate JOB_ACCEPTION uses, so a TAKEN job of an unwired type is
         // left for a later build, never stranded.
+        // True if a TAKEN job can be dispatched this cycle. file_decryption is
+        // local (no server → always). An SAI job needs its target server both
+        // accessible and off K/D cooldown. A server missing from the accessibility
+        // map passes deliberately — we let the flow run and surface the real error
+        // rather than silently stranding a job whose name didn't match the NM graph.
+        _jobServerReachable(job, accessibility) {
+            if (job.type === C.FLOW.FILE_DECRYPTION) return true;
+            if (!job.serverName) return true;
+            const a = accessibility[job.serverName];
+            if (!a) return true;
+            return !!a.accessible && !a.onCooldown;
+        }
+
         _selectBatch(inProgress, p) {
             // file_decryption keeps ABSOLUTE priority but runs ONE per cycle: each
             // is a separate local minigame (no server / no SAI login to share), so
@@ -637,6 +729,7 @@
 
         async _markBugged(job, reason, token) {
             await this._setNode(NODE.MARK_AS_BUGGED, token);
+            this._flowAttempts.delete(job.id);  // bugged is terminal — drop its retry budget
             const reg = await Store.local.getOne(SL.AJV2_BUGGED_JOBS, {});
             reg[job.id] = { reason: String(reason), since: Date.now() };
             await Store.local.setOne(SL.AJV2_BUGGED_JOBS, reg);
@@ -669,6 +762,18 @@
             } finally {
                 this._refreshing = false;
             }
+        }
+
+        // Clear the v2 Activity Log: drop every entry under this module's id and
+        // any flow-v2-* id from the Logger's ring + storage. Runs here (isolated
+        // world) because this is where the authoritative buffer lives; the popup
+        // viewer re-renders off the LOGS storage change the clear writes. The
+        // single "cleared" line below is intentional confirmation feedback.
+        async _clearActivityLog() {
+            const L = root.COR3 && root.COR3.Logger;
+            if (!L || typeof L.clear !== 'function') { this.warn('Clear Log — Logger.clear unavailable'); return; }
+            await L.clear(/^(auto-jobs-v2|flow-v2-.+)$/);
+            this.info('Activity Log cleared');
         }
 
         _ctx(token) {

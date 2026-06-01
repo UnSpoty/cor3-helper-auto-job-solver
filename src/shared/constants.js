@@ -220,6 +220,13 @@
             // while the loop runs (it already rebuilds the board each cycle).
             REFRESH_BOARD: 'ajv2RefreshBoard',
 
+            // popup Activity-Log "Clear" → orchestrator (isolated world, where
+            // the authoritative log ring lives). Wipes the v2 log entries
+            // (module ids 'auto-jobs-v2' + 'flow-v2-*') from the Logger's buffer
+            // AND storage in one place, so a popup-side storage wipe can't be
+            // clobbered by the content world re-flushing its in-memory ring.
+            CLEAR_LOG: 'ajv2ClearLog',
+
             // isolated → MAIN window messages. Handled by the MAIN-world v2
             // bridge, which calls the generic COR3.game helpers
             // (serverConnect.connect / networkMap.openServerMarket).
@@ -582,7 +589,16 @@
         // Loop cadence (matches the START→DELAY:10s→…→DELAY:30s flowchart).
         LOOP: {
             INITIAL_DELAY_MS: 10 * 1000,
+            // Idle inter-cycle delay (nothing to do — empty board, or only
+            // bugged / K-D-postponed work). The full "breathing room" pause.
             CYCLE_DELAY_MS: 30 * 1000,
+            // Active inter-cycle delay — used instead of CYCLE_DELAY_MS when a
+            // cycle did real work (a flow batch ran, or jobs were accepted that
+            // become in-progress next refresh). Lets a chain of in-progress jobs
+            // (e.g. several file_decryptions, run one per cycle) proceed without
+            // 30s of dead air between each, while still pacing the market refresh
+            // bursts and giving the server a beat to reflect the new state.
+            CYCLE_DELAY_ACTIVE_MS: 5 * 1000,
             // Max time UPDATE_MARKETS waits for a refreshed market envelope to
             // land in storage before it logs loudly and moves on.
             MARKET_REFRESH_TIMEOUT_MS: 6 * 1000,
@@ -596,6 +612,14 @@
             // awaiting FLOW_RESULT before giving up and marking the job bugged.
             // Long because a decrypt minigame can take minutes.
             FLOW_TIMEOUT_MS: 5 * 60 * 1000,
+            // Total JOB_FLOW attempts allowed for a TAKEN job before it is marked
+            // bugged. 2 = one initial try + one retry next cycle. A transient
+            // (retryable) failure is retried until this many attempts have failed,
+            // then the job is written to AJV2_BUGGED_JOBS (no TTL — permanent until
+            // the user clears it). flow-busy / cancelled do not count as attempts.
+            // The counter is kept in memory by the orchestrator (reset on STOP /
+            // reload), not persisted.
+            MAX_FLOW_ATTEMPTS: 2,
         },
     };
 

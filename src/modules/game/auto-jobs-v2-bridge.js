@@ -136,11 +136,14 @@
         '[data-component-name="SimpleDecryptApplication"]',
     ];
     const SOLVER_START = [MSG.SOLVER.START_DECRYPT, MSG.SOLVER.START_ICE_WALL, MSG.SOLVER.START_SIMPLE_DECRYPT];
-    // STOP_ICE_WALL intentionally omitted — ICE WALL is a standalone always-on
-    // watcher (auto-ice-wall) that must survive a hack / cycle.
+    // Driven under the 'flow' owner: solver-decrypt / solver-simple-decrypt
+    // ref-count owners, so STOP removes only 'flow' and leaves a user's standalone
+    // watcher (owner 'user') running. STOP_ICE_WALL omitted — ICE WALL is a
+    // standalone always-on watcher (auto-ice-wall) with no ref-counting that must
+    // survive a hack / cycle.
     const SOLVER_STOP  = [MSG.SOLVER.STOP_DECRYPT,  MSG.SOLVER.STOP_SIMPLE_DECRYPT];
-    const startSolvers = () => { for (const m of SOLVER_START) Bus.window.post(m, null); };
-    const stopSolvers  = () => { for (const m of SOLVER_STOP)  Bus.window.post(m, null); };
+    const startSolvers = () => { for (const m of SOLVER_START) Bus.window.post(m, { owner: 'flow' }); };
+    const stopSolvers  = () => { for (const m of SOLVER_STOP)  Bus.window.post(m, { owner: 'flow' }); };
     const findMinigame = () => { for (const s of MINIGAME_SELS) { if (document.querySelector(s)) return true; } return false; };
 
     // Pick a usable access grant from a get.login.status snapshot: a job

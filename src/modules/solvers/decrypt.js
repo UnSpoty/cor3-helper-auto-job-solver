@@ -308,6 +308,14 @@
 
         root.__solverActive = false;
         root.__solverAbort = false;
+        // Lost-wakeup guard: if an owner re-armed us in the narrow window between
+        // the abort being detected and this teardown, restart instead of dying.
+        if (root.__decryptOwners && root.__decryptOwners.size > 0) {
+            mod.debug(`owner present after teardown ([${[...root.__decryptOwners].join(', ')}]) — restarting watch loop`);
+            root.__solverActive = true;
+            watchLoop(mod);
+            return;
+        }
         mod.info('decrypt solver stopped');
     }
 
@@ -322,19 +330,30 @@
             });
         }
         async start() {
-            this.track(Bus.window.on(MSG.SOLVER.START_DECRYPT, () => {
-                if (root.__solverActive && !root.__solverAbort) {
-                    this.debug('start ignored — already active');
-                    return;
-                }
-                root.__solverAbort = false;
+            // Owner-aware lifecycle. Two independent owners can ask this solver to
+            // run: 'user' (the standalone Auto-decrypt toggle, auto-decrypt.js) and
+            // 'flow' (an Auto-Jobs v2 flow that needs a minigame solved). The watch
+            // loop runs while ANY owner is present; a STOP removes only that one
+            // owner and aborts the loop only once the set is empty. So a v2 flow
+            // ending (owner 'flow') never kills the user's standalone watcher (owner
+            // 'user'), and a user toggling off never kills an in-progress flow.
+            root.__decryptOwners = root.__decryptOwners || new Set();
+
+            this.track(Bus.window.on(MSG.SOLVER.START_DECRYPT, (env) => {
+                const owner = (env && env.owner) ? env.owner : 'user';
+                root.__decryptOwners.add(owner);
+                root.__solverAbort = false;          // cancel any pending abort
+                if (root.__solverActive) { this.debug(`start ignored — already active (owner ${owner})`); return; }
                 root.__solverActive = true;
-                this.info('decrypt solver started');
+                this.info(`decrypt solver started (owner ${owner})`);
                 watchLoop(this);
             }));
-            this.track(Bus.window.on(MSG.SOLVER.STOP_DECRYPT, () => {
+            this.track(Bus.window.on(MSG.SOLVER.STOP_DECRYPT, (env) => {
+                const owner = (env && env.owner) ? env.owner : 'user';
+                root.__decryptOwners.delete(owner);
+                if (root.__decryptOwners.size > 0) { this.debug(`stop from '${owner}' ignored — still owned by [${[...root.__decryptOwners].join(', ')}]`); return; }
                 root.__solverAbort = true;
-                this.info('decrypt solver stop requested');
+                this.info(`decrypt solver stop requested (owner ${owner})`);
             }));
         }
     }

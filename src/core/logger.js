@@ -152,10 +152,23 @@
         return Array.isArray(buffer[moduleId]) ? buffer[moduleId].slice() : [];
     }
 
+    // Clear log entries from the in-memory ring AND storage.
+    //   • RegExp → drop every module id that matches (e.g. the v2 Activity Log
+    //     clears /^(auto-jobs-v2|flow-v2-.+)$/).
+    //   • string → drop that one module.
+    //   • falsy  → wipe everything.
+    // Mutating the shared `buffer` (not reassigning on the RegExp/string paths)
+    // keeps a pending scheduleFlush() writing the already-cleared ring, so a
+    // queued flush can't resurrect the entries we just removed.
     async function clear(moduleId) {
         await ensureBuffer();
-        if (moduleId) delete buffer[moduleId];
-        else buffer = {};
+        if (moduleId instanceof RegExp) {
+            for (const id of Object.keys(buffer)) if (moduleId.test(id)) delete buffer[id];
+        } else if (moduleId) {
+            delete buffer[moduleId];
+        } else {
+            for (const id of Object.keys(buffer)) delete buffer[id];
+        }
         await Store.local.setOne(LOG_KEY, buffer);
     }
 

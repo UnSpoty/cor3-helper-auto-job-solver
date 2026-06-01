@@ -56,18 +56,20 @@
                 }).catch((e) => this.warn(`ice-wall: learn write failed: ${String(e)}`));
             }));
 
-            // Propagate an external CLEAR (the Overview "Clear base" button writes
-            // {}) to the LIVE MAIN solver — it otherwise keeps its in-memory DB
-            // until the next start(). Only on a clear (empty value), so our own
-            // learn writes (non-empty) don't trigger a rebroadcast storm.
+            // Propagate EVERY change of the stored DB to the LIVE MAIN solver,
+            // which otherwise keeps its in-memory DB until the next start(). This
+            // covers the Overview "Clear base" (writes {}) AND a popup EDIT of a
+            // shape's click cell — both take effect immediately. Pushing the
+            // freshly-written value is safe even mid-solve: the storage write that
+            // fires this already includes any just-learned entry (the learn write
+            // completes before onChanged), so a re-push during solving is a
+            // no-op, not a regression.
             this.track(Store.local.onChanged((changes) => {
                 const ch = changes[C.STORAGE_LOCAL.ICE_WALL_CLICK_DB];
                 if (!ch) return;
-                const nv = ch.newValue;
-                if (!nv || Object.keys(nv).length === 0) {
-                    Bus.window.post(C.MSG.SOLVER.ICE_WALL_DB, { db: {} });
-                    this.debug('ice-wall: base cleared — pushed empty DB to the solver');
-                }
+                const nv = ch.newValue || {};
+                Bus.window.post(C.MSG.SOLVER.ICE_WALL_DB, { db: nv });
+                this.debug(`ice-wall: DB change pushed to solver (${Object.keys(nv).length} shape(s))`);
             }));
 
             // The MAIN solver posts ICE_WALL_DB_REQUEST at document_start, BEFORE

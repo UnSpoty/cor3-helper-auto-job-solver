@@ -41,8 +41,9 @@
     let liveFlowMap = null;
     let panel = null;
 
-    function renderHeader(host, settings) {
+    function renderHeader(host, settings, offSolvers) {
         host.innerHTML = '';
+        offSolvers = offSolvers || [];
 
         const head = el('div', 'card');
 
@@ -53,16 +54,40 @@
         `;
         head.appendChild(topRow);
 
+        // Block START while any required solver is OFF in Overview — v2 would
+        // otherwise accept decrypt/hack jobs it can't actually solve. STOP is never
+        // blocked (the user must always be able to stop a running pipeline).
+        const blockStart = !settings.enabled && offSolvers.length > 0;
+
         const toggleBtn = el('button', 'btn btn-block mt-sm', settings.enabled ? t('common.stop') : t('common.start'));
         toggleBtn.classList.toggle('btn-danger', !!settings.enabled);
-        toggleBtn.classList.toggle('btn-success', !settings.enabled);
+        toggleBtn.classList.toggle('btn-success', !settings.enabled && !blockStart);
+        if (blockStart) {
+            toggleBtn.disabled = true;
+            toggleBtn.title = `Enable the disabled solver(s) in Overview first: ${offSolvers.join(', ')}`;
+        }
         toggleBtn.addEventListener('click', async () => {
+            if (blockStart) return;
             const nextSettings = { enabled: !settings.enabled };
             await Store.sync.setOne(C.STORAGE_SYNC.AUTOJOBS_V2_SETTINGS, nextSettings);
             const tab = await getCor3Tab();
             if (tab) chrome.tabs.sendMessage(tab.id, { action: C.MSG.AUTOJOBS_V2.TOGGLE, settings: nextSettings }).catch(() => {});
         });
         head.appendChild(toggleBtn);
+
+        // Notification: which decrypt solvers are OFF in Overview. Shown whenever any
+        // is off (even while v2 runs — it would stall on those minigames).
+        if (offSolvers.length > 0) {
+            const warn = el('div', 'mt-sm');
+            Object.assign(warn.style, {
+                padding: '6px 8px', borderRadius: '4px', fontSize: '11px', lineHeight: '1.35',
+                background: 'rgba(255,90,90,0.12)', border: '1px solid rgba(255,90,90,0.55)', color: '#ffb3b3',
+            });
+            warn.innerHTML = `⚠ Solver(s) OFF in Overview: <b>${escape(offSolvers.join(', '))}</b>.<br>`
+                + `Auto-Jobs v2 can't solve the minigames without them — enable them in Overview to `
+                + `${settings.enabled ? 'avoid stalls' : 'START'}.`;
+            head.appendChild(warn);
+        }
 
         const downloadLabel = t('autojobs.downloadLog');
         const downloadBtn = el('button', 'btn small btn-block mt-sm', downloadLabel);
@@ -99,10 +124,23 @@
         host.appendChild(head);
     }
 
+    // v2's file_decryption + SAI-hack flows can mount ANY of the three minigames,
+    // so all three solver toggles (Overview) must be ON for v2 to actually solve
+    // them. Read them alongside the v2 settings so the header can warn + gate START.
+    const REQUIRED_SOLVERS = [
+        { key: 'AUTO_DECRYPT_ENABLED',        def: false, label: 'Auto-decrypt' },
+        { key: 'AUTO_SIMPLE_DECRYPT_ENABLED', def: false, label: 'Auto-simple-decrypt' },
+        { key: 'AUTO_ICE_WALL_ENABLED',       def: true,  label: 'Auto ICE WALL' },
+    ];
+
     async function refreshHeader() {
         if (!panel) return;
-        const settings = await Store.sync.getOne(C.STORAGE_SYNC.AUTOJOBS_V2_SETTINGS, DEFAULT_SETTINGS);
-        renderHeader(panel.headerHost, settings);
+        const [settings, ...states] = await Promise.all([
+            Store.sync.getOne(C.STORAGE_SYNC.AUTOJOBS_V2_SETTINGS, DEFAULT_SETTINGS),
+            ...REQUIRED_SOLVERS.map((s) => Store.sync.getOne(C.STORAGE_SYNC[s.key], s.def)),
+        ]);
+        const offSolvers = REQUIRED_SOLVERS.filter((s, i) => !states[i]).map((s) => s.label);
+        renderHeader(panel.headerHost, settings, offSolvers);
     }
 
     function buildPanel(container) {
@@ -137,6 +175,29 @@
         }
 
         container.appendChild(el('div', 'section-title', t('autojobs.activityLog')));
+
+        // Clear the Activity-Log buffer. Routed to the content world (where the
+        // authoritative log ring lives — a popup-side wipe would be re-flushed by
+        // it); only when no game tab is open do we wipe v2 entries from storage
+        // directly. (Label hardcoded to match the sibling "Clear Bugged"; the
+        // full i18n pass localises both together — see #10.)
+        const clearLogBtn = el('button', 'btn small btn-block mt-sm', 'Clear Log');
+        clearLogBtn.title = 'Clear the Auto-Jobs v2 activity log buffer';
+        clearLogBtn.addEventListener('click', async () => {
+            const tab = await getCor3Tab();
+            if (tab) {
+                chrome.tabs.sendMessage(tab.id, { action: C.MSG.AUTOJOBS_V2.CLEAR_LOG }).catch(() => {});
+            } else {
+                const logs = (await Store.local.getOne(C.STORAGE_LOCAL.LOGS, {})) || {};
+                for (const id of Object.keys(logs)) if (/^(auto-jobs-v2|flow-v2-.+)$/.test(id)) delete logs[id];
+                await Store.local.setOne(C.STORAGE_LOCAL.LOGS, logs);
+                if (liveLogViewer) liveLogViewer.refresh();
+            }
+            clearLogBtn.textContent = 'Cleared';
+            setTimeout(() => { clearLogBtn.textContent = 'Clear Log'; }, 1500);
+        });
+        container.appendChild(clearLogBtn);
+
         const stream = el('div', 'log-stream');
         container.appendChild(stream);
         if (uiComponents.logViewer && typeof uiComponents.logViewer.attach === 'function') {
@@ -160,7 +221,10 @@
         mount(container) {
             unsubSync = Store.sync.onChanged((changes) => {
                 if (!container.classList.contains('active')) return;
-                if (changes[C.STORAGE_SYNC.AUTOJOBS_V2_SETTINGS]) refreshHeader();
+                // Re-render the header on v2 settings OR any required-solver toggle
+                // (so the warning + START gate update live as the user flips them).
+                if (changes[C.STORAGE_SYNC.AUTOJOBS_V2_SETTINGS]
+                    || REQUIRED_SOLVERS.some((s) => changes[C.STORAGE_SYNC[s.key]])) refreshHeader();
             });
             buildPanel(container);
             refreshHeader();

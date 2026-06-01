@@ -43,6 +43,12 @@
     const { Module, Bus, Registry, dom, constants: C } = root.COR3;
     const MSG = C.MSG;
 
+    // Module logger ref (set when the watch loop starts) so the diagnostic dumps
+    // emitted from non-`mod` scopes (waitForCandidate's check()) also reach the
+    // Logger — they then show up in the popup Logs panel under id 'solver-ice-wall',
+    // alongside the console output, so they can be copied/shared.
+    let logRef = null;
+
     const SEL = {
         APP:        '[data-sentry-component="IceWallBreakApplication"]',
         WALL:       '[data-sentry-component="WallBoard"]',
@@ -51,6 +57,11 @@
         COUNTER:    '[data-sentry-element="SidebarCounterStyled"]',
         TIMER:      '[data-sentry-element="TimerBoxesStyled"]',
         EVENT_LOG:  '[data-sentry-element="EventLogStyled"]',
+        // The intro log block ("Initializing ICE WALL Break… [CONNECTED]…") — a
+        // stable, always-visible text panel OUTSIDE the watched WALL subtree. We
+        // append the diagnostic HUD line here (bright) instead of as SVG text on
+        // the board, which overflowed the window and read faintly.
+        INTRO:      '[data-sentry-component="DecorativeIntro"]',
     };
     const COL_PX = 31.5;
     const ROW_PX = 54;
@@ -282,7 +293,7 @@
         if (!shape) return null;
         const entry = db[shape.key];
         if (!entry || !entry.click) return null;
-        return { tCol: shape.origin.col + entry.click.dc, tRow: shape.origin.row + entry.click.dr, mirror: !!entry.click.mirror };
+        return { tCol: shape.origin.col + entry.click.dc, tRow: shape.origin.row + entry.click.dr, mirror: !!entry.click.mirror, pinned: !!entry.pinned };
     }
     // Record (+ persist) that clicking `clickedCell` solved the SOLVED target
     // shape. clickedCell carries its TARGET coords (tCol/tRow). `solvedShape` MUST
@@ -295,9 +306,12 @@
         if (!clickedCell || clickedCell.tCol == null) return;
         const shape = solvedShape || canonicalShape(readTargetCells());
         if (!shape) return;
-        const click = { dc: clickedCell.tCol - shape.origin.col, dr: clickedCell.tRow - shape.origin.row, mirror: !!clickedCell.mirror };
         const db = root.__iceWallClickDB || (root.__iceWallClickDB = {});
         const prev = db[shape.key];
+        // PINNED entries are user-authoritative — never auto-overwrite the click
+        // cell from a solve. (Counter still advanced, but the user owns this shape.)
+        if (prev && prev.pinned) return;
+        const click = { dc: clickedCell.tCol - shape.origin.col, dr: clickedCell.tRow - shape.origin.row, mirror: !!clickedCell.mirror };
         const entry = { cells: shape.rel, click, learnedAt: Date.now(), hits: ((prev && prev.hits) || 0) + 1 };
         db[shape.key] = entry;
         try { Bus.window.post(MSG.SOLVER.ICE_WALL_LEARN, { key: shape.key, entry }); } catch (_) { /* noop */ }
@@ -319,6 +333,12 @@
         }
         const learned = learnedClickFor();
         const isLearned = (x) => !!learned && x.tCol === learned.tCol && x.tRow === learned.tRow && (!!x.mirror === !!learned.mirror);
+        // PINNED shape → click ONLY the user-chosen cell (when it's revealed on the
+        // board). No brute-force through the shape's other cells — each miss costs a
+        // real -16s, and the user has declared this the right cell.
+        if (learned && learned.pinned) {
+            return cells.filter(isLearned).map((x) => Object.assign({}, x, { pinned: true }));
+        }
         cells.sort((a, b) => {
             const lc = (isLearned(b) ? 1 : 0) - (isLearned(a) ? 1 : 0);  // learned cell first
             if (lc) return lc;
@@ -353,64 +373,71 @@
      */
     function findShapeCandidates(excludeKeys) {
         const targetCells = readTargetCells();
-        if (targetCells.length === 0) return { candidates: [], total: 0, revealedTotal: 0 };
+        if (targetCells.length === 0) return { candidates: [], total: 0, revealedTotal: 0, anchorHits: 0 };
 
-        // Anchor selection: prefer a revealed target cell so we can filter
-        // board candidates by sig. If the target has no revealed cells
-        // (e.g. game hasn't loaded glyphs yet), bail.
         const revealedTargets = targetCells.filter((c) => c.state === 'revealed');
-        if (revealedTargets.length === 0) return { candidates: [], total: targetCells.length, revealedTotal: 0 };
-        // Anchor selection: prefer a revealed cell whose signature is UNIQUE
-        // within the target. Non-unique anchors (e.g. when target has a
-        // duplicate glyph) match more board cells, producing false-positive
-        // partial candidates that can sneak past the matcher. A unique
-        // anchor restricts the search to the actual shape position.
+        if (revealedTargets.length === 0) return { candidates: [], total: targetCells.length, revealedTotal: 0, anchorHits: 0 };
+
+        // MULTI-ANCHOR. Anchor on EVERY revealed target cell whose sig is UNIQUE in
+        // the target (non-unique sigs match too many board cells → false partials).
+        // Trying ALL unique glyphs — not just the first — makes the shape found via
+        // WHICHEVER glyph happens to be revealed on the board at its position, instead
+        // of stalling until one specific anchor glyph reveals (reveal-order
+        // independence — confirmed needed: a board where only the 'first' anchor was
+        // revealed at the bottom edge gave cand 0 while the other unique glyphs were
+        // already placeable). Each (anchor, matching board cell) defines a placement
+        // offset (ocol,orow); placements are de-duped and each is validated in full,
+        // so multi-anchor adds no false positives (mismatch>0 still rejects).
         const sigCounts = new Map();
         for (const t of revealedTargets) sigCounts.set(t.sig, (sigCounts.get(t.sig) || 0) + 1);
-        const targetAnchor =
-            revealedTargets.find((t) => sigCounts.get(t.sig) === 1) || revealedTargets[0];
-        // Click target must be a REVEALED cell: picking over ALL target cells
-        // (incl. placeholders) could land on a cell whose mapped board offset is
-        // still empty/unrevealed, so the click misfires, the counter never
-        // advances, and a correct match is wrongly discarded.
+        const anchors = revealedTargets.filter((t) => sigCounts.get(t.sig) === 1);
+        const anchorSet = anchors.length ? anchors : [revealedTargets[0]];
+        const ref = revealedTargets[0];   // stable per-placement identity cell
+        // Click target must be a REVEALED cell (a placeholder's board offset may be
+        // unrevealed → the click misfires and a correct match is wrongly discarded).
         const targetClick = pickClickTarget(revealedTargets);
 
         const boardCells = readBoardCells();
         const boardMap = makeBoardMap(boardCells);
+        // Index revealed board cells by sig+mirror for fast anchor lookup.
+        const bySigMir = new Map();
+        for (const b of boardCells) {
+            if (b.state !== 'revealed') continue;
+            const k = b.sig + '|' + (b.mirror ? 1 : 0);
+            let arr = bySigMir.get(k); if (!arr) bySigMir.set(k, arr = []); arr.push(b);
+        }
+
+        // Collect unique placement offsets (ocol,orow) from all anchors.
+        const placements = new Map();   // "ocol,orow" -> [ocol, orow]
+        let anchorHits = 0;
+        for (const a of anchorSet) {
+            const hits = bySigMir.get(a.sig + '|' + (a.mirror ? 1 : 0)) || [];
+            for (const b of hits) {
+                anchorHits++;
+                const ocol = b.col - a.col, orow = b.row - a.row;
+                const key = `${ocol},${orow}`;
+                if (!placements.has(key)) placements.set(key, [ocol, orow]);
+            }
+        }
 
         const out = [];
-        for (const cand of boardCells) {
-            if (cand.state !== 'revealed') continue;
-            if (cand.mirror !== targetAnchor.mirror) continue;
-            if (cand.sig !== targetAnchor.sig) continue;
-
-            const candKey = `${cand.col},${cand.row}`;
+        for (const [ocol, orow] of placements.values()) {
+            const refCol = ref.col + ocol, refRow = ref.row + orow;   // placement identity
+            const candKey = `${refCol},${refRow}`;
             if (excludeKeys && excludeKeys.has(candKey)) continue;
 
             let realMatch = 0, wildMatch = 0, mismatch = 0, unknown = 0;
             const cells = [];
             for (const t of targetCells) {
-                const cc = cand.col + (t.col - targetAnchor.col);
-                const cr = cand.row + (t.row - targetAnchor.row);
+                const cc = t.col + ocol, cr = t.row + orow;
                 const bc = boardMap.get(`${cc},${cr},${t.mirror}`);
                 cells.push({ col: cc, row: cr, mirror: t.mirror, isClick: t === targetClick, tCol: t.col, tRow: t.row });
-
                 if (!bc) { mismatch++; continue; }
-
                 if (t.state !== 'revealed') {
-                    // Target placeholder/empty positions mark "blanks" in
-                    // the pattern: that board cell must NOT be revealed
-                    // with a different glyph. Accept board states empty
-                    // or placeholder (both mean "no committed glyph
-                    // there"). If board has revealed a unique glyph in
-                    // that slot, this candidate is at the wrong position.
-                    //
-                    // Counted as `wildMatch`, NOT `realMatch` — wildcards
-                    // are consistency checks, not positive evidence; they
-                    // can't disambiguate between competing anchor positions.
+                    // Target blank: that board cell must NOT carry a revealed glyph.
+                    // Counted as wildMatch (consistency check, not positive evidence).
                     if (bc.state === 'revealed') { mismatch++; continue; }
-                    wildMatch++;
-                    continue;
+                    wildMatch++; continue;
                 }
                 if (bc.state !== 'revealed') { unknown++; continue; }
                 if (bc.sig !== t.sig) { mismatch++; continue; }
@@ -419,13 +446,12 @@
             if (mismatch > 0) continue;
             if (realMatch === 0) continue;
 
-            const clickCol = cand.col + (targetClick.col - targetAnchor.col);
-            const clickRow = cand.row + (targetClick.row - targetAnchor.row);
+            const clickCol = targetClick.col + ocol, clickRow = targetClick.row + orow;
             const clickCell = boardMap.get(`${clickCol},${clickRow},${targetClick.mirror}`);
             out.push({
-                col: cand.col, row: cand.row,
+                col: refCol, row: refRow,
                 cells,
-                clickGroup: clickCell ? clickCell.group : cand.group,
+                clickGroup: clickCell ? clickCell.group : null,
                 clickCol, clickRow, clickMirror: targetClick.mirror,
                 realMatch, wildMatch, unknown, mismatch,
                 match: realMatch, // alias for logging / backward compat
@@ -438,7 +464,7 @@
             if (a.col !== b.col) return a.col - b.col;
             return a.row - b.row;
         });
-        return { candidates: out, total: targetCells.length, revealedTotal: revealedTargets.length };
+        return { candidates: out, total: targetCells.length, revealedTotal: revealedTargets.length, anchorHits };
     }
 
     /**
@@ -453,33 +479,42 @@
         if (targetCells.length === 0) return [];
         const revealedTargets = targetCells.filter((c) => c.state === 'revealed');
         if (revealedTargets.length === 0) return [];
+        // Same MULTI-ANCHOR placement enumeration as findShapeCandidates (so both
+        // share ONE coordinate basis — candidate col/row = the `ref` cell's board
+        // position), but accepts a placement with NO mismatch regardless of how many
+        // cells matched (realMatch may be 0). Used as the disambiguation fallback.
         const sigCounts = new Map();
         for (const t of revealedTargets) sigCounts.set(t.sig, (sigCounts.get(t.sig) || 0) + 1);
-        const targetAnchor =
-            revealedTargets.find((t) => sigCounts.get(t.sig) === 1) || revealedTargets[0];
-        // Click target must be a REVEALED cell: picking over ALL target cells
-        // (incl. placeholders) could land on a cell whose mapped board offset is
-        // still empty/unrevealed, so the click misfires, the counter never
-        // advances, and a correct match is wrongly discarded.
+        const anchors = revealedTargets.filter((t) => sigCounts.get(t.sig) === 1);
+        const anchorSet = anchors.length ? anchors : [revealedTargets[0]];
+        const ref = revealedTargets[0];
         const targetClick = pickClickTarget(revealedTargets);
 
         const boardCells = readBoardCells();
         const boardMap = makeBoardMap(boardCells);
+        const bySigMir = new Map();
+        for (const b of boardCells) {
+            if (b.state !== 'revealed') continue;
+            const k = b.sig + '|' + (b.mirror ? 1 : 0);
+            let arr = bySigMir.get(k); if (!arr) bySigMir.set(k, arr = []); arr.push(b);
+        }
+        const placements = new Map();
+        for (const a of anchorSet) {
+            const hits = bySigMir.get(a.sig + '|' + (a.mirror ? 1 : 0)) || [];
+            for (const b of hits) {
+                const key = `${b.col - a.col},${b.row - a.row}`;
+                if (!placements.has(key)) placements.set(key, [b.col - a.col, b.row - a.row]);
+            }
+        }
 
         const out = [];
-        for (const cand of boardCells) {
-            if (cand.state !== 'revealed') continue;
-            if (cand.mirror !== targetAnchor.mirror) continue;
-            if (cand.sig !== targetAnchor.sig) continue;
-
-            const candKey = `${cand.col},${cand.row}`;
-            if (excludeKeys && excludeKeys.has(candKey)) continue;
-
+        for (const [ocol, orow] of placements.values()) {
+            const refCol = ref.col + ocol, refRow = ref.row + orow;
+            if (excludeKeys && excludeKeys.has(`${refCol},${refRow}`)) continue;
             let eliminated = false;
             const cells = [];
             for (const t of targetCells) {
-                const cc = cand.col + (t.col - targetAnchor.col);
-                const cr = cand.row + (t.row - targetAnchor.row);
+                const cc = t.col + ocol, cr = t.row + orow;
                 const bc = boardMap.get(`${cc},${cr},${t.mirror}`);
                 cells.push({ col: cc, row: cr, mirror: t.mirror, isClick: t === targetClick, tCol: t.col, tRow: t.row });
                 if (!bc) { eliminated = true; break; }
@@ -491,13 +526,12 @@
             }
             if (eliminated) continue;
 
-            const clickCol = cand.col + (targetClick.col - targetAnchor.col);
-            const clickRow = cand.row + (targetClick.row - targetAnchor.row);
+            const clickCol = targetClick.col + ocol, clickRow = targetClick.row + orow;
             const clickCell = boardMap.get(`${clickCol},${clickRow},${targetClick.mirror}`);
             out.push({
-                col: cand.col, row: cand.row,
+                col: refCol, row: refRow,
                 cells,
-                clickGroup: clickCell ? clickCell.group : cand.group,
+                clickGroup: clickCell ? clickCell.group : null,
                 clickCol, clickRow, clickMirror: targetClick.mirror,
                 realMatch: 0, wildMatch: 0, unknown: 0, mismatch: 0,
                 match: 0, // alias for logging
@@ -507,6 +541,105 @@
         }
         return out;
     }
+
+    // Diagnostic for the "cand 0 but anchorHits>0" stall: the anchor glyph IS on
+    // the board but the shape fits NOWHERE. Dumps the target shape's layout
+    // (relative to the anchor) and, for every board cell carrying the anchor
+    // sig+mirror, a per-target-cell outcome string so the geometry break is
+    // visible without the DOM. Legend per cell (in target order):
+    //   =  match (board revealed, same sig)        #  wrong sig (board revealed, different)
+    //   ?  unknown (target revealed, board not)     X  NO board cell at that offset+mirror
+    //   .  wildcard ok (target blank, board blank)  !  wildcard violated (target blank, board revealed)
+    // All-X rows ⇒ coordinate/parity mapping is off (offsets land off-grid);
+    // all-# rows ⇒ glyphs differ (wrong position / sig mis-read); ? ⇒ wait for reveals.
+    function diagnoseNoMatch() {
+        const targetCells = readTargetCells();
+        const revealed = targetCells.filter((c) => c.state === 'revealed');
+        if (!revealed.length) return null;
+        const sigCounts = new Map();
+        for (const t of revealed) sigCounts.set(t.sig, (sigCounts.get(t.sig) || 0) + 1);
+        const anchor = revealed.find((t) => sigCounts.get(t.sig) === 1) || revealed[0];
+        const boardMap = makeBoardMap(readBoardCells());
+        const sigIdx = new Map();
+        const sid = (s) => { if (!sigIdx.has(s)) sigIdx.set(s, sigIdx.size); return 'g' + sigIdx.get(s); };
+        const shape = targetCells.map((t) => `${t.col - anchor.col},${t.row - anchor.row}/${t.mirror ? 'D' : 'U'}/${t.state[0]}/${t.state === 'revealed' ? sid(t.sig) : '-'}`);
+        const hits = readBoardCells().filter((c) => c.state === 'revealed' && c.mirror === anchor.mirror && c.sig === anchor.sig);
+        const perHit = hits.map((h) => {
+            const out = targetCells.map((t) => {
+                const cc = h.col + (t.col - anchor.col), cr = h.row + (t.row - anchor.row);
+                const bc = boardMap.get(`${cc},${cr},${t.mirror}`);
+                if (!bc) return 'X';
+                if (t.state !== 'revealed') return bc.state === 'revealed' ? '!' : '.';
+                if (bc.state !== 'revealed') return '?';
+                return bc.sig === t.sig ? '=' : '#';
+            }).join('');
+            return `(${h.col},${h.row})=${out}`;
+        });
+        return { anchor: `(${anchor.col},${anchor.row})/${anchor.mirror ? 'D' : 'U'}/${sid(anchor.sig)}`, shape, hits: perHit };
+    }
+
+    // FULL raw-geometry dump — the data needed to understand the preview's (non-
+    // obvious) coordinate encoding and fix the parse instead of guessing. Prints,
+    // for BOTH the target preview and the board, each cell's raw `translate`, its
+    // tx/ty, the UNROUNDED tx/COL_PX & ty/ROW_PX (so a half-step packing shows as
+    // .5), the rounded col/row, mirror, state and a short sig id. Manual trigger:
+    //   window.__cor3IceWallDumpGeometry()
+    // Also auto-fired once per ~30s while a target is stuck (cand 0).
+    function dumpGeometry() {
+        const sigIdx = new Map();
+        const sid = (s) => { if (!s) return '-'; if (!sigIdx.has(s)) sigIdx.set(s, sigIdx.size); return 'g' + sigIdx.get(s); };
+        const parse = (g, tstr) => {
+            const t = tstr || '';
+            const m = t.match(/translate\(\s*([^,]+),\s*([^)]+)\)/);
+            const tx = m ? parseFloat(m[1]) : null;
+            const ty = m ? parseFloat(m[2]) : null;
+            return {
+                tx, ty,
+                fc: tx == null ? null : +(tx / COL_PX).toFixed(3),
+                fr: ty == null ? null : +(ty / ROW_PX).toFixed(3),
+                c: tx == null ? null : Math.round(tx / COL_PX),
+                r: ty == null ? null : Math.round(ty / ROW_PX),
+                m: /scale\(1\s*,\s*-1\)/.test(t) ? 1 : 0,
+                st: cellState(g)[0],
+                sig: sid(glyphSignature(g)),
+            };
+        };
+        const target = document.querySelector(SEL.TARGET);
+        const wall = document.querySelector(SEL.WALL);
+        const tCells = target ? [...target.querySelectorAll(':scope > g')].map((g) => Object.assign(parse(g, g.getAttribute('transform')), { raw: g.getAttribute('transform') })) : [];
+        const bCells = wall ? [...wall.querySelectorAll(':scope > g > g')].map((g) => parse(g, g.children[0] && g.children[0].getAttribute('transform'))) : [];
+        console.log(`[ICE WALL GEOM] COL_PX=${COL_PX} ROW_PX=${ROW_PX} · TARGET ${tCells.length} cells:`);
+        for (let i = 0; i < tCells.length; i++) {
+            const c = tCells[i];
+            console.log(`  T${i}: tx=${c.tx} ty=${c.ty} | tx/COL=${c.fc} ty/ROW=${c.fr} | col=${c.c} row=${c.r} ${c.m ? 'D' : 'U'} st=${c.st} ${c.sig} | "${c.raw}"`);
+        }
+        console.log(`[ICE WALL GEOM] BOARD ${bCells.length} cells [tx,ty,col,row,mir,state,sig]:`);
+        console.log(JSON.stringify(bCells.map((c) => [c.tx, c.ty, c.c, c.r, c.m, c.st, c.sig])));
+        return { target: tCells, board: bCells };
+    }
+    root.__cor3IceWallDumpGeometry = dumpGeometry;
+
+    // Per-cell board-match readout for an ALREADY-committed candidate (the one we
+    // are about to click). Same legend as diagnoseNoMatch, with `*` on the click
+    // cell: shows exactly what the matched shape looks like against the board so a
+    // "clicked the right cell but counter didn't move" case is inspectable.
+    //   =match  #wrong-sig  ?unknown  Xno-cell  .blank-ok  !blank-violated
+    function describeCandidate(best) {
+        const boardMap = makeBoardMap(readBoardCells());
+        const tMap = new Map();
+        for (const t of readTargetCells()) tMap.set(`${t.col},${t.row},${t.mirror ? 1 : 0}`, t);
+        return (best.cells || []).map((c) => {
+            const bc = boardMap.get(`${c.col},${c.row},${c.mirror ? 1 : 0}`);
+            const t = tMap.get(`${c.tCol},${c.tRow},${c.mirror ? 1 : 0}`);
+            let o;
+            if (!bc) o = 'X';
+            else if (!t || t.state !== 'revealed') o = (bc.state === 'revealed') ? '!' : '.';
+            else if (bc.state !== 'revealed') o = '?';
+            else o = (bc.sig === t.sig) ? '=' : '#';
+            return `(${c.col},${c.row})${c.mirror ? 'D' : 'U'}${c.isClick ? '*' : ''}:${o}`;
+        }).join(' ');
+    }
+    let lastFieldDumpAt = 0;   // throttle the full field dump fired at commit time
 
     // ─── Overlay ─────────────────────────────────────────────────────────
     //
@@ -529,6 +662,7 @@
     // observer in an 80ms loop.
 
     const OVERLAY_ID = 'cor3-icewall-overlay';
+    const HUD_ID = 'cor3-icewall-hud';
     const TRI_PATH = 'M60.6914 53.0305 H1.73242 L31.21 1.99927 Z';
     const LAYER_ORDER = ['noise', 'rejected', 'candidate']; // bottom → top
 
@@ -565,9 +699,13 @@
 
     function clearOverlay() {
         const wall = document.querySelector(SEL.WALL);
-        if (!wall) return;
-        const old = wall.querySelector('#' + OVERLAY_ID);
-        if (old) old.remove();
+        if (wall) {
+            const old = wall.querySelector('#' + OVERLAY_ID);
+            if (old) old.remove();
+        }
+        // The HUD lives in the intro block (outside WALL) — drop it too.
+        const hud = document.getElementById(HUD_ID);
+        if (hud) hud.remove();
     }
 
     function drawCellPath(layer, col, row, mirror, attrs) {
@@ -699,6 +837,34 @@
         }
     }
 
+    /**
+     * Diagnostic HUD — a bright line appended to the intro log block (SEL.INTRO),
+     * showing the matcher's live numbers so a stall is screenshot-able:
+     *   target Nc      — how many cells the solver READ from the target preview
+     *                    (far below the visible preview ⇒ under-reading the shape)
+     *   rm X/Y         — best candidate's realMatch / revealed target cells
+     *   cand N         — surviving positive candidates (0 ⇒ shape can't be placed)
+     *   gate …         — mid / strong / minRevealed thresholds
+     * Lives in the intro panel (outside the watched WALL subtree, so it never
+     * retriggers the MutationObserver and never overflows the board like the
+     * earlier SVG text did). Idempotent + self-healing: re-creates its span if a
+     * React re-render drops it, and only writes when the text actually changes.
+     */
+    function drawHud(text) {
+        const host = document.querySelector(SEL.INTRO);
+        if (!host) return;
+        let span = document.getElementById(HUD_ID);
+        if (!text) { if (span) span.remove(); return; }
+        if (!span || !host.contains(span)) {
+            if (span) span.remove();
+            span = document.createElement('span');
+            span.id = HUD_ID;
+            span.style.cssText = 'color:#7CFF6B;font-weight:700;text-shadow:0 0 4px rgba(0,0,0,0.95);';
+            host.appendChild(span);
+        }
+        if (span.textContent !== text) span.textContent = text;
+    }
+
     // ─── State probes + click ────────────────────────────────────────────
 
     function readCounter() {
@@ -715,6 +881,26 @@
         return (+m[1]) * 60 + (+m[2]);
     }
 
+    // Resolve which BOARD cell a viewport pixel actually lands on — for verifying
+    // that the click reaches the intended cell (and isn't intercepted by an
+    // overlay or off by geometry). Hit-tests with elementFromPoint and walks up to
+    // the nearest cell <g> inside the wall, returning "(col,row)U|D" or an <element> tag.
+    function cellAtPoint(x, y) {
+        const el = document.elementFromPoint(x, y);
+        if (!el) return 'none';
+        const wall = document.querySelector(SEL.WALL);
+        let node = el;
+        while (node && node !== document.body) {
+            if (node.tagName && node.tagName.toLowerCase() === 'g' && node.children[0]
+                && wall && wall.contains(node)) {
+                const pos = parseGridPos(node.children[0].getAttribute('transform'));
+                if (pos) return `(${pos.col},${pos.row})${pos.mirror ? 'D' : 'U'}`;
+            }
+            node = node.parentElement;
+        }
+        return `<${el.tagName.toLowerCase()}${el.id ? '#' + el.id : ''}>`;
+    }
+
     /**
      * Click dispatch. The May-2026 refactor moved interactivity to
      * pointer events; sending just `click` doesn't trigger the React
@@ -722,15 +908,19 @@
      * triplet, all at the geometric centre of the cell's bounding
      * triangle. Bounding triangle has pointer-events:auto; if it ever
      * gets pointer-events:none we'd fall back to the parent <g>.
+     * Returns { x, y, landed, tag } describing the actual dispatch — the
+     * caller logs WANT (intended cell) vs ACTUAL (pixel + the cell that
+     * pixel hits) so any divergence is visible.
      */
     async function attemptClick(glyphGroup, mod) {
         const tri = glyphGroup.querySelector(SEL.TRIANGLE);
         const target = tri || glyphGroup;
-        if (!target) return false;
+        if (!target) return null;
         const r = target.getBoundingClientRect();
         const x = r.left + r.width / 2;
         const y = r.top + r.height / 2;
-        if (mod) mod.debug(`click dispatch: target=<${target.tagName}> at (${x.toFixed(0)},${y.toFixed(0)}) box=${r.width.toFixed(0)}x${r.height.toFixed(0)}`);
+        const landed = cellAtPoint(x, y);   // which cell the pixel hits, BEFORE the click mutates the DOM
+        if (mod) mod.debug(`click dispatch: target=<${target.tagName}> at (${x.toFixed(0)},${y.toFixed(0)}) box=${r.width.toFixed(0)}x${r.height.toFixed(0)} landed=${landed}`);
         const fire = (type, EventCtor, extra) => {
             target.dispatchEvent(new EventCtor(type, {
                 bubbles: true, cancelable: true, view: window,
@@ -749,7 +939,7 @@
             fire('mouseup', MouseEvent);
         }
         fire('click', MouseEvent);
-        return true;
+        return { x: Math.round(x), y: Math.round(y), landed, tag: target.tagName.toLowerCase() };
     }
 
     // ─── Reactive matching loop ──────────────────────────────────────────
@@ -776,6 +966,8 @@
             // leader and how long it has held that spot.
             let lastBestKey = null;
             let lastBestSince = Date.now();
+            let lastDiagAt = 0;   // throttle the no-match per-anchor dump
+            let lastGeomAt = 0;   // throttle the full raw-geometry dump
 
             const finish = (val) => {
                 if (done) return;
@@ -797,7 +989,19 @@
                 drawNoiseOverlay();
                 drawRejectedOverlay(excludeKeys);
 
-                const { candidates, total, revealedTotal } = findShapeCandidates(excludeKeys);
+                let { candidates, total, revealedTotal, anchorHits } = findShapeCandidates(excludeKeys);
+                if (candidates.length === 0 && excludeKeys.size > 0) {
+                    // STARVED: a position excluded after a failed click (while it was
+                    // still partial) may have since revealed into the ONLY valid match,
+                    // but the exclusion never cleared because the board stopped
+                    // revealing (excludeKeys clears only on NEW reveals). The DIAG
+                    // confirmed this — a full '======' match sitting excluded → cand 0
+                    // → hang. Drop the stale per-position exclusions and re-evaluate;
+                    // badClicks (per-cell, persistent) still bars the exact cells that
+                    // actually failed, so this can't re-earn the same -16s.
+                    excludeKeys.clear();
+                    ({ candidates, total, revealedTotal, anchorHits } = findShapeCandidates(excludeKeys));
+                }
 
                 const best = candidates[0]; // sorted desc by realMatch, then col, row
                 const second = candidates[1];
@@ -808,6 +1012,34 @@
                 }
 
                 const { strong: strongTh, mid: midTh, minRevealed } = adaptiveThresholds(total);
+
+                // Live diagnostic line (see drawHud). `target ${total}c` is the key
+                // tell for under-reading; `anchorHits` (shown only when cand 0)
+                // splits sig-mismatch (0) from coordinate-misalignment (>0).
+                const a0 = candidates.length === 0 ? ` · anchorHits ${anchorHits || 0}` : '';
+                drawHud(`ICE WALL  target ${total}c · revealed ${revealedTotal} · best rm ${best ? best.realMatch : 0}/${revealedTotal} · cand ${candidates.length}${a0} · gate mid${midTh}/str${strongTh}/minRev${minRevealed}`);
+
+                // No positive candidate → clear the stale tentative highlight so the
+                // board doesn't show a dashed shape the matcher no longer backs.
+                if (candidates.length === 0) {
+                    const cl = getLayer('candidate');
+                    if (cl) { clearLayerContent(cl); cl.dataset.cor3Key = ''; }
+                    // cand 0 BUT the anchor glyph is on the board (anchorHits>0): the
+                    // shape can't be placed anywhere → geometry/coordinate mismatch.
+                    // Dump the layout + per-anchor outcomes (throttled) to the console
+                    // so the break is diagnosable without the DOM.
+                    if (anchorHits > 0 && Date.now() - lastDiagAt > 3000) {
+                        lastDiagAt = Date.now();
+                        const d = diagnoseNoMatch();
+                        if (d) {
+                            console.log('[ICE WALL DIAG] no-match · anchor', d.anchor, '· shape[', d.shape.join('  '), '] · hits', d.hits);
+                            if (logRef) logRef.warn(`DIAG no-match · anchor ${d.anchor} · shape[ ${d.shape.join(' ')} ] · hits ${JSON.stringify(d.hits)}`);
+                        }
+                        // Auto-emit the full raw geometry once per stall episode so the
+                        // preview's coordinate encoding can be read off without manual action.
+                        if (Date.now() - lastGeomAt > 30000) { lastGeomAt = Date.now(); try { dumpGeometry(); } catch (_) { /* noop */ } }
+                    }
+                }
 
                 if (revealedTotal < minRevealed) {
                     if (onTentative && candidates.length > 0) onTentative(candidates[0]);
@@ -897,8 +1129,17 @@
      */
     const countRevealed = () => readBoardCells().reduce((n, c) => n + (c.state === 'revealed' ? 1 : 0), 0);
 
-    async function solveRound(mod) {
+    async function solveRound(mod, badClicks) {
         const excludeKeys = new Set();
+        // `badClicks` (passed in, owned by watchLoop and reset when the counter
+        // advances) is the blacklist of physical board cells (col,row,mirror) we
+        // CLICKED for THIS target without the counter advancing — confirmed-wrong
+        // selection anchors. A wrong-anchor click is a property of (cell, current
+        // target): re-clicking it with the same unsolved target only reproduces the
+        // -16s "Pattern mismatch". Unlike excludeKeys it is NEVER cleared on a reveal
+        // and PERSISTS across solveRound retries of the same target, so the solver
+        // never re-hammers the same wrong glyph.
+        const cellKey = (c) => `${c.col},${c.row},${c.mirror ? 1 : 0}`;
         const roundStart = Date.now();
         // Exclusions are only valid for the board state they were made on. An
         // anchor whose click failed while the board was still SPARSE is almost
@@ -970,41 +1211,83 @@
             }
             best = refreshed; // refresh realMatch / unknown with latest state
 
-            mod.info(`commit (${reason}): anchor=(${best.col},${best.row}) shape=${best.cells.length} cells realMatch=${best.realMatch}/${best.revealedTotal} unknown=${best.unknown} (target ${best.total}) attempt=${attempt + 1}/${MAX_RETRIES}`);
-            drawCandidateOverlay(best, true);
+            // Resolve the click order FIRST (learned → pick → bottom-left, REVEALED
+            // board cells only), THEN re-tag the overlay's red "click" cell to the
+            // cell we will ACTUALLY click first. The painted isClick came from
+            // pickClickTarget on the TARGET preview, but the real first click is
+            // candidateClickCells[0] — a learned cell, or a revealed fallback when
+            // the pick maps to an unrevealed board cell. Re-tagging keeps "where we
+            // want to click" (red) in sync with "where we click" (this was the
+            // observed divergence).
+            // Click order: learned/PINNED → pick → bottom-left, REVEALED cells only.
+            // A PINNED shape yields exactly ONE cell (no brute-force — each miss is a
+            // real -16s and the user owns the choice). Drop any cell already proven
+            // wrong for THIS target (badClicks) so we never re-click the same glyph.
+            const clickCells = candidateClickCells(best).filter((c) => !badClicks.has(cellKey(c)));
+            const firstClick = clickCells[0] || null;
+            if (clickCells.length === 0) {
+                // Every clickable cell of this candidate is already blacklisted →
+                // re-clicking would only re-earn -16s. Exclude the anchor & re-search.
+                mod.debug(`commit @(${best.col},${best.row}): all ${best.cells.length} cells already blacklisted this target — skipping`);
+                excludeKeys.add(`${best.col},${best.row}`);
+                continue;
+            }
 
-            // Try each REVEALED cell of the confirmed shape as the click target
-            // (pickClickTarget's guess first, then bottom-left), until the
-            // counter advances. The game completes the cycle only on the cell it
-            // uses as the shape's selection anchor — not always the centroid —
-            // so brute-forcing the shape's own cells lands the right one for any
-            // shape. Only if NO cell of the shape advances do we treat it as a
-            // wrong shape and exclude the anchor.
-            const clickCells = candidateClickCells(best);
+            mod.info(`commit (${reason}): anchor=(${best.col},${best.row}) shape=${best.cells.length} cells realMatch=${best.realMatch}/${best.revealedTotal} unknown=${best.unknown} (target ${best.total}) click=${firstClick ? `(${firstClick.col},${firstClick.row})` : 'none'} cells=${clickCells.length}${firstClick && firstClick.pinned ? ' PINNED' : ''} attempt=${attempt + 1}/${MAX_RETRIES}`);
+            // Field dump at commit: the matched shape vs board (per-cell), plus the
+            // full raw geometry (throttled). Lets us see WHAT is being clicked and why
+            // a correct-looking click may not advance the counter.
+            const commitLine = `COMMIT ${reason} @(${best.col},${best.row}) rm ${best.realMatch}/${best.revealedTotal} unk ${best.unknown} click=${firstClick ? `(${firstClick.col},${firstClick.row})` : 'none'} · ${describeCandidate(best)}`;
+            console.log(`[ICE WALL ${commitLine}]`);
+            mod.info(commitLine);   // also to the Logger (Logs panel · solver-ice-wall)
+            if (Date.now() - lastFieldDumpAt > 8000) { lastFieldDumpAt = Date.now(); try { dumpGeometry(); } catch (_) { /* noop */ } }
+
             // Snapshot the CURRENT (about-to-be-solved) target shape NOW, before any
             // click advances the counter and swaps the preview to the next shape —
             // learnClick must key on this, not the post-advance live target.
             const solvedShape = canonicalShape(readTargetCells());
             let advanced = null;
-            for (const cell of clickCells) {
+            for (let ci = 0; ci < clickCells.length; ci++) {
                 if (root.__iceWallAbort) return false;
                 if (!document.querySelector(SEL.APP)) return false;
+                const cell = clickCells[ci];
+                // Keep the overlay + HUD on the cell we are ACTUALLY clicking RIGHT
+                // NOW — re-tag the red cell per iteration. Previously only the first
+                // cell was painted while the brute-force clicked later ones, so "where
+                // we show" diverged from "where we click" (the reported bug).
+                for (const c of best.cells) c.isClick = (c.col === cell.col && c.row === cell.row && (!!c.mirror === !!cell.mirror));
+                drawCandidateOverlay(best, true);
+                drawHud(`CLICK ${reason} @(${best.col},${best.row}) · cell (${cell.col},${cell.row}) [${ci + 1}/${clickCells.length}]${cell.pinned ? ' PINNED' : ''} · rm ${best.realMatch}/${best.revealedTotal} · unk ${best.unknown}`);
                 const before = readCounter();
-                mod.debug(`try click cell (${cell.col},${cell.row})${cell.isClick ? ' [pick]' : ''}`);
-                await attemptClick(cell.group, mod);
+                // WANT (the cell we chose) vs ACTUAL (the pixel we dispatch + the cell
+                // that pixel actually hits). A ✗ means the click does NOT land on the
+                // chosen cell (overlay interception / geometry offset).
+                const want = `(${cell.col},${cell.row})${cell.mirror ? 'D' : 'U'}`;
+                const src = cell.pinned ? 'pinned' : (cell.isClick ? 'pick' : 'fallback');
+                const ac = await attemptClick(cell.group, mod);
+                const actual = ac ? `px(${ac.x},${ac.y}) on ${ac.landed}` : 'no-target';
+                const ok = ac && ac.landed === want;
+                console.log(`[ICE WALL CLICK] WANT ${want} [${src}] → ACTUAL ${actual} ${ok ? '✓' : '✗ MISMATCH'}`);
+                mod.info(`click WANT ${want} [${src}] → ACTUAL ${actual} ${ok ? 'OK' : 'MISMATCH'}`);
                 advanced = await dom.waitFor(() => {
                     const cc = readCounter();
                     return cc && before && cc.current > before.current ? cc : null;
                 }, { timeout: 3000 });
                 if (advanced) {
-                    mod.info(`counter advanced via cell (${cell.col},${cell.row})${cell.isClick ? '' : ' [learned]'}: ${advanced.current}/${advanced.total}`);
-                    learnClick(cell, solvedShape);   // remember this shape→cell so it's instant next time
+                    mod.info(`counter advanced via cell (${cell.col},${cell.row}): ${advanced.current}/${advanced.total}`);
+                    learnClick(cell, solvedShape);   // remember this shape→cell (skipped if pinned)
                     clearOverlay();
                     return true;
                 }
+                // Clicked, counter didn't move → confirmed-wrong anchor for THIS
+                // target. Blacklist the exact cell so it's never clicked again until
+                // the target changes (survives the reveal-driven excludeKeys reset).
+                badClicks.add(cellKey(cell));
+                mod.debug(`click miss (${cell.col},${cell.row}) → blacklisted for this target (${badClicks.size} bad)`);
             }
 
             mod.warn(`no cell of shape at (${best.col},${best.row}) advanced (${clickCells.length} tried) — excluding & re-searching (${attempt + 1}/${MAX_RETRIES})`);
+            drawHud(`NO ADVANCE @(${best.col},${best.row}) · tried ${clickCells.length} cell(s) · target ${best.total}c rm ${best.realMatch} — excluding (${attempt + 1}/${MAX_RETRIES})`);
             excludeKeys.add(`${best.col},${best.row}`);
             drawRejectedOverlay(excludeKeys);
         }
@@ -1014,6 +1297,7 @@
     }
 
     async function watchLoop(mod) {
+        logRef = mod;   // expose to non-`mod` scopes for Logger-routed diagnostics
         // Outer try/finally guarantees flag reset even if anything
         // inside throws — otherwise __iceWallActive stays true and the
         // START handler refuses to restart the loop, manifesting as
@@ -1041,6 +1325,12 @@
                     Bus.window.post(MSG.SOLVER.ICE_WALL_BUSY, { busy: true, ts: Date.now() });
 
                     try {
+                        // Per-TARGET click blacklist: persists across solveRound
+                        // retries of the SAME target (so a wrong glyph isn't re-clicked
+                        // for -16s on every retry), and resets the moment the counter
+                        // advances to the next target.
+                        let badClicks = new Set();
+                        let badTarget = -1;
                         // Solve all rounds within this puzzle
                         while (!root.__iceWallAbort && document.querySelector(SEL.APP)) {
                             const c = readCounter();
@@ -1048,7 +1338,8 @@
                                 mod.info(`puzzle solved: ${c.current}/${c.total}`);
                                 break;
                             }
-                            const ok = await solveRound(mod);
+                            if (c && c.current !== badTarget) { badClicks = new Set(); badTarget = c.current; }
+                            const ok = await solveRound(mod, badClicks);
                             if (!ok) await dom.sleep(1500);     // brief pause before retry
                         }
 

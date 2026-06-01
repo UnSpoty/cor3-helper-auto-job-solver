@@ -200,6 +200,13 @@
     function conditionItems(rawJob) {
         return (rawJob && rawJob.conditions && Array.isArray(rawJob.conditions.items)) ? rawJob.conditions.items : [];
     }
+    // Machine condition codes on a raw job (conditions.items[].type — e.g.
+    // InjectIps / DeleteIps / DecryptFile …). Language-independent, unlike the
+    // localised job name. Feeds the JOB_QUEUE type-capture debug line; this is
+    // the field detectJobType will switch to (#9 — delocalise classification).
+    function conditionTypes(rawJob) {
+        return conditionItems(rawJob).map((it) => it && it.type).filter(Boolean);
+    }
     // serverId for SAI ops == conditions.serverConfigId (== relatedServers[0].id, verified live).
     function serverConfigId(rawJob) {
         return (rawJob && rawJob.conditions && rawJob.conditions.serverConfigId) || null;
@@ -258,10 +265,13 @@
         });
     }
 
-    // Resolve once the matching at-timestamp key advances past `prevAt`
-    // (i.e. a fresh market frame landed), or once `timeoutMs` elapses.
-    // Resolves true if a fresh frame arrived, false on timeout.
-    function awaitMarketUpdate(store, atKey, prevAt, timeoutMs) {
+    // Subscribe to the at-timestamp key, fire `trigger` (the market refresh),
+    // and resolve once the key advances past `prevAt` (a fresh frame landed) or
+    // once `timeoutMs` elapses. The subscription is registered BEFORE trigger()
+    // runs so a fast WS reply can never land in the gap between posting the
+    // refresh and attaching the listener (which would drop the update and force
+    // a false "refresh timed out"). Resolves true on a fresh frame, false on timeout.
+    function awaitMarketUpdate(store, atKey, prevAt, timeoutMs, trigger) {
         return new Promise((resolve) => {
             let settled = false;
             const finish = (updated) => {
@@ -276,6 +286,7 @@
                 if (ch && Number(ch.newValue || 0) > Number(prevAt || 0)) finish(true);
             });
             const timer = setTimeout(() => finish(false), timeoutMs);
+            try { trigger(); } catch (_) { finish(false); }
         });
     }
 
@@ -378,8 +389,9 @@
                 }
 
                 const prevAt = await ctx.store.local.getOne(m.atKey, 0);
-                ctx.bus.window.post(m.refresh, null);
-                const refreshed = await awaitMarketUpdate(ctx.store, m.atKey, prevAt, timeout);
+                // Subscribe-then-post (inside awaitMarketUpdate) closes the race
+                // where a fast refresh reply landed before the listener attached.
+                const refreshed = await awaitMarketUpdate(ctx.store, m.atKey, prevAt, timeout, () => ctx.bus.window.post(m.refresh, null));
                 if (!refreshed) {
                     // Loud, not silent: the market was reachable but the
                     // refreshed frame never arrived in time.
@@ -466,6 +478,17 @@
                 markets: packet.markets,
                 jobs: queue.map(stripRaw),
             });
+
+            // Type-capture debug — one compact line per job, fully visible in the
+            // Activity Log (the capture lives in the MSG, not ctx, which the log
+            // viewer truncates to 200 chars). Correlates the localised name with
+            // the machine condition code(s) so the language-independent
+            // detectJobType map (#9) can be built/verified from a single cycle.
+            for (const j of queue) {
+                const ct = conditionTypes(j.raw);
+                const cat = (j.raw && j.raw.category) || '—';
+                ctx.log.debug(`JOB_QUEUE · "${j.name || '?'}" [${j.status}] cat="${cat}" cond=[${ct.join(', ') || '—'}] name→${j.type || 'null'} @${j.marketSlot}`);
+            }
 
             ctx.log.info(`JOB_QUEUE → ${queue.length} job(s) on the board`);
             return stamp(packet, this.id, { jobs: queue.length });

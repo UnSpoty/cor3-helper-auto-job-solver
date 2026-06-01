@@ -418,7 +418,9 @@
 
     // Mini SVG of a learned shape (reuses the game's triangle geometry). The
     // learned click cell is filled red; revealed cells cyan, placeholders dim.
-    function renderIceWallShape(entry) {
+    // When `onPick` is supplied, every cell becomes clickable — tapping one calls
+    // onPick(cell) so the user can re-assign which glyph the solver clicks.
+    function renderIceWallShape(entry, onPick) {
         const ns = 'http://www.w3.org/2000/svg';
         const COL = 31.5, ROW = 54;
         const TRI = 'M60.6914 53.0305 H1.73242 L31.21 1.99927 Z';
@@ -447,6 +449,11 @@
             p.setAttribute('fill-opacity', isClick ? '0.85' : (c.revealed ? '0.5' : '0.3'));
             p.setAttribute('stroke', isClick ? '#FFFFFF' : '#3a6b78');
             p.setAttribute('stroke-width', '2');
+            if (typeof onPick === 'function') {
+                p.style.cursor = 'pointer';
+                p.setAttribute('pointer-events', 'all');   // fill-opacity<1 still needs explicit hit area
+                p.addEventListener('click', (ev) => { ev.stopPropagation(); onPick(c); });
+            }
             svg.appendChild(p);
         }
         return svg;
@@ -487,23 +494,58 @@
 
         async function render() {
             const db = (await Store.local.getOne(C.STORAGE_LOCAL.ICE_WALL_CLICK_DB, {})) || {};
-            const entries = Object.keys(db).map((k) => db[k]).sort((a, b) => (b.hits || 0) - (a.hits || 0));
-            count.textContent = `${entries.length} shape(s) · red = click cell`;
+            const keys = Object.keys(db).sort((a, b) => ((db[b] && db[b].hits) || 0) - ((db[a] && db[a].hits) || 0));
+            count.textContent = `${keys.length} shape(s) · red = click cell`;
             body.innerHTML = '';
-            if (!entries.length) {
+            if (!keys.length) {
                 body.appendChild(el('div', 'muted xs', 'No shapes learned yet — solve some ICE WALL puzzles with the solver on.'));
                 return;
             }
+            body.appendChild(el('div', 'muted xs', 'Tap any cell to set where the solver clicks for that shape. Pin to lock it — pinned shapes are clicked ONLY on that cell (no brute-force) and never auto-relearned. Saved instantly + pushed to the running solver.'));
             const grid = el('div');
             Object.assign(grid.style, { display: 'flex', flexWrap: 'wrap', gap: '10px', marginTop: '8px' });
-            for (const entry of entries) {
+            for (const key of keys) {
+                const entry = db[key];
                 const item = el('div', 'card');
                 Object.assign(item.style, { padding: '6px', width: '132px', textAlign: 'center' });
-                item.appendChild(renderIceWallShape(entry));
-                item.appendChild(el('div', 'muted xs', `hits ${entry.hits || 0}`));
+                if (entry.pinned) item.style.outline = '2px solid #FF3333';
+                item.appendChild(renderIceWallShape(entry, (cell) => pickCell(key, cell)));
+                const meta = el('div', 'card-row');
+                Object.assign(meta.style, { justifyContent: 'space-between', alignItems: 'center', marginTop: '4px' });
+                meta.appendChild(el('span', 'muted xs', `hits ${entry.hits || 0}`));
+                const pinBtn = el('button', 'btn small' + (entry.pinned ? ' btn-success' : ''), entry.pinned ? '📌 Pinned' : 'Pin');
+                pinBtn.title = entry.pinned
+                    ? 'Pinned — solver clicks ONLY this cell and never re-learns it. Tap to unpin.'
+                    : 'Pin this click cell (solver clicks only it, no brute-force, no auto-overwrite)';
+                pinBtn.addEventListener('click', () => togglePin(key));
+                meta.appendChild(pinBtn);
+                item.appendChild(meta);
                 grid.appendChild(item);
             }
             body.appendChild(grid);
+        }
+
+        // Re-assign which cell of a learned shape the solver clicks. Persists the
+        // whole DB; the auto-ice-wall bridge's onChanged push then applies it to
+        // the live MAIN solver immediately (no reload).
+        async function pickCell(key, cell) {
+            const db = (await Store.local.getOne(C.STORAGE_LOCAL.ICE_WALL_CLICK_DB, {})) || {};
+            const entry = db[key];
+            if (!entry) return;
+            entry.click = { dc: cell.dc, dr: cell.dr, mirror: !!cell.mirror };
+            await Store.local.setOne(C.STORAGE_LOCAL.ICE_WALL_CLICK_DB, db);
+            render();
+        }
+
+        // Pin/unpin a shape: pinned ⇒ solver clicks ONLY the chosen cell and
+        // learnClick never overwrites it. Same live-push path as pickCell.
+        async function togglePin(key) {
+            const db = (await Store.local.getOne(C.STORAGE_LOCAL.ICE_WALL_CLICK_DB, {})) || {};
+            const entry = db[key];
+            if (!entry) return;
+            entry.pinned = !entry.pinned;
+            await Store.local.setOne(C.STORAGE_LOCAL.ICE_WALL_CLICK_DB, db);
+            render();
         }
         clearBtn.addEventListener('click', async () => {
             // Clears storage; auto-ice-wall watches this key and pushes the empty

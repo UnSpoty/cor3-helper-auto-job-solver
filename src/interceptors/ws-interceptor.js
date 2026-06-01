@@ -1611,12 +1611,10 @@
         'COR3_RELAUNCH_EXPEDITION': (e) => root.__cor3LaunchExpedition(e.data),
         [MSG.GAME.OPEN_CONTAINER]: (e) => root.__cor3OpenContainer(e.expeditionId),
         [MSG.GAME.COLLECT_ALL]: (e) => root.__cor3CollectAll(e.expeditionId),
-        [MSG.SOLVER.STOP_DECRYPT]: () => { root.__solverAbort = true; },
-        [MSG.SOLVER.START_DECRYPT]: () => {
-            if (root.__solverActive && !root.__solverAbort) return;
-            root.__solverAbort = false;
-            root.__solverActive = false;
-        },
+        // NOTE: START_DECRYPT / STOP_DECRYPT are owned solely by solver-decrypt.js,
+        // which now ref-counts owners ('user' vs 'flow'). A duplicate handler here
+        // that flipped __solverAbort/__solverActive directly would bypass that
+        // ref-counting and let a v2 flow's STOP kill the user's standalone watcher.
         'COR3_KEEP_ALIVE': () => root.__cor3KeepAlive(),
         [MSG.GAME.ACCEPT_JOB]: (e) => root.__cor3AcceptJob(e.jobId, e.marketId),
         'COR3_COMPLETE_JOB': (e) => root.__cor3CompleteJob(e.jobId, e.marketId),

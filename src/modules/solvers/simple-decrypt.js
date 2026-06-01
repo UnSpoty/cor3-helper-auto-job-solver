@@ -97,6 +97,14 @@
         }
         root.__simpleDecryptActive = false;
         root.__simpleDecryptAbort = false;
+        // Lost-wakeup guard: if an owner re-armed us in the narrow window between
+        // the abort being detected and this teardown, restart instead of dying.
+        if (root.__simpleDecryptOwners && root.__simpleDecryptOwners.size > 0) {
+            mod.debug(`owner present after teardown ([${[...root.__simpleDecryptOwners].join(', ')}]) — restarting watch loop`);
+            root.__simpleDecryptActive = true;
+            watchLoop(mod);
+            return;
+        }
         mod.info('simple-decrypt solver stopped');
     }
 
@@ -110,19 +118,28 @@
             });
         }
         async start() {
-            this.track(Bus.window.on(MSG.SOLVER.START_SIMPLE_DECRYPT, () => {
-                if (root.__simpleDecryptActive && !root.__simpleDecryptAbort) {
-                    this.debug('start ignored — already active');
-                    return;
-                }
-                root.__simpleDecryptAbort = false;
+            // Owner-aware lifecycle — mirrors solver-decrypt. 'user' = the
+            // standalone Auto-simple-decrypt toggle (auto-simple-decrypt.js);
+            // 'flow' = an Auto-Jobs v2 flow. The loop runs while any owner is
+            // present; a STOP removes only that owner and aborts only when the set
+            // empties, so a v2 flow ending never kills the user's standalone watcher.
+            root.__simpleDecryptOwners = root.__simpleDecryptOwners || new Set();
+
+            this.track(Bus.window.on(MSG.SOLVER.START_SIMPLE_DECRYPT, (env) => {
+                const owner = (env && env.owner) ? env.owner : 'user';
+                root.__simpleDecryptOwners.add(owner);
+                root.__simpleDecryptAbort = false;   // cancel any pending abort
+                if (root.__simpleDecryptActive) { this.debug(`start ignored — already active (owner ${owner})`); return; }
                 root.__simpleDecryptActive = true;
-                this.info('simple-decrypt solver started');
+                this.info(`simple-decrypt solver started (owner ${owner})`);
                 watchLoop(this);
             }));
-            this.track(Bus.window.on(MSG.SOLVER.STOP_SIMPLE_DECRYPT, () => {
+            this.track(Bus.window.on(MSG.SOLVER.STOP_SIMPLE_DECRYPT, (env) => {
+                const owner = (env && env.owner) ? env.owner : 'user';
+                root.__simpleDecryptOwners.delete(owner);
+                if (root.__simpleDecryptOwners.size > 0) { this.debug(`stop from '${owner}' ignored — still owned by [${[...root.__simpleDecryptOwners].join(', ')}]`); return; }
                 root.__simpleDecryptAbort = true;
-                this.info('simple-decrypt solver stop requested');
+                this.info(`simple-decrypt solver stop requested (owner ${owner})`);
             }));
         }
     }

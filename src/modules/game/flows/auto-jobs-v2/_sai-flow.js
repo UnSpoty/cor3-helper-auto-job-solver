@@ -36,6 +36,12 @@
     const AJV2 = MSG.AUTOJOBS_V2;
     const sleep = (ms) => dom.sleep(ms);
 
+    // ONE cross-module busy guard shared by every v2 flow (this factory's SAI
+    // flows + file-decryption.js, which defines the same global). At most one
+    // flow runs at a time across the whole v2 flow subsystem — see the rationale
+    // in file-decryption.js. `jobId` is the in-flight job (FLOW_ABORT matches it).
+    const lock = (root.__cor3FlowV2Lock = root.__cor3FlowV2Lock || { busy: false, jobId: null });
+
     // Fire trigger(), resolve with the next Bus.window `type` envelope (or null
     // on timeout). Same primitive file-decryption.js uses for desktop replies.
     function awaitBus(type, timeoutMs, trigger) {
@@ -88,11 +94,14 @@
     ];
     const findMinigame = () => { for (const s of MINIGAME_SELS) if (document.querySelector(s)) return true; return false; };
     const SOLVER_START = [MSG.SOLVER.START_DECRYPT, MSG.SOLVER.START_ICE_WALL, MSG.SOLVER.START_SIMPLE_DECRYPT];
-    // STOP_ICE_WALL intentionally omitted — ICE WALL is a standalone always-on
-    // watcher (auto-ice-wall) that must survive a flow / cycle (see file-decryption.js).
+    // Driven under the 'flow' owner: solver-decrypt / solver-simple-decrypt
+    // ref-count owners, so STOP removes only 'flow' and leaves a user's standalone
+    // watcher (owner 'user') running. STOP_ICE_WALL omitted — ICE WALL is a
+    // standalone always-on watcher (auto-ice-wall) with no ref-counting that must
+    // survive a flow / cycle (see file-decryption.js).
     const SOLVER_STOP = [MSG.SOLVER.STOP_DECRYPT, MSG.SOLVER.STOP_SIMPLE_DECRYPT];
-    const startSolvers = () => { for (const m of SOLVER_START) Bus.window.post(m, null); };
-    const stopSolvers = () => { for (const m of SOLVER_STOP) Bus.window.post(m, null); };
+    const startSolvers = () => { for (const m of SOLVER_START) Bus.window.post(m, { owner: 'flow' }); };
+    const stopSolvers = () => { for (const m of SOLVER_STOP) Bus.window.post(m, { owner: 'flow' }); };
     function findHackToolRow(D, moduleName) {
         const sect = document.querySelector('[data-onboarding-300-id="SaiHackTools"]') || document.querySelector('[data-sentry-source-file*="hack-tools"]');
         return D.findClickableByText(sect, moduleName);
@@ -239,9 +248,6 @@
     // busy-guard envelope as file-decryption.js. spec.run(job, helpers) returns
     // the FLOW_RESULT body (minus jobId/marketId).
     function defineFlow(spec) {
-        let busy = false;
-        let runningJobId = null;
-
         class V2SaiFlow extends Module {
             constructor() {
                 super({
@@ -255,13 +261,13 @@
             async start() {
                 this.track(Bus.window.on(AJV2.FLOW_START, async (env) => {
                     if (!env || env.jobType !== spec.jobType) return;   // not this flow's type
-                    if (busy) {
+                    if (lock.busy) {
                         this.warn(`FLOW_START ignored — a flow is already running (job ${env.jobId})`);
                         Bus.window.post(AJV2.FLOW_RESULT, { jobId: env.jobId, marketId: env.marketId, success: false, retryable: true, reason: 'flow-busy' });
                         return;
                     }
-                    busy = true;
-                    runningJobId = env.jobId;
+                    lock.busy = true;
+                    lock.jobId = env.jobId;
                     // v2-private abort flag (NOT v1's shared __jobManagerAbort) so
                     // a concurrent v1 flow can't clear our abort, nor we theirs.
                     root.__cor3AbortV2 = false;   // a prior aborted flow may have left it set
@@ -301,13 +307,13 @@
                         // retryable:false result, not a crash.
                         Bus.window.post(AJV2.FLOW_RESULT, { jobId: env.jobId, marketId: env.marketId, success: false, retryable: true, reason: 'flow-crash' });
                     } finally {
-                        busy = false;
-                        runningJobId = null;
+                        lock.busy = false;
+                        lock.jobId = null;
                     }
                 }));
 
                 this.track(Bus.window.on(AJV2.FLOW_ABORT, (env) => {
-                    if (env && env.jobId === runningJobId) {
+                    if (env && env.jobId === lock.jobId) {
                         root.__cor3AbortV2 = true;
                         this.warn(`FLOW_ABORT — aborting running job ${env.jobId}`);
                     }

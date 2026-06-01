@@ -107,12 +107,15 @@
     }
 
     const SOLVER_START = [MSG.SOLVER.START_DECRYPT, MSG.SOLVER.START_ICE_WALL, MSG.SOLVER.START_SIMPLE_DECRYPT];
-    // NOTE: STOP_ICE_WALL is intentionally NOT stopped here — the ICE WALL solver
-    // is a standalone always-on watcher (auto-ice-wall, default on) so it also
-    // works outside Auto-Jobs; stopping it after a flow would kill that watcher.
+    // We drive the solvers under the 'flow' owner. solver-decrypt / solver-simple-
+    // decrypt ref-count owners, so STOP here removes only 'flow' — a user with the
+    // standalone Auto-decrypt / Auto-simple-decrypt toggle on (owner 'user') keeps
+    // their watcher after this flow. STOP_ICE_WALL is still omitted: the ICE WALL
+    // solver is a standalone always-on watcher (auto-ice-wall, default on) with NO
+    // owner ref-counting, so stopping it here would kill that watcher.
     const SOLVER_STOP = [MSG.SOLVER.STOP_DECRYPT, MSG.SOLVER.STOP_SIMPLE_DECRYPT];
-    function startSolvers() { for (const m of SOLVER_START) Bus.window.post(m, null); }
-    function stopSolvers() { for (const m of SOLVER_STOP) Bus.window.post(m, null); }
+    function startSolvers() { for (const m of SOLVER_START) Bus.window.post(m, { owner: 'flow' }); }
+    function stopSolvers() { for (const m of SOLVER_STOP) Bus.window.post(m, { owner: 'flow' }); }
 
     // Returns the FLOW_RESULT body (minus jobId/marketId). `step(node)` reports
     // the live sub-step to the orchestrator so the Flow Map can highlight it.
@@ -202,8 +205,16 @@
         }
     }
 
-    let busy = false;
-    let runningJobId = null;   // jobId of the in-flight flow (FLOW_ABORT matches on it)
+    // Cross-module busy guard. ALL v2 flow modules (this one + every defineFlow
+    // SAI flow) share ONE lock so at most one flow ever runs at a time. The
+    // orchestrator already serialises dispatch (it parks on each FLOW_RESULT),
+    // but on a FLOW_TIMEOUT it aborts and moves on while the old flow is still
+    // unwinding; a per-module flag would let the next cycle's DIFFERENT-type flow
+    // start concurrently and reset the shared __cor3AbortV2 out from under the
+    // aborting flow. A single global lock makes that next flow reply 'flow-busy'
+    // and wait one cycle until the old one finishes, so only one flow ever touches
+    // the SAI session / abort flag. `jobId` is the in-flight job (FLOW_ABORT matches it).
+    const lock = (root.__cor3FlowV2Lock = root.__cor3FlowV2Lock || { busy: false, jobId: null });
 
     class FileDecryptionV2Flow extends Module {
         constructor() {
@@ -222,15 +233,15 @@
                 // the message id (COR3_AJV2_FLOW_START), so the job's type rides
                 // on a differently-named key.
                 if (!env || env.jobType !== C.FLOW.FILE_DECRYPTION) return;  // not this flow's type
-                if (busy) {
+                if (lock.busy) {
                     this.warn(`FLOW_START ignored — a flow is already running (job ${env.jobId})`);
                     // flow-busy is transient (the previous job is still solving):
                     // tell the orchestrator to retry this job, NOT to bug it.
                     Bus.window.post(AJV2.FLOW_RESULT, { jobId: env.jobId, marketId: env.marketId, success: false, retryable: true, reason: 'flow-busy' });
                     return;
                 }
-                busy = true;
-                runningJobId = env.jobId;
+                lock.busy = true;
+                lock.jobId = env.jobId;
                 const say = (lvl, m, ctx) => { const f = this[lvl] || this.info; f.call(this, m, ctx); };
                 this.info(`FLOW_START file_decryption job=${env.jobId} file="${env.fileCondition}"`);
                 try {
@@ -241,8 +252,8 @@
                     this.error(`flow crashed for job ${env.jobId}`, { error: String(e), stack: e && e.stack });
                     Bus.window.post(AJV2.FLOW_RESULT, { jobId: env.jobId, marketId: env.marketId, success: false, reason: 'flow-crash' });
                 } finally {
-                    busy = false;
-                    runningJobId = null;
+                    lock.busy = false;
+                    lock.jobId = null;
                 }
             }));
 
@@ -252,7 +263,7 @@
             // loops on the same flag, so a parked openFolder/findFile unblocks
             // too. runFileDecryption resets the flag to false on its next start.
             this.track(Bus.window.on(AJV2.FLOW_ABORT, (env) => {
-                if (env && env.jobId === runningJobId) {
+                if (env && env.jobId === lock.jobId) {
                     root.__cor3AbortV2 = true;
                     this.warn(`FLOW_ABORT — aborting running job ${env.jobId}`);
                 }
