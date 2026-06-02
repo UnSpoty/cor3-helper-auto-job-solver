@@ -458,6 +458,7 @@
             UPDATE_MARKETS: 'update-markets',
             JOB_QUEUE: 'job-queue',
             READY_TO_COMPLETE: 'ready-to-complete',  // complete TAKEN jobs the game reports canComplete=true (solved but not yet claimed)
+            DISMISS_FAILED: 'dismiss-failed',  // auto-dismiss FAILED jobs (gated by Master-Switches behaviour.autoDismissFailed)
             QUEUE_EMPTY: 'queue-empty',     // decision: is the queue empty?
             HAVE_TASKS_IN_PROGRESS: 'have-tasks-in-progress', // decision: any TAKEN job?
             BUGGED_JOBS: 'bugged-jobs',    // decision: is the in-progress job bugged?
@@ -476,16 +477,13 @@
             FD_COMPLETE: 'fd-complete',
             // ── SAI sub-flows. Each flow module posts its current step via
             // MSG.AUTOJOBS.FLOW_STEP; the orchestrator relays it into
-            // AJ_PIPELINE_STATE so the Flow Map lights it. All SAI flows share
-            // the shape: <P>_ACCESS (connect + grant/hack login, pure WS) →
-            // <P>_<ACTION> (the get.* + mutate.* WS loop) → <P>_COMPLETE
-            // (job.complete). decrypt_extract adds <P>_SOLVE (the minigame).
-            // The Flow Map collapses the 7 identical SAI mutation flows onto ONE
-            // shared ACCESS + COMPLETE with a fan of action nodes; SAI_ACCESS /
-            // SAI_COMPLETE are those shared display nodes (the per-flow *_ACCESS /
-            // *_COMPLETE ids below alias onto them in flow-map.js).
-            SAI_ACCESS: 'sai-access',
-            SAI_COMPLETE: 'sai-complete',
+            // AJ_PIPELINE_STATE so the pipeline status readout shows it. All SAI
+            // flows share the shape: <P>_ACCESS (connect + grant/hack login, pure
+            // WS) → <P>_<ACTION> (the get.* + mutate.* WS loop) → <P>_COMPLETE
+            // (job.complete). decrypt_extract adds <P>_SOLVE (the minigame). With
+            // NO Active Access grant the access step hacks the server first,
+            // surfaced as the shared SAI_HACK step.
+            SAI_HACK: 'sai-hack',        // no Active Access grant → hack the server (install HACK sw + solve hack minigame)
             // ip_injection
             II_ACCESS: 'ii-access', II_INJECT: 'ii-inject', II_COMPLETE: 'ii-complete',
             // ip_cleanup
@@ -500,8 +498,8 @@
             LG_ACCESS: 'lg-access', LG_DOWNLOAD: 'lg-download', LG_COMPLETE: 'lg-complete',
             // log_deletion
             LD_ACCESS: 'ld-access', LD_DELETE: 'ld-delete', LD_COMPLETE: 'ld-complete',
-            // decrypt_extract (SAI download + minigame solve)
-            DE_ACCESS: 'de-access', DE_DOWNLOAD: 'de-download', DE_SOLVE: 'de-solve', DE_COMPLETE: 'de-complete',
+            // decrypt_extract (SAI download + decrypt-SW install/swap + minigame solve)
+            DE_ACCESS: 'de-access', DE_DOWNLOAD: 'de-download', DE_INSTALL_SW: 'de-install-sw', DE_SOLVE: 'de-solve', DE_COMPLETE: 'de-complete',
             MARK_AS_BUGGED: 'mark-as-bugged',      // job can't be done → written to AJ_BUGGED_JOBS
             DELAY_CYCLE: 'delay-cycle',
         },

@@ -5,20 +5,27 @@
 // implement job logic itself — it drives the flowchart:
 //
 //   START → DELAY:10s → ┌─ GET_SERVERS → CHECK_SERVERS_ACCESABILITY
-//                       │   → UPDATE_MARKETS → JOB_QUEUE → <QUEUE:EMPTY?>
+//                       │   → UPDATE_MARKETS → JOB_QUEUE → READY_TO_COMPLETE
+//                       │   → DISMISS_FAILED → <QUEUE:EMPTY?>
 //                       │     YES ───────────────────────────────────────┐
 //                       │     NO → <HAVE_TASKS_IN_PROGRESS?>              │
 //                       │            YES → <BUGGED_JOBS?>                 │
-//                       │                    YES → JOB:SKIP ──────────────┤
-//                       │                    NO  ─┐                       │
-//                       │            NO ──────────┴→ CHECK_CONDITION      │
+//                       │                    YES → JOB:SKIP ─┐            │
+//                       │                    NO  ────────────┤            │
+//                       │            NO ──────────────────────┴→ CHECK_CONDITION
 //                       │                            → JOB_ACCEPTION      │
 //                       │                            → JOB_FLOW            │
 //                       └──────────────── DELAY ←──────────────────────────┘  (loop)
 //
+// NOTE: JOB:SKIP does NOT end the cycle — it only skips JOB_FLOW for the
+// (all-bugged) in-progress jobs and still falls through to CHECK_CONDITION /
+// JOB_ACCEPTION so fresh AVAILABLE work keeps being accepted.
+//
 // The inter-cycle DELAY is 30s when idle, but a short CYCLE_DELAY_ACTIVE_MS
 // (~5s) when the cycle did real work (a flow batch ran, or jobs were accepted) —
 // so a chain of in-progress jobs isn't gated by 30s of dead air between each.
+// The actual delay in effect is published as state.delayMs so the Flow Map's
+// DELAY countdown reflects the real wait (5s vs 30s), not a hard-coded 30s.
 //
 // JOB_FLOW dispatches a BATCH of in-progress (TAKEN) jobs per cycle, then parks
 // on each one's FLOW_RESULT in turn — so the loop pauses for each minigame,
@@ -257,7 +264,7 @@
         // ── the loop ──────────────────────────────────────────────────────
         async _loop(token) {
             await this._setNode(NODE.START, token, { cycle: 0, startedAt: Date.now() });
-            await this._setNode(NODE.DELAY_INITIAL, token);
+            await this._setNode(NODE.DELAY_INITIAL, token, { delayMs: LOOP.INITIAL_DELAY_MS });
             if (!(await this._sleep(LOOP.INITIAL_DELAY_MS, token))) return;
 
             let cycle = 0;
@@ -277,8 +284,11 @@
                     await this._writeState({ running: true, cycle, node: null, error: String(e && e.message || e) });
                 }
                 if (!this._alive(token)) return;
-                await this._setNode(NODE.DELAY_CYCLE, token, { cycle });
+                // Publish the ACTUAL delay (active=5s vs idle=30s) as state.delayMs
+                // so the Flow Map countdown matches the real wait instead of a
+                // hard-coded 30s (which made the active short-delay look "skipped").
                 const delay = active ? LOOP.CYCLE_DELAY_ACTIVE_MS : LOOP.CYCLE_DELAY_MS;
+                await this._setNode(NODE.DELAY_CYCLE, token, { cycle, delayMs: delay });
                 if (!(await this._sleep(delay, token))) return;
             }
         }
@@ -317,9 +327,11 @@
 
             // Auto-dismiss FAILED jobs (terminal cleanup, gated by the
             // Master-Switches "Auto-dismiss FAILED" toggle — default OFF). Runs
-            // here, where the endpoint is at home and no SAI flow is mid-batch,
-            // sharing the READY_TO_COMPLETE node region (it's terminal-job
-            // housekeeping like the completes above).
+            // here, where the endpoint is at home and no SAI flow is mid-batch.
+            // Its own Flow-Map node (DISMISS_FAILED) is always visited so the
+            // pipeline stays linear; like READY_TO_COMPLETE it is simply a no-op
+            // when the toggle is off / nothing failed.
+            await this._setNode(NODE.DISMISS_FAILED, token, { cycle });
             await this._dismissFailedJobs(token, packet);
             if (!this._alive(token)) return;
 
@@ -376,9 +388,12 @@
             // JOB_FLOW — execute this cycle's BATCH of in-progress (TAKEN) jobs in
             // MAIN, then fall through to DELAY. The orchestrator parks on each
             // FLOW_RESULT, so the loop is paused for the duration of the minigame.
+            // The node is ALWAYS lit (even in the all-bugged runFlows=false case)
+            // so the map edge JOB_ACCEPTION → JOB_FLOW → DELAY is always traversed
+            // — it just dispatches nothing when there is no resumable work.
+            await this._setNode(NODE.JOB_FLOW, token, { cycle });
             let dispatched = false;
             if (runFlows) {
-                await this._setNode(NODE.JOB_FLOW, token, { cycle });
                 dispatched = await this._runJobFlows(token, cycle, packet);
             }
             // active → short inter-cycle delay (see _loop). We chain quickly when

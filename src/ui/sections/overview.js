@@ -410,8 +410,8 @@
     // listing the shapes the solver has learned a click-cell for (it builds
     // this DB live while solving). Read-only + a "clear base" action.
     function buildIceWallDbButton() {
-        const btn = el('button', 'btn small', 'База');
-        btn.title = 'Learned ICE WALL shapes';
+        const btn = el('button', 'btn small', t('overview.iceWallShapesBtn'));
+        btn.title = t('overview.iceWallShapesTip');
         btn.style.marginLeft = 'auto';
         btn.style.marginRight = '8px';
         btn.addEventListener('click', openIceWallDbModal);
@@ -473,7 +473,7 @@
         const panel = el('div', 'card');
         Object.assign(panel.style, { maxWidth: '540px', width: '100%', maxHeight: '90vh', overflow: 'auto' });
         const head = el('div', 'card-row');
-        head.appendChild(el('span', 'card-label', 'ICE WALL — learned shapes'));
+        head.appendChild(el('span', 'card-label', t('overview.iceWallModalTitle')));
         const closeBtn = el('button', 'btn small', '✕');
         closeBtn.style.marginLeft = 'auto';
         head.appendChild(closeBtn);
@@ -482,7 +482,7 @@
         panel.appendChild(body);
         const foot = el('div', 'card-row');
         const count = el('span', 'muted xs');
-        const clearBtn = el('button', 'btn small', 'Clear base');
+        const clearBtn = el('button', 'btn small', t('overview.iceWallClearBase'));
         clearBtn.style.marginLeft = 'auto';
         foot.appendChild(count);
         foot.appendChild(clearBtn);
@@ -497,13 +497,13 @@
         async function render() {
             const db = (await Store.local.getOne(C.STORAGE_LOCAL.ICE_WALL_CLICK_DB, {})) || {};
             const keys = Object.keys(db).sort((a, b) => ((db[b] && db[b].hits) || 0) - ((db[a] && db[a].hits) || 0));
-            count.textContent = `${keys.length} shape(s) · red = click cell`;
+            count.textContent = t('overview.iceWallCount', { n: keys.length });
             body.innerHTML = '';
             if (!keys.length) {
-                body.appendChild(el('div', 'muted xs', 'No shapes learned yet — solve some ICE WALL puzzles with the solver on.'));
+                body.appendChild(el('div', 'muted xs', t('overview.iceWallNone')));
                 return;
             }
-            body.appendChild(el('div', 'muted xs', 'Tap any cell to set where the solver clicks for that shape. Pin to lock it — pinned shapes are clicked ONLY on that cell (no brute-force) and never auto-relearned. Saved instantly + pushed to the running solver.'));
+            body.appendChild(el('div', 'muted xs', t('overview.iceWallHint')));
             const grid = el('div');
             Object.assign(grid.style, { display: 'flex', flexWrap: 'wrap', gap: '10px', marginTop: '8px' });
             for (const key of keys) {
@@ -514,11 +514,11 @@
                 item.appendChild(renderIceWallShape(entry, (cell) => pickCell(key, cell)));
                 const meta = el('div', 'card-row');
                 Object.assign(meta.style, { justifyContent: 'space-between', alignItems: 'center', marginTop: '4px' });
-                meta.appendChild(el('span', 'muted xs', `hits ${entry.hits || 0}`));
-                const pinBtn = el('button', 'btn small' + (entry.pinned ? ' btn-success' : ''), entry.pinned ? '📌 Pinned' : 'Pin');
+                meta.appendChild(el('span', 'muted xs', t('overview.iceWallHits', { n: entry.hits || 0 })));
+                const pinBtn = el('button', 'btn small' + (entry.pinned ? ' btn-success' : ''), entry.pinned ? t('overview.iceWallPinned') : t('overview.iceWallPin'));
                 pinBtn.title = entry.pinned
-                    ? 'Pinned — solver clicks ONLY this cell and never re-learns it. Tap to unpin.'
-                    : 'Pin this click cell (solver clicks only it, no brute-force, no auto-overwrite)';
+                    ? t('overview.iceWallPinTipOn')
+                    : t('overview.iceWallPinTipOff');
                 pinBtn.addEventListener('click', () => togglePin(key));
                 meta.appendChild(pinBtn);
                 item.appendChild(meta);

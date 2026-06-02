@@ -34,6 +34,7 @@
     const { Module, Bus, Registry, dom, constants: C } = root.COR3;
     const MSG = C.MSG;
     const AJ = MSG.AUTOJOBS;
+    const NODE = C.AJ.NODE;
     const sleep = (ms) => dom.sleep(ms);
 
     // ONE cross-module busy guard shared by every Auto Jobs flow (this factory's SAI
@@ -179,7 +180,7 @@
     // No grant → hack (opens the SAI window). Returns { ok } or
     // { ok:false, retryable, reason }. This is the raw establish; callers go
     // through ensureAccess (below), which adds per-batch session reuse.
-    async function establishAccess(serverId, serverType, serverName, say) {
+    async function establishAccess(serverId, serverType, serverName, say, step, accessNode) {
         if (typeof root.__cor3SetEndpoint !== 'function'
             || typeof root.__cor3SaiGetLoginStatus !== 'function'
             || typeof root.__cor3SaiLoginWithAccess !== 'function') {
@@ -193,11 +194,18 @@
         let grant = pickGrant(status);
         if (!grant) {
             say('info', `no Active Access on "${serverName || serverId}" — hacking for access`);
+            // Surface the hack (+ its minigame) as the SAI_HACK step in the
+            // pipeline status, then re-emit this flow's own *_ACCESS step so the
+            // readout returns to the access stage before the action runs.
+            const showHack = !!(step && accessNode);
+            if (showHack) step(NODE.SAI_HACK);
             const hk = await hackForAccess(serverName, serverId, serverType, status, say);
             // hk.retryable === false → permanent (no owned HACK software) → propagate
             // so the flow returns a non-retryable result → the orchestrator BUGS
             // the job instead of retrying it every cycle forever.
             if (!hk.grant) return { ok: false, retryable: hk.retryable !== false, reason: hk.reason || 'no-access' };
+            // Grant won → return the highlight to the ACCESS node before the action.
+            if (showHack) step(accessNode);
             grant = hk.grant;
         }
         if (!root.__cor3SaiLoginWithAccess(serverId, grant.id)) return { ok: false, retryable: true, reason: 'login-send-failed' };
@@ -217,7 +225,7 @@
     // gated on the live endpoint still pointing at the server (a SAI session is
     // only valid while connected); if it drifted off we re-establish. Without a
     // batchKey (single-job dispatch) it falls straight through to establishAccess.
-    async function ensureAccess(serverId, serverType, serverName, say, batchKey) {
+    async function ensureAccess(serverId, serverType, serverName, say, batchKey, step, accessNode) {
         if (!serverId) return { ok: false, reason: 'no-serverId' };
         const cached = root.__cor3SaiSession;
         if (batchKey && cached && cached.batchKey === batchKey && cached.serverId === serverId) {
@@ -235,7 +243,7 @@
             }
             // Endpoint drifted (or flipped-and-reverted) since login → re-establish.
         }
-        const result = await establishAccess(serverId, serverType, serverName, say);
+        const result = await establishAccess(serverId, serverType, serverName, say, step, accessNode);
         // Stamp the epoch AFTER establishAccess (its own set.endpoint bump is
         // included), so the next job reuses only while the endpoint stays put.
         if (batchKey) root.__cor3SaiSession = { batchKey, serverId, ok: result.ok, retryable: result.retryable, reason: result.reason, epoch: root.__cor3EndpointEpoch };
@@ -271,14 +279,19 @@
                     // a concurrent flow cannot clear our abort, nor we theirs.
                     root.__cor3Abort = false;   // a prior aborted flow may have left it set
                     const say = (lvl, m, ctx) => { const f = this[lvl] || this.info; f.call(this, m, ctx); };
-                    const step = (node) => Bus.window.post(AJ.FLOW_STEP, { jobId: env.jobId, node });
+                    // Track the last emitted node so ensureAccess knows which
+                    // *_ACCESS node it was called from (for the SAI_HACK detour).
+                    let lastNode = null;
+                    const step = (node) => { lastNode = node; Bus.window.post(AJ.FLOW_STEP, { jobId: env.jobId, node }); };
                     const helpers = {
                         root, dom, C, MSG, sleep, say, step,
                         abort: () => !!root.__cor3Abort,
                         // batchKey is captured from the FLOW_START envelope so a
                         // flow's run() keeps calling ensureAccess(sid, type, name)
                         // unchanged — the per-batch login reuse is transparent.
-                        ensureAccess: (sid, stype, sname) => ensureAccess(sid, stype, sname, say, env.batchKey),
+                        // lastNode (the *_ACCESS step the flow just emitted) lets
+                        // ensureAccess light SAI_HACK then return to that ACCESS node.
+                        ensureAccess: (sid, stype, sname) => ensureAccess(sid, stype, sname, say, env.batchKey, step, lastNode),
                         awaitBus, awaitAction, getTransit, getFiles, getLogs, findDownloadsFileId,
                         startSolvers, stopSolvers, findMinigame,
                         complete: () => {

@@ -59,7 +59,7 @@
         toggleBtn.classList.toggle('btn-success', !settings.enabled && !blockStart);
         if (blockStart) {
             toggleBtn.disabled = true;
-            toggleBtn.title = `Enable the disabled solver(s) in Overview first: ${offSolvers.join(', ')}`;
+            toggleBtn.title = t('autojobs.requiredSolversTip', { names: offSolvers.join(', ') });
         }
         toggleBtn.addEventListener('click', async () => {
             if (blockStart) return;
@@ -78,9 +78,9 @@
                 padding: '6px 8px', borderRadius: '4px', fontSize: '11px', lineHeight: '1.35',
                 background: 'rgba(255,90,90,0.12)', border: '1px solid rgba(255,90,90,0.55)', color: '#ffb3b3',
             });
-            warn.innerHTML = `⚠ Solver(s) OFF in Overview: <b>${escape(offSolvers.join(', '))}</b>.<br>`
-                + `Auto Jobs can't solve the minigames without them — enable them in Overview to `
-                + `${settings.enabled ? 'avoid stalls' : 'START'}.`;
+            const action = settings.enabled ? t('autojobs.solversOffAvoidStalls') : t('common.start');
+            warn.innerHTML = `⚠ ${escape(t('autojobs.solversOffLabel'))} <b>${escape(offSolvers.join(', '))}</b>.<br>`
+                + escape(t('autojobs.solversOffWarn', { action }));
             head.appendChild(warn);
         }
 
@@ -107,12 +107,13 @@
         });
         head.appendChild(downloadBtn);
 
-        const clearBuggedBtn = el('button', 'btn small btn-block mt-sm', 'Clear Bugged');
-        clearBuggedBtn.title = 'Remove all jobs from the bugged list';
+        const clearBuggedLabel = t('autojobs.clearBugged');
+        const clearBuggedBtn = el('button', 'btn small btn-block mt-sm', clearBuggedLabel);
+        clearBuggedBtn.title = t('autojobs.clearBuggedTip');
         clearBuggedBtn.addEventListener('click', async () => {
             await Store.local.setOne(C.STORAGE_LOCAL.AJ_BUGGED_JOBS, {});
-            clearBuggedBtn.textContent = 'Cleared';
-            setTimeout(() => { clearBuggedBtn.textContent = 'Clear Bugged'; }, 1500);
+            clearBuggedBtn.textContent = t('autojobs.cleared');
+            setTimeout(() => { clearBuggedBtn.textContent = clearBuggedLabel; }, 1500);
         });
         head.appendChild(clearBuggedBtn);
 
@@ -123,9 +124,9 @@
     // so all three solver toggles (Overview) must be ON for Auto Jobs to actually solve
     // them. Read them alongside the Auto Jobs settings so the header can warn + gate START.
     const REQUIRED_SOLVERS = [
-        { key: 'AUTO_DECRYPT_ENABLED',        def: false, label: 'Auto-decrypt' },
-        { key: 'AUTO_SIMPLE_DECRYPT_ENABLED', def: false, label: 'Auto-simple-decrypt' },
-        { key: 'AUTO_ICE_WALL_ENABLED',       def: true,  label: 'Auto ICE WALL' },
+        { key: 'AUTO_DECRYPT_ENABLED',        def: false, labelKey: 'overview.autoDecrypt' },
+        { key: 'AUTO_SIMPLE_DECRYPT_ENABLED', def: false, labelKey: 'overview.autoSimpleDecrypt' },
+        { key: 'AUTO_ICE_WALL_ENABLED',       def: true,  labelKey: 'overview.autoIceWall' },
     ];
 
     async function refreshHeader() {
@@ -134,7 +135,7 @@
             Store.sync.getOne(C.STORAGE_SYNC.AUTOJOBS_SETTINGS, DEFAULT_SETTINGS),
             ...REQUIRED_SOLVERS.map((s) => Store.sync.getOne(C.STORAGE_SYNC[s.key], s.def)),
         ]);
-        const offSolvers = REQUIRED_SOLVERS.filter((s, i) => !states[i]).map((s) => s.label);
+        const offSolvers = REQUIRED_SOLVERS.filter((s, i) => !states[i]).map((s) => t(s.labelKey));
         renderHeader(panel.headerHost, settings, offSolvers);
     }
 
@@ -174,10 +175,10 @@
         // Clear the Activity-Log buffer. Routed to the content world (where the
         // authoritative log ring lives — a popup-side wipe would be re-flushed by
         // it); only when no game tab is open do we wipe Auto Jobs entries from storage
-        // directly. (Label hardcoded to match the sibling "Clear Bugged"; the
-        // full i18n pass localises both together — see #10.)
-        const clearLogBtn = el('button', 'btn small btn-block mt-sm', 'Clear Log');
-        clearLogBtn.title = 'Clear the Auto Jobs activity log buffer';
+        // directly.
+        const clearLogLabel = t('autojobs.clearLog');
+        const clearLogBtn = el('button', 'btn small btn-block mt-sm', clearLogLabel);
+        clearLogBtn.title = t('autojobs.clearLogTip');
         clearLogBtn.addEventListener('click', async () => {
             const tab = await getCor3Tab();
             if (tab) {
@@ -188,8 +189,8 @@
                 await Store.local.setOne(C.STORAGE_LOCAL.LOGS, logs);
                 if (liveLogViewer) liveLogViewer.refresh();
             }
-            clearLogBtn.textContent = 'Cleared';
-            setTimeout(() => { clearLogBtn.textContent = 'Clear Log'; }, 1500);
+            clearLogBtn.textContent = t('autojobs.cleared');
+            setTimeout(() => { clearLogBtn.textContent = clearLogLabel; }, 1500);
         });
         container.appendChild(clearLogBtn);
 

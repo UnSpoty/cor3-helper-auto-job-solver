@@ -55,7 +55,9 @@ html, body {
 }
 
 body {
-    width: 380px;
+    /* Popup width. Browsers cap extension popups at ~800px; popout / side-panel
+       modes ignore this (width:auto below) and fill their window. */
+    width: 480px;
     min-height: 600px;
 }
 
@@ -581,84 +583,46 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
 /* Canvas/grid/HUD reuse the .network-map-* classes; only the node/edge
    primitives are flow-specific. */
 .aj-flow-host { margin-top: 8px; }
-.aj-flow {
-    background: var(--os-color-bg-card);
-    border: 1px solid var(--os-color-border-secondary);
-    border-radius: 6px;
-    padding: 8px 10px;
-}
 .aj-flow-head {
     display: flex;
     justify-content: space-between;
     align-items: center;
 }
-.aj-flow .network-map-canvas { margin-top: 6px; }
 
-/* Idle hint (safety; the flowchart always has nodes). */
-.fm-empty { fill: var(--os-color-text-tertiary); font-size: 12px; }
-
-/* Edges + arrowheads. */
-.fm-edge {
-    fill: none;
-    stroke: var(--os-color-border-secondary);
-    stroke-width: 1.4;
-    transition: stroke 0.2s, stroke-width 0.2s;
+/* Compact pipeline status (replaces the SVG Flow Map). */
+.aj-pipe {
+    background: var(--os-color-bg-card);
+    border: 1px solid var(--os-color-border-secondary);
+    border-radius: 6px;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
 }
-.fm-edge.is-active {
-    stroke: var(--os-color-primary-hex);
-    stroke-width: 2;
+.aj-pipe-now {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--os-color-text-primary);
 }
-.fm-arrowhead { fill: var(--os-color-border-secondary); }
-.fm-arrowhead-active { fill: var(--os-color-primary-hex); }
-.fm-edge-label {
-    fill: var(--os-color-text-tertiary);
-    font-size: 9px;
-    font-weight: 700;
-    pointer-events: none;
-    paint-order: stroke;
-    stroke: var(--os-color-bg-card);
-    stroke-width: 2.5px;
+.aj-pipe-delay {
+    display: flex;
+    align-items: center;
+    gap: 8px;
 }
-
-/* Node shapes: module (rect) / decision (diamond) / delay + terminal (pill). */
-.fm-node { cursor: default; }
-.fm-node-shape {
-    fill: var(--os-color-surface);
-    stroke: var(--os-color-divider);
-    stroke-width: 1;
-    transition: fill 0.2s, stroke 0.2s, stroke-width 0.2s;
+.aj-pipe-delay-label { white-space: nowrap; }
+.aj-pipe-delay-track {
+    flex: 1;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--os-color-border-secondary);
+    overflow: hidden;
 }
-.fm-shape-decision { fill: rgba(255, 200, 87, 0.10); stroke: var(--os-color-warning); }
-.fm-shape-delay,
-.fm-shape-terminal { fill: rgba(107, 120, 136, 0.12); stroke: var(--os-color-text-secondary); }
-.fm-node-label {
-    fill: var(--os-color-text);
-    font-size: 9px;
-    font-weight: 700;
-    pointer-events: none;
-    text-transform: uppercase;
-    letter-spacing: 0.3px;
-    paint-order: stroke;
-    stroke: rgba(0, 0, 0, 0.5);
-    stroke-width: 0.5px;
-}
-.fm-node-delay .fm-node-label,
-.fm-node-decision .fm-node-label { text-transform: none; }
-
-/* Active highlight (driven by AJ_PIPELINE_STATE.node). */
-.fm-node.is-active { filter: url(#fm-glow); }
-.fm-node.is-active .fm-node-shape {
-    stroke: var(--os-color-primary-hex);
-    stroke-width: 2;
-    fill: var(--os-color-primary-surface);
-}
-.fm-node.is-active .fm-node-label { fill: var(--os-color-primary-hex); }
-
-/* DELAY countdown bar — fills as the timer elapses (width set per tick). */
-.fm-delay-progress {
-    fill: var(--os-color-primary-hex);
-    opacity: 0.9;
-    transition: width 0.15s linear;
+.aj-pipe-delay-bar {
+    height: 100%;
+    width: 0;
+    background: var(--os-color-primary-hex);
+    border-radius: 2px;
+    transition: width 0.2s linear;
 }
 
 /* ─── Auto Jobs — Job List (between Network Map and Flow Map) ───────── */

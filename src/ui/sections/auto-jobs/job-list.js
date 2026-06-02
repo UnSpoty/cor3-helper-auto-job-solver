@@ -22,8 +22,24 @@
     if (!root.COR3 || !root.COR3.constants) return;
     const { Store, constants: C } = root.COR3;
     const SL = C.STORAGE_LOCAL;
+    const t = (k, vars) => root.COR3.i18n.t(k, vars);
 
-    const SLOT_LABEL = { home: 'Home', dark: 'Dark', srm: 'SRM7-M' };
+    // Friendly market-slot label (home/dark/srm) — falls back to the raw slot
+    // for any unexpected slot key.
+    function marketLabel(slot) {
+        const k = 'autojobs.market.' + slot;
+        const lbl = t(k);
+        return lbl === k ? (slot || '?') : lbl;
+    }
+
+    // Friendly job-type label — localised when the type is a known FLOW value,
+    // else the raw snake_case type rendered with spaces (covers 'unrecognised').
+    function jobTypeLabel(type) {
+        if (!type) return type;
+        const k = 'autojobs.jobType.' + type;
+        const lbl = t(k);
+        return lbl === k ? String(type).replace(/_/g, ' ') : lbl;
+    }
 
     function el(tag, cls, text) {
         const e = document.createElement(tag);
@@ -70,22 +86,22 @@
             + (isBugged ? ' is-bugged' : ''));
 
         const head = el('div', 'aj-job-head');
-        head.appendChild(el('span', 'job-name', job.name || 'Unknown'));
+        head.appendChild(el('span', 'job-name', job.name || t('autojobs.jobUnknown')));
 
         if (isBugged) {
-            head.appendChild(el('span', 'pill aj-bugged', 'BUGGED'));
+            head.appendChild(el('span', 'pill aj-bugged', t('autojobs.pillBugged')));
             const unbug = el('button', 'aj-unbug', '✕');
-            unbug.title = 'Remove from bugged list';
+            unbug.title = t('autojobs.removeFromBugged');
             unbug.addEventListener('click', (e) => { e.stopPropagation(); unbugJob(job.id); });
             head.appendChild(unbug);
         } else if (isFailed) {
-            head.appendChild(el('span', 'pill aj-failed', 'FAILED'));
+            head.appendChild(el('span', 'pill aj-failed', t('autojobs.pillFailed')));
             const running = !!(opts && opts.running);
             const dismiss = el('button', 'aj-unbug aj-dismiss', '✕');
             dismiss.disabled = running;
             dismiss.title = running
-                ? 'Stop Auto Jobs to dismiss manually (or enable Auto-dismiss FAILED in Master Switches)'
-                : 'Dismiss this failed job';
+                ? t('autojobs.dismissBlockedTip')
+                : t('autojobs.dismissTip');
             dismiss.addEventListener('click', (e) => {
                 e.stopPropagation();
                 if (!running && opts && typeof opts.onDismiss === 'function') opts.onDismiss(job);
@@ -93,33 +109,33 @@
             head.appendChild(dismiss);
         } else if (inProgress) {
             if (isRunning) {
-                head.appendChild(el('span', 'pill aj-batch-run', `running ▶ ${batch.index}/${batch.total}`));
+                head.appendChild(el('span', 'pill aj-batch-run', t('autojobs.pillRunning', { index: batch.index, total: batch.total })));
             } else {
-                head.appendChild(el('span', 'pill ok', 'in-progress'));
-                if (inBatch) head.appendChild(el('span', 'pill aj-batch', 'batch'));
+                head.appendChild(el('span', 'pill ok', t('autojobs.pillInProgress')));
+                if (inBatch) head.appendChild(el('span', 'pill aj-batch', t('autojobs.pillBatch')));
             }
         } else if (skipped) {
-            const skip = el('span', 'pill aj-skip', 'SKIP');
+            const skip = el('span', 'pill aj-skip', t('autojobs.jobSkip'));
             if (job.skipReason) skip.title = job.skipReason;
             head.appendChild(skip);
         } else if (pending) {
-            head.appendChild(el('span', 'pill idle', 'pending'));
+            head.appendChild(el('span', 'pill idle', t('autojobs.pillPending')));
         } else {
-            head.appendChild(el('span', 'pill ok', 'eligible'));
+            head.appendChild(el('span', 'pill ok', t('autojobs.pillEligible')));
         }
         row.appendChild(head);
 
         // Market is now the section header, so it's omitted from the row meta.
         const metaBits = [];
-        if (job.type) metaBits.push(job.type);
-        metaBits.push(job.serverName || 'no server');
-        if (Number.isFinite(job.rewardCredits)) metaBits.push(job.rewardCredits + ' CR');
+        if (job.type) metaBits.push(jobTypeLabel(job.type));
+        metaBits.push(job.serverName || t('autojobs.noServer'));
+        if (Number.isFinite(job.rewardCredits)) metaBits.push(t('autojobs.rewardCr', { n: job.rewardCredits }));
         row.appendChild(el('div', 'job-meta', metaBits.join(' · ')));
 
         if (isBugged && bugInfo.reason) {
-            row.appendChild(el('div', 'aj-skip-reason xs', 'BUGGED: ' + bugInfo.reason));
+            row.appendChild(el('div', 'aj-skip-reason xs', t('autojobs.buggedPrefix', { reason: bugInfo.reason })));
         } else if (skipped && job.skipReason) {
-            row.appendChild(el('div', 'aj-skip-reason xs', 'SKIP: ' + job.skipReason));
+            row.appendChild(el('div', 'aj-skip-reason xs', t('autojobs.skipPrefix', { reason: job.skipReason })));
         }
         return row;
     }
@@ -135,20 +151,21 @@
         const head = el('div', 'aj-market-head');
         const caret = el('span', 'aj-market-caret', isCollapsed ? '▸' : '▾');
         head.appendChild(caret);
-        head.appendChild(el('span', 'aj-market-name', SLOT_LABEL[slot] || slot || '?'));
+        head.appendChild(el('span', 'aj-market-name', marketLabel(slot)));
         if (market.reachable === false) {
-            head.appendChild(el('span', 'pill warn', 'unreachable'));
+            head.appendChild(el('span', 'pill warn', t('autojobs.unreachable')));
         } else if (market.refreshed === false) {
-            const stale = el('span', 'pill idle', 'stale');
-            stale.title = 'Refresh timed out — showing the last-known board';
+            const stale = el('span', 'pill idle', t('autojobs.stale'));
+            stale.title = t('autojobs.staleTip');
             head.appendChild(stale);
         }
-        head.appendChild(el('span', 'muted xs aj-market-count', `${jobs.length} ${jobs.length === 1 ? 'job' : 'jobs'}`));
+        head.appendChild(el('span', 'muted xs aj-market-count',
+            jobs.length === 1 ? t('autojobs.oneJob') : t('autojobs.nJobs', { n: jobs.length })));
         sec.appendChild(head);
 
         const bodyWrap = el('div', 'aj-market-jobs' + (isCollapsed ? ' collapsed' : ''));
         if (!jobs.length) {
-            const why = market.reachable === false ? (market.reason || 'unreachable') : 'No jobs.';
+            const why = market.reachable === false ? (market.reason || t('autojobs.unreachable')) : t('autojobs.marketNoJobs');
             bodyWrap.appendChild(el('div', 'muted xs aj-market-empty', why));
         } else {
             for (const job of jobs) bodyWrap.appendChild(jobRow(job, bugged && bugged[job.id], batch, opts));
@@ -214,12 +231,12 @@
 
         const wrap = el('div', 'aj-jobs');
         const head = el('div', 'aj-jobs-head');
-        head.appendChild(el('span', 'card-label', 'Jobs'));
+        head.appendChild(el('span', 'card-label', t('autojobs.jobs')));
         const right = el('div', 'aj-jobs-head-right');
         const summary = el('span', 'muted xs aj-jobs-summary', '—');
         right.appendChild(summary);
         const refreshBtn = el('button', 'nm-hud-btn aj-jobs-refresh', '↻');
-        refreshBtn.title = 'Refresh the job board from the markets (rebuilds the saved list). While Auto Jobs is running the board refreshes automatically each cycle.';
+        refreshBtn.title = t('autojobs.jobsRefreshTip');
         refreshBtn.addEventListener('click', async () => {
             refreshBtn.disabled = true;
             refreshBtn.textContent = '…';
@@ -241,8 +258,8 @@
 
             const queue = lastQueue;
             if (!queue) {
-                summary.textContent = 'pipeline not run yet';
-                list.appendChild(el('div', 'muted xs aj-jobs-empty', 'Press START to run the pipeline.'));
+                summary.textContent = t('autojobs.pipelineNotRun');
+                list.appendChild(el('div', 'muted xs aj-jobs-empty', t('autojobs.pressStart')));
                 return;
             }
 
@@ -291,15 +308,15 @@
             const eligible = avail.filter((j) => j.eligible === true).length;
             const skipped = avail.filter((j) => j.eligible === false && !bugged[j.id]).length;
             const buggedN = rows.filter((j) => bugged[j.id]).length;
-            const active = inProgress ? ` · ${inProgress} in-progress` : '';
-            const failedSuffix = failedN ? ` · ${failedN} failed` : '';
-            const buggedSuffix = buggedN ? ` · ${buggedN} bugged` : '';
-            const cyc = `cycle ${queue.cycle || '—'}`;
+            const active = inProgress ? ' · ' + t('autojobs.sumInProgress', { n: inProgress }) : '';
+            const failedSuffix = failedN ? ' · ' + t('autojobs.sumFailedN', { n: failedN }) : '';
+            const buggedSuffix = buggedN ? ' · ' + t('autojobs.sumBuggedN', { n: buggedN }) : '';
+            const cyc = t('autojobs.cycleN', { n: queue.cycle || '—' });
             summary.textContent = !jobs.length
-                ? `0 jobs · ${cyc}`
+                ? `${t('autojobs.sumZeroJobs')} · ${cyc}`
                 : evaluated
-                    ? `${avail.length} available · ${eligible} eligible · ${skipped} skip${active}${failedSuffix}${buggedSuffix} · ${cyc}`
-                    : `${avail.length} available${active}${failedSuffix}${buggedSuffix} · pending · ${cyc}`;
+                    ? `${t('autojobs.sumAvailable', { n: avail.length })} · ${t('autojobs.sumEligible', { n: eligible })} · ${t('autojobs.sumSkip', { n: skipped })}${active}${failedSuffix}${buggedSuffix} · ${cyc}`
+                    : `${t('autojobs.sumAvailable', { n: avail.length })}${active}${failedSuffix}${buggedSuffix} · ${t('autojobs.sumPending')} · ${cyc}`;
 
             // Live-batch banner — only while JOB_FLOW is actively running a
             // batch (the orchestrator clears AJ_PIPELINE_STATE.batch at cycle
@@ -307,12 +324,15 @@
             if (batch && batch.total) {
                 const banner = el('div', 'aj-batch-banner');
                 banner.appendChild(el('span', 'aj-batch-dot'));
+                const server = batch.serverName || t('autojobs.serverFallback');
                 const text = batch.serverId
-                    ? `Batch: ${batch.total} ${batch.total === 1 ? 'job' : 'jobs'} on ${batch.serverName || 'server'}`
-                    : `Running: ${batch.label || 'job'}`;
+                    ? (batch.total === 1
+                        ? t('autojobs.batchOnOne', { server })
+                        : t('autojobs.batchOnMany', { n: batch.total, server }))
+                    : t('autojobs.runningLabel', { label: batch.label || t('autojobs.jobFallback') });
                 banner.appendChild(el('span', 'aj-batch-text', text));
                 const metaBits = [];
-                if (batch.oneLogin) metaBits.push('one login');
+                if (batch.oneLogin) metaBits.push(t('autojobs.oneLogin'));
                 if (batch.index) metaBits.push(`${batch.index}/${batch.total}`);
                 if (metaBits.length) banner.appendChild(el('span', 'aj-batch-meta', metaBits.join(' · ')));
                 list.appendChild(banner);

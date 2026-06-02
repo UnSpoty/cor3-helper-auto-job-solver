@@ -58,7 +58,6 @@
             const data = await h.getFiles(job.serverId);
             const serverFiles = (data && Array.isArray(data.files)) ? data.files : [];
 
-            h.step(NODE.DE_SOLVE);
             let solved = 0;
             for (const name of job.fileNames) {
                 if (h.abort()) return { success: false, retryable: true, reason: 'aborted' };
@@ -80,9 +79,16 @@
                 // be decryptable) rather than abandoning the whole job on the first.
                 const ext = parseExt(name);
                 if (!ext) { h.say('warn', `no extension in "${name}"`); continue; }
+                // SW per file: surface INSTALL/SWAP SW only when a swap is actually
+                // needed for THIS file. planDecrypt is warm once the first ensureDecrypt
+                // has run, so this reflects the real swap rather than a cold-snapshot
+                // pre-scan guess; "ready" files go straight to SOLVE.
+                const plan = LO.planDecrypt(ext);
+                if (plan && (plan.status === 'install' || plan.status === 'swap')) h.step(NODE.DE_INSTALL_SW);
                 const cap = await LO.ensureDecrypt(ext, h.say);
                 if (!cap.ok) { h.say('warn', `cannot decrypt ${ext} (${cap.status}) — skipping "${name}"`); continue; }
 
+                h.step(NODE.DE_SOLVE);
                 const res = await solveLocalFile(fileId, h);
                 if (res === 'aborted') return { success: false, retryable: true, reason: 'aborted' };
                 if (res === 'no-minigame') { h.say('warn', `minigame did not mount for "${name}"`); continue; }

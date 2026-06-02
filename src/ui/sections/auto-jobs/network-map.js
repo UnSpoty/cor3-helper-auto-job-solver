@@ -12,6 +12,7 @@
     if (!root.COR3 || !root.COR3.constants) return;
     const { Store, constants: C } = root.COR3;
     const SL = C.STORAGE_LOCAL;
+    const t = (k, vars) => root.COR3.i18n.t(k, vars);
     const SVG_NS = 'http://www.w3.org/2000/svg';
 
     const NODE_W   = 60;
@@ -187,7 +188,7 @@
                 x: 160, y: 80, 'text-anchor': 'middle', 'dominant-baseline': 'middle',
                 class: 'nm-empty',
             });
-            fg.textContent = 'Network Map not loaded yet — open it in-game once.';
+            fg.textContent = t('autojobs.nmNotLoaded');
             camera.appendChild(fg);
             return { worldW: 320, worldH: 160 };
         }
@@ -342,18 +343,18 @@
             if (jobs > 0) {
                 const bg = svgEl('g', { class: 'nm-jobs-badge', transform: `translate(${NODE_W - 8}, ${NODE_H - 8})` });
                 bg.appendChild(svgEl('circle', { r: 7, class: 'nm-badge-circle' }));
-                const t = svgEl('text', { y: 3, 'text-anchor': 'middle', class: 'nm-badge-text' });
-                t.textContent = jobs > 99 ? '99+' : String(jobs);
-                bg.appendChild(t);
+                const txt = svgEl('text', { y: 3, 'text-anchor': 'middle', class: 'nm-badge-text' });
+                txt.textContent = jobs > 99 ? '99+' : String(jobs);
+                bg.appendChild(txt);
                 g.appendChild(bg);
             }
 
             if (s.isNew) {
                 const bg = svgEl('g', { class: 'nm-new-badge', transform: `translate(3, ${NODE_H - 12})` });
                 bg.appendChild(svgEl('rect', { x: 0, y: 0, width: 18, height: 9, rx: 1.5, ry: 1.5, class: 'nm-new-bg' }));
-                const t = svgEl('text', { x: 9, y: 7, class: 'nm-new-text' });
-                t.textContent = 'NEW';
-                bg.appendChild(t);
+                const txt = svgEl('text', { x: 9, y: 7, class: 'nm-new-text' });
+                txt.textContent = t('autojobs.nmNew');
+                bg.appendChild(txt);
                 g.appendChild(bg);
             }
 
@@ -373,9 +374,9 @@
                 g.classList.add('nm-has-disabled');
                 const bg = svgEl('g', { class: 'nm-ov-badge', transform: 'translate(-3, -3)' });
                 bg.appendChild(svgEl('circle', { cx: 6, cy: 6, r: 6, class: 'nm-dis-bg' }));
-                const t = svgEl('text', { x: 6, y: 8.6, 'text-anchor': 'middle', class: 'nm-dis-text' });
-                t.textContent = String(disabledCount);
-                bg.appendChild(t);
+                const txt = svgEl('text', { x: 6, y: 8.6, 'text-anchor': 'middle', class: 'nm-dis-text' });
+                txt.textContent = String(disabledCount);
+                bg.appendChild(txt);
                 g.appendChild(bg);
             }
 
@@ -386,16 +387,16 @@
 
             const title = svgEl('title');
             const parts = [s.name];
-            if (marketOff)               parts.push(`market disabled (${mslot})`);
+            if (marketOff)               parts.push(t('autojobs.tipMarketDisabled', { slot: mslot }));
             if (s.serverTypeName)        parts.push(s.serverTypeName);
-            if (s.cluster)               parts.push(`cluster: ${s.cluster}`);
-            if (Number.isFinite(s.depth)) parts.push(`depth: ${s.depth}${s.viaHidden ? ' (via hidden)' : ''}`);
-            if (s.parentName)            parts.push(`from: ${s.parentName}`);
-            if (isActiveEndpoint)        parts.push('← current endpoint');
-            if (cls === 'kd')            parts.push('K/D — temporarily in maintenance');
-            if (jobs > 0)                parts.push(`${jobs} job(s) available`);
-            if (ov && ov.skip)           parts.push('SKIPPED by user');
-            else if (disabledCount > 0)  parts.push(`${disabledCount} job type(s) disabled here`);
+            if (s.cluster)               parts.push(t('autojobs.tipCluster', { cluster: s.cluster }));
+            if (Number.isFinite(s.depth)) parts.push(t('autojobs.tipDepth', { depth: s.depth }) + (s.viaHidden ? t('autojobs.tipViaHidden') : ''));
+            if (s.parentName)            parts.push(t('autojobs.tipFrom', { parent: s.parentName }));
+            if (isActiveEndpoint)        parts.push(t('autojobs.tipCurrentEndpoint'));
+            if (cls === 'kd')            parts.push(t('autojobs.tipKd'));
+            if (jobs > 0)                parts.push(t('autojobs.tipJobsAvail', { n: jobs }));
+            if (ov && ov.skip)           parts.push(t('autojobs.tipSkipped'));
+            else if (disabledCount > 0)  parts.push(t('autojobs.tipTypesDisabled', { n: disabledCount }));
             title.textContent = parts.join('\n');
             g.appendChild(title);
 
@@ -466,7 +467,7 @@
         const wrap = htmlEl('div', 'network-map-wrap');
         const titleRow = htmlEl('div', 'network-map-title');
         titleRow.innerHTML = `
-            <span class="card-label">Network Map</span>
+            <span class="card-label">${t('autojobs.networkMap')}</span>
             <span class="muted xs nm-summary-status"></span>
         `;
         wrap.appendChild(titleRow);
@@ -479,9 +480,9 @@
         const hud = htmlEl('div', 'nm-hud');
         const zoomLabel = htmlEl('span', 'nm-hud-zoom muted xs', '100%');
         const refreshBtn = htmlEl('button', 'btn small nm-hud-btn', '↻');
-        refreshBtn.title = 'Force-refresh Network Map from cor3.gg (cor3 only pushes graph updates when you open NM in-game)';
-        const fitBtn = htmlEl('button', 'btn small nm-hud-btn', 'Fit');
-        fitBtn.title = 'Reset zoom and center';
+        refreshBtn.title = t('autojobs.nmRefreshTip');
+        const fitBtn = htmlEl('button', 'btn small nm-hud-btn', t('autojobs.fit'));
+        fitBtn.title = t('autojobs.fitTip');
         hud.appendChild(zoomLabel);
         hud.appendChild(refreshBtn);
         hud.appendChild(fitBtn);
@@ -607,13 +608,13 @@
             const gameBtn = (label, action, arg, argId, argType) => {
                 const b = htmlEl('button', 'nm-ctx-item', label);
                 b.disabled = v2Enabled;
-                if (v2Enabled) b.title = 'Disabled while Auto Jobs is running';
+                if (v2Enabled) b.title = t('autojobs.ctxDisabledRunning');
                 b.addEventListener('click', () => { if (v2Enabled) return; sendGameAction(action, arg, argId, argType); closeMenu(); });
                 menu.appendChild(b);
             };
             // HOME has no SAI terminal — only offer Open Market there.
-            if (!isHome) gameBtn('Open SAI', C.MSG.AUTOJOBS.OPEN_SAI_ACTION, serverName, serverId, serverType);
-            if (isMarket) gameBtn('Open Market', C.MSG.AUTOJOBS.OPEN_MARKET_ACTION, isHome ? null : serverName, isHome ? null : serverId, null);
+            if (!isHome) gameBtn(t('autojobs.openSai'), C.MSG.AUTOJOBS.OPEN_SAI_ACTION, serverName, serverId, serverType);
+            if (isMarket) gameBtn(t('autojobs.openMarket'), C.MSG.AUTOJOBS.OPEN_MARKET_ACTION, isHome ? null : serverName, isHome ? null : serverId, null);
 
             menu.appendChild(htmlEl('div', 'nm-ctx-divider'));
 
@@ -623,7 +624,7 @@
             const skipBtn = htmlEl('button', 'nm-ctx-item nm-ctx-toggle');
             const renderSkip = (on) => {
                 skipBtn.classList.toggle('is-on', on);
-                skipBtn.textContent = (on ? '☑ ' : '☐ ') + 'SKIP this server';
+                skipBtn.textContent = (on ? '☑ ' : '☐ ') + t('autojobs.skipServer');
             };
             renderSkip(!!ov.skip);
             skipBtn.addEventListener('click', () => {
@@ -636,11 +637,11 @@
             // Per-server job-type disables — compact chip grid (green = runs
             // here / grey = muted here), same visual as Master Switches. Each
             // chip toggles in place; no scroll.
-            menu.appendChild(htmlEl('div', 'nm-ctx-sub', 'Disable job types here:'));
+            menu.appendChild(htmlEl('div', 'nm-ctx-sub', t('autojobs.disableTypesHere')));
             const disabled = ov.disabledTypes || {};
             const chipsWrap = htmlEl('div', 'nm-ctx-chips');
             for (const type of JOB_TYPES) {
-                const chip = htmlEl('button', 'aj-ms-chip' + (disabled[type] ? '' : ' on'), type.replace(/_/g, ' '));
+                const chip = htmlEl('button', 'aj-ms-chip' + (disabled[type] ? '' : ' on'), t('autojobs.jobType.' + type));
                 chip.addEventListener('click', () => {
                     const runsHere = !chip.classList.contains('on');   // off → enable, on → disable
                     chip.classList.toggle('on', runsHere);
@@ -655,7 +656,7 @@
             menu.appendChild(chipsWrap);
 
             // Reset — clears skip + every type disable for this server.
-            const resetBtn = htmlEl('button', 'nm-ctx-item nm-ctx-reset', 'Reset overrides');
+            const resetBtn = htmlEl('button', 'nm-ctx-item nm-ctx-reset', t('autojobs.resetOverrides'));
             resetBtn.addEventListener('click', () => {
                 renderSkip(false);
                 chipsWrap.querySelectorAll('.aj-ms-chip').forEach((c) => c.classList.add('on'));
@@ -756,11 +757,11 @@
 
             if (summaryStatus) {
                 if (!graph) {
-                    summaryStatus.textContent = '— no graph yet';
+                    summaryStatus.textContent = t('autojobs.nmNoGraph');
                 } else {
                     const N = graph.servers.length;
                     const kd = graph.servers.filter((s) => s.isInMaintenance).length;
-                    summaryStatus.textContent = `${N} servers${kd > 0 ? `, ${kd} K/D` : ''}`;
+                    summaryStatus.textContent = t('autojobs.nmServers', { n: N }) + (kd > 0 ? t('autojobs.nmKd', { n: kd }) : '');
                 }
             }
             if (firstRender) {

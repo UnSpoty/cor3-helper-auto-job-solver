@@ -19,8 +19,9 @@
     if (!root.COR3 || !root.COR3.constants) return;
     const { Store, constants: C } = root.COR3;
     const SL = C.STORAGE_LOCAL;
+    const t = (k, vars) => root.COR3.i18n.t(k, vars);
 
-    const MARKETS = [['home', 'Home'], ['dark', 'Dark'], ['srm', 'SRM7-M']];
+    const MARKETS = ['home', 'dark', 'srm'];
     const TYPES = Object.values(C.FLOW);
 
     function el(tag, cls, text) {
@@ -46,7 +47,7 @@
         const header = el('button', 'aj-ms-head');
         const caret = el('span', 'aj-ms-caret', '▸');
         header.appendChild(caret);
-        header.appendChild(el('span', 'card-label', 'Master Switches'));
+        header.appendChild(el('span', 'card-label', t('autojobs.masterSwitches')));
         const summary = el('span', 'muted xs aj-ms-summary', '');
         header.appendChild(summary);
         card.appendChild(header);
@@ -91,21 +92,21 @@
             body.innerHTML = '';
 
             let off = 0;
-            for (const [slot] of MARKETS) if (!isOn('markets', slot)) off++;
+            for (const slot of MARKETS) if (!isOn('markets', slot)) off++;
             for (const tp of TYPES) if (!isOn('jobTypes', tp)) off++;
             // `off` counts markets/jobTypes (default-on) that are disabled; the
             // behaviour toggle is default-off, so flag it separately when active.
-            const auto = isBehaviourOn('autoDismissFailed') ? ' · auto-dismiss' : '';
-            summary.textContent = (off ? `${off} off` : 'all on') + auto;
+            const auto = isBehaviourOn('autoDismissFailed') ? ' · ' + t('autojobs.msAutoDismissTag') : '';
+            summary.textContent = (off ? t('autojobs.msNOff', { n: off }) : t('autojobs.msAllOn')) + auto;
 
-            body.appendChild(group('Behaviour', [
-                chip('Auto-dismiss FAILED', isBehaviourOn('autoDismissFailed'),
+            body.appendChild(group(t('autojobs.msBehaviour'), [
+                chip(t('autojobs.msAutoDismissChip'), isBehaviourOn('autoDismissFailed'),
                     (on) => setSwitch('behaviour', 'autoDismissFailed', on)),
             ]));
-            body.appendChild(group('Markets', MARKETS.map(([slot, lbl]) =>
-                chip(lbl, isOn('markets', slot), (on) => setSwitch('markets', slot, on)))));
-            body.appendChild(group('Job types', TYPES.map((tp) =>
-                chip(tp.replace(/_/g, ' '), isOn('jobTypes', tp), (on) => setSwitch('jobTypes', tp, on)))));
+            body.appendChild(group(t('autojobs.msMarkets'), MARKETS.map((slot) =>
+                chip(t('autojobs.market.' + slot), isOn('markets', slot), (on) => setSwitch('markets', slot, on)))));
+            body.appendChild(group(t('autojobs.msJobTypes'), TYPES.map((tp) =>
+                chip(t('autojobs.jobType.' + tp), isOn('jobTypes', tp), (on) => setSwitch('jobTypes', tp, on)))));
         }
 
         const unsub = Store.local.onChanged((c) => {
