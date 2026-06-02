@@ -210,6 +210,21 @@
     function serverConfigId(rawJob) {
         return (rawJob && rawJob.conditions && rawJob.conditions.serverConfigId) || null;
     }
+    // Can a TAKEN job be dispatched this cycle? file_decryption is local (no
+    // server → always). An SAI job needs its target server both accessible and
+    // off K/D cooldown. A server missing from the accessibility map passes
+    // deliberately — we let the flow run and surface the real error rather than
+    // silently stranding a job whose name didn't match the NM graph. The
+    // orchestrator's _runJobFlows uses this to decide which TAKEN jobs to work,
+    // and JOB_ACCEPTION uses it so its hold-gate only counts jobs that are
+    // actually workable (an unreachable TAKEN job must NOT block fresh accepts).
+    function jobServerReachable(job, accessibility) {
+        if (job.type === C.FLOW.FILE_DECRYPTION) return true;
+        if (!job.serverName) return true;
+        const a = accessibility[job.serverName];
+        if (!a) return true;
+        return !!a.accessible && !a.onCooldown;
+    }
     function ipsForJob(rawJob) {
         const out = [];
         for (const it of conditionItems(rawJob)) {
@@ -621,10 +636,20 @@
     //
     // Acceptance set = jobs that passed CHECK_CONDITION (eligible) AND are
     // still AVAILABLE on the board (status 'AVAILABLE' — never re-accept a
-    // TAKEN/FAILED/EXPIRED entry). Decryption is prioritised exactly as the
-    // flowchart draws it: if there are any file_decryption jobs, accept ALL of
-    // them across ALL markets this cycle; only when there are none do we accept
-    // the other-type jobs (no depth calc — we just accept them).
+    // TAKEN/FAILED/EXPIRED entry).
+    //
+    // SEQUENTIAL, ONE SERVER AT A TIME. Acceptance mirrors execution
+    // (_selectBatch runs one server's jobs per cycle behind a single SAI login):
+    //   1. While ANY wired job is still in progress (TAKEN, not bugged) we accept
+    //      NOTHING — the board waits until JOB_FLOW finishes the current server's
+    //      batch. So the accepted backlog never spans more than the one server we
+    //      are actively working ("accept a server → do it → accept the next").
+    //   2. With nothing in progress, file_decryption keeps ABSOLUTE priority and
+    //      has no target server (local Downloads), so we accept the whole eligible
+    //      decrypt set; JOB_FLOW then drains them one minigame per cycle.
+    //   3. Only when no decrypt is pending do we accept SAI jobs, and then only
+    //      ONE server's group per cycle (the biggest), matching the execution
+    //      batch so the very jobs we accept are the ones worked next.
     //
     // Posts are paced ACCEPT_PACING_MS apart so the job.take bursts don't
     // outrun the server; after the batch we post REVERT_ENDPOINT_TO_HOME once
@@ -637,33 +662,70 @@
             if (!packet.eligible) throw new Error('JOB_ACCEPTION: packet.eligible missing (CHECK_CONDITION must run first)');
 
             const eligibleSet = new Set(packet.eligible);
-            // Only accept jobs whose flow module is wired (WIRED_FLOW_TYPES);
-            // a null/unwired type that slips through eligibility would be taken
-            // and then sit TAKEN forever (no flow can complete it).
-            const acceptable = packet.queue.filter((j) =>
-                eligibleSet.has(j.id) && j.status === 'AVAILABLE' && WIRED_FLOW_TYPES.has(j.type));
-
-            const decryption = acceptable.filter((j) => j.type === C.FLOW.FILE_DECRYPTION);
-            // ABSOLUTE file_decryption priority: while ANY file_decryption is
-            // still AVAILABLE on the board OR TAKEN (accepted but not yet
-            // solved), we accept ONLY the AVAILABLE file_decryption and NOTHING
-            // else. That set may be empty (all already TAKEN) — then we accept
-            // nothing this cycle and wait for the in-progress decryptions to be
-            // solved + completed. Only once no file_decryption remains anywhere
-            // in the queue do we accept the other-type jobs.
-            // A BUGGED file_decryption is excluded: a decrypt with no owned
-            // covering software is accepted, bugged, and then sits TAKEN in the
-            // market forever (Auto Jobs never dismisses). Without this exclusion it
-            // would keep decryptionPending permanently true and STARVE every SAI
-            // job type from acceptance for the rest of the session.
             const bugged = packet.buggedJobs || {};
-            const decryptionPending = packet.queue.some((j) =>
-                j.type === C.FLOW.FILE_DECRYPTION && !bugged[j.id]
-                && (j.status === 'AVAILABLE' || j.status === 'TAKEN'));
-            const toAccept = decryptionPending ? decryption : acceptable;
-            const mode = decryptionPending ? 'file_decryption (all markets)' : 'other types';
 
             packet.accepted = [];
+
+            // (1) Hold while a server's batch is in flight. A TAKEN wired job that
+            // JOB_FLOW will actually work this/next cycle means accept nothing
+            // until it drains, so we never accept a second server's jobs on top of
+            // an unfinished one. We count ONLY jobs _runJobFlows would dispatch:
+            //   • not bugged — bugged TAKEN jobs never complete (Auto Jobs doesn't
+            //     dismiss), so they must not gate acceptance forever; and
+            //   • server reachable (jobServerReachable) — _runJobFlows POSTPONES a
+            //     TAKEN job whose server is on K/D cooldown / not accessible (it
+            //     stays TAKEN, untouched). Such a job is not being worked, so it
+            //     must not gate acceptance — otherwise one job stuck on an
+            //     unreachable server would stall ALL new acceptance, permanently if
+            //     access is lost for good.
+            const acc = packet.accessibility || {};
+            const workInProgress = packet.queue.some((j) =>
+                j.status === 'TAKEN' && !bugged[j.id] && WIRED_FLOW_TYPES.has(j.type)
+                && jobServerReachable(j, acc));
+            if (workInProgress) {
+                ctx.log.info('JOB_ACCEPTION → holding (jobs in progress) — finish the current server first');
+                return stamp(packet, this.id, { accepted: 0, held: true });
+            }
+
+            // Only accept jobs whose flow module is wired (WIRED_FLOW_TYPES);
+            // a null/unwired type that slips through eligibility would be taken
+            // and then sit TAKEN forever (no flow can complete it). eligibleSet
+            // already excludes bugged + config-skipped jobs (CHECK_CONDITION).
+            const acceptable = packet.queue.filter((j) =>
+                eligibleSet.has(j.id) && j.status === 'AVAILABLE' && WIRED_FLOW_TYPES.has(j.type));
+            const decryption = acceptable.filter((j) => j.type === C.FLOW.FILE_DECRYPTION);
+
+            let toAccept;
+            let mode;
+            if (decryption.length) {
+                // (2) file_decryption: absolute priority, no target server (local
+                // Downloads) → accept the whole eligible set; JOB_FLOW drains them
+                // one minigame per cycle before any SAI job is accepted.
+                toAccept = decryption;
+                mode = 'file_decryption (all markets)';
+            } else {
+                // (3) SAI jobs: accept ONE server's group per cycle (the biggest),
+                // matching _selectBatch's one-server-per-cycle execution + single
+                // login. Group by the same key the executor uses (serverConfigId).
+                const byServer = new Map();
+                for (const j of acceptable) {
+                    const sid = serverConfigId(j.raw);
+                    if (!sid) continue;
+                    if (!byServer.has(sid)) byServer.set(sid, []);
+                    byServer.get(sid).push(j);
+                }
+                if (byServer.size === 0) {
+                    // No SAI job resolved a target server (malformed) — accept them
+                    // so the flow surfaces/bugs them rather than stranding them.
+                    toAccept = acceptable;
+                    mode = 'unresolved server';
+                } else {
+                    let best = null;
+                    for (const [sid, jobs] of byServer) if (!best || jobs.length > best.jobs.length) best = { sid, jobs };
+                    toAccept = best.jobs;
+                    mode = `one server "${best.jobs[0].serverName || best.sid}"`;
+                }
+            }
             if (toAccept.length === 0) {
                 ctx.log.info('JOB_ACCEPTION → nothing to accept (no eligible AVAILABLE jobs)');
                 return stamp(packet, this.id, { accepted: 0 });
@@ -709,6 +771,7 @@
         fileConditionForDecrypt,
         // SAI-flow target resolvers (read from the TAKEN job's condition details).
         serverConfigId,
+        jobServerReachable,
         ipsForJob,
         fileNamesForJob,
         logSeqsForJob,

@@ -51,7 +51,7 @@ START → DELAY:10s → ┌─ GET_SERVERS → CHECK_SERVERS_ACCESABILITY
 | `HAVE_TASKS_IN_PROGRESS?` | (orchestrator) | any queue job with `status==='TAKEN'`. |
 | `BUGGED?` | `buggedJobs` + orchestrator | reads `AJ_BUGGED_JOBS`; if every in-progress job is bugged → `JOB:SKIP` (skip the cycle). |
 | `CHECK_CONDITION` | `checkCondition` | per job, eligibility + explicit `skipReason`. Wired conditions: bugged registry; and (only when the job has a server) server-known / K-D cooldown / accessible / user-SKIP / type-disabled (`AJ_SERVER_OVERRIDES`). A missing related server is **not** a skip reason. |
-| `JOB_ACCEPTION` | `jobAcception` | acceptance set = eligible AND `status==='AVAILABLE'`. Decryption-priority: if any `file_decryption` jobs exist, accept ALL across ALL markets; else accept the other types. Posts `MSG.GAME.ACCEPT_JOB` paced 1.2 s apart, then `MSG.GAME.REVERT_ENDPOINT_TO_HOME` once. Confirmation is async — accepted jobs reappear as `TAKEN` next cycle. |
+| `JOB_ACCEPTION` | `jobAcception` | **sequential, one server at a time** (mirrors `_selectBatch` execution). (1) **Hold** while any *workable* TAKEN wired job exists (`!bugged && jobServerReachable`) — accept nothing until JOB_FLOW drains the current server's batch, so the accepted backlog never spans more than the one server being worked. (2) else if any eligible `file_decryption` is AVAILABLE → accept ALL of them across ALL markets (no target server, absolute priority; executor drains one minigame/cycle). (3) else accept **ONE server's group** of eligible AVAILABLE SAI jobs — grouped by `conditions.serverConfigId`, busiest server wins. Posts `MSG.GAME.ACCEPT_JOB` paced 1.2 s apart, then `MSG.GAME.REVERT_ENDPOINT_TO_HOME` once. Confirmation is async — accepted jobs reappear as `TAKEN` next cycle. The hold-gate counts only *reachable* TAKEN jobs: a TAKEN job on a K/D-cooldown / inaccessible server is POSTPONED by `_runJobFlows` (never bugged), so counting it would stall ALL acceptance. |
 
 ### `JOB_FLOW` (MAIN world)
 
@@ -71,6 +71,15 @@ the next cycle picks the next batch.
 - **else every wired SAI job on ONE server** — grouped by `conditions.serverConfigId`,
   the busiest server wins. All its jobs run back-to-back so the server is
   connected + logged into **once**.
+
+**Unreachable TAKEN jobs are POSTPONED, not failed.** Before selecting a batch,
+`_runJobFlows` drops any TAKEN SAI job whose target server is on K/D cooldown or
+not accessible this cycle (`pipeline.jobServerReachable` — `file_decryption` and
+servers absent from the graph always pass). A postponed job stays `TAKEN` and
+untouched (retry budget intact, never bugged); it runs unchanged the moment its
+server is reachable again. **This same `jobServerReachable` predicate gates
+JOB_ACCEPTION's hold (item 1 above)** — so an un-workable TAKEN job neither
+consumes a flow attempt nor blocks acceptance of other servers' jobs.
 
 **One login per server.** Each SAI job in a batch is tagged with the same
 `batchKey` (`${runToken}:${cycle}:${serverId}`). `_sai-flow.js` `ensureAccess`

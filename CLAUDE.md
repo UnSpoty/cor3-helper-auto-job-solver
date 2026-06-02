@@ -38,8 +38,14 @@ JOB:SKIP → CHECK_CONDITION → JOB_ACCEPTION`. UPDATE_MARKETS reads the
 market envelope's `jobs[]` (status `AVAILABLE`) and the `recentJobs[]` entries
 tagged `TAKEN` (= in-progress) + `FAILED` (= failed, surfaced on the Job List
 and cleared by the auto-dismiss step / manual ✕); JOB_ACCEPTION accepts via the
-generic `MSG.GAME.ACCEPT_JOB` + `REVERT_ENDPOINT_TO_HOME` (decryption-priority,
-all markets). After JOB_QUEUE the orchestrator completes any `canComplete`
+generic `MSG.GAME.ACCEPT_JOB` + `REVERT_ENDPOINT_TO_HOME`. Acceptance is
+**sequential, one server at a time** (mirrors `_selectBatch` execution): it
+HOLDS — accepts nothing — while any *workable* TAKEN wired job is still in flight
+(`!bugged && pipeline.jobServerReachable`, the same predicate `_runJobFlows`
+uses, so an un-workable TAKEN job on a K/D / inaccessible server can't stall
+acceptance); else it accepts every eligible `file_decryption` across all markets
+(absolute priority, no target server); else ONE server's group of eligible SAI
+jobs (busiest `conditions.serverConfigId`). After JOB_QUEUE the orchestrator completes any `canComplete`
 TAKEN job and — iff `AJ_MASTER_SWITCHES.behaviour.autoDismissFailed` is on
 (default OFF) — `market.job.dismiss` (`MSG.GAME.DISMISS_JOB`)-es every FAILED
 job. The orchestrator also owns persisting `NM_GRAPH` (it subscribes to
@@ -222,6 +228,14 @@ find src -name '*.js' -exec node --check {} \;
   batch of in-progress (TAKEN) jobs to MAIN flow modules (parking on each
   FLOW_RESULT). Impossible jobs go to the `AJ_BUGGED_JOBS` registry (no TTL —
   cleared by the user); transient failures retry once then bug.
+- Acceptance + execution are **sequential, one server at a time**: JOB_ACCEPTION
+  holds (accepts nothing) while a server's batch is still in flight, then accepts
+  either all eligible `file_decryption` (no server, absolute priority) or ONE
+  server's group of SAI jobs; JOB_FLOW (`_selectBatch`) works that same one
+  server per cycle behind a single SAI login. Both sides share
+  `pipeline.jobServerReachable` to decide "workable this cycle", so a TAKEN job
+  stuck on a K/D / inaccessible server is postponed (never bugged) **and** never
+  blocks acceptance of other servers.
 - 9 job flow types (in `src/modules/game/flows/auto-jobs/`): file_decryption,
   ip_injection, ip_cleanup, file_upload, log_deletion, log_download,
   file_elimination, data_download, decrypt_extract.

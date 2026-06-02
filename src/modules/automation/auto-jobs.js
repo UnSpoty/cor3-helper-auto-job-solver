@@ -695,17 +695,10 @@
         // file_decryption pick (no SAI login → no batchKey). WIRED_FLOW_TYPES is
         // the same gate JOB_ACCEPTION uses, so a TAKEN job of an unwired type is
         // left for a later build, never stranded.
-        // True if a TAKEN job can be dispatched this cycle. file_decryption is
-        // local (no server → always). An SAI job needs its target server both
-        // accessible and off K/D cooldown. A server missing from the accessibility
-        // map passes deliberately — we let the flow run and surface the real error
-        // rather than silently stranding a job whose name didn't match the NM graph.
         _jobServerReachable(job, accessibility) {
-            if (job.type === C.FLOW.FILE_DECRYPTION) return true;
-            if (!job.serverName) return true;
-            const a = accessibility[job.serverName];
-            if (!a) return true;
-            return !!a.accessible && !a.onCooldown;
+            // Shared with JOB_ACCEPTION's hold-gate so "workable this cycle" means
+            // exactly the same thing on both the accept and execute sides.
+            return pipeline().jobServerReachable(job, accessibility);
         }
 
         _selectBatch(inProgress, p) {

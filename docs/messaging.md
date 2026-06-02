@@ -87,7 +87,7 @@ the game-module helpers.
 | `GAME.NM_GRAPH` | `COR3_NM_GRAPH` | `{ home, currentEndpointId, servers:[…] }` | **inverse** — MAIN → isolated, the parsed BFS-depth graph. The Auto Jobs orchestrator subscribes and persists it. |
 | `GAME.REQUEST_LOADOUT` | `COR3_REQUEST_LOADOUT` | `null` | join `loadout` room → server replies `loadout/get.options` (→ `STORAGE_LOCAL.LOADOUT`). |
 | `GAME.RESCAN_NETWORK_MAP` | `rescanNetworkMap` | `null` | runtime action (popup → content). The orchestrator relays it to `REQUEST_NM_MAP`. The popup Network Map "Refresh" button fires it. |
-| `GAME.REVERT_ENDPOINT_TO_HOME` | `COR3_REVERT_ENDPOINT_TO_HOME` | `null` | reset the NM endpoint back to HOME. Posted at the end of a bulk-accept batch (Auto Jobs's JOB_ACCEPTION) that may have left the endpoint on DARK/SRM. |
+| `GAME.REVERT_ENDPOINT_TO_HOME` | `COR3_REVERT_ENDPOINT_TO_HOME` | `null` | reset the NM endpoint back to HOME. Posted once at the end of a JOB_ACCEPTION accept batch (one server's group, or all `file_decryption`) that may have left the endpoint on DARK/SRM. |
 
 ### Off-enum
 
