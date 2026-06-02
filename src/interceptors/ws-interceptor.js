@@ -1617,8 +1617,8 @@
         // ref-counting and let a flow's STOP kill the user's standalone watcher.
         'COR3_KEEP_ALIVE': () => root.__cor3KeepAlive(),
         [MSG.GAME.ACCEPT_JOB]: (e) => root.__cor3AcceptJob(e.jobId, e.marketId),
-        'COR3_COMPLETE_JOB': (e) => root.__cor3CompleteJob(e.jobId, e.marketId),
-        'COR3_DISMISS_JOB':  (e) => root.__cor3DismissJob(e.jobId, e.marketId),
+        [MSG.GAME.COMPLETE_JOB]: (e) => root.__cor3CompleteJob(e.jobId, e.marketId),
+        [MSG.GAME.DISMISS_JOB]: (e) => root.__cor3DismissJob(e.jobId, e.marketId),
     };
     for (const [type, fn] of Object.entries(handlers)) {
         Bus.window.on(type, fn);

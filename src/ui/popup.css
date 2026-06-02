@@ -1212,16 +1212,21 @@ body.theme-amber-console .aj-state {
 /* Network Map tile dimmed when its market is disabled via Master Switches. */
 .nm-node.nm-market-off { opacity: 0.45; }
 
-/* Jobs — bugged state + un-bug button. */
-.pill.aj-bugged {
+/* Jobs — bugged / failed state + un-bug / dismiss button. */
+.pill.aj-bugged,
+.pill.aj-failed {
     color: var(--os-color-danger); border: 1px solid var(--os-color-danger);
     background: rgba(254, 73, 73, 0.12);
 }
+/* FAILED is the game's terminal state — flag it a touch louder than BUGGED. */
+.pill.aj-failed { background: rgba(254, 73, 73, 0.22); font-weight: 600; }
 .aj-job.is-bugged { opacity: 0.85; }
+.aj-job.is-failed { opacity: 0.9; border-color: rgba(254, 73, 73, 0.4); }
 .aj-unbug {
     margin-left: 6px; padding: 0 6px; line-height: 16px;
     font: inherit; font-size: 11px; color: var(--os-color-text-tertiary);
     background: transparent; border: 1px solid var(--os-color-border);
     border-radius: 4px; cursor: pointer;
 }
-.aj-unbug:hover { color: var(--os-color-danger); border-color: var(--os-color-danger); }
+.aj-unbug:not(:disabled):hover { color: var(--os-color-danger); border-color: var(--os-color-danger); }
+.aj-unbug:disabled { opacity: 0.4; cursor: not-allowed; }

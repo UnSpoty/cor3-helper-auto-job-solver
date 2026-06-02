@@ -85,12 +85,15 @@
                         C.MSG.AUTOJOBS.OPEN_MARKET_ACTION,
                         C.MSG.AUTOJOBS.REFRESH_BOARD,
                         C.MSG.AUTOJOBS.CLEAR_LOG,
+                        C.MSG.AUTOJOBS.DISMISS_FAILED,
                         C.MSG.AUTOJOBS.OPEN_SAI,
                         C.MSG.AUTOJOBS.OPEN_MARKET,
                         C.MSG.GAME.REFRESH_MARKET,
                         C.MSG.GAME.REFRESH_DARK_MARKET,
                         C.MSG.GAME.REFRESH_SRM_MARKET,
                         C.MSG.GAME.ACCEPT_JOB,
+                        C.MSG.GAME.COMPLETE_JOB,
+                        C.MSG.GAME.DISMISS_JOB,
                         C.MSG.GAME.REVERT_ENDPOINT_TO_HOME,
                         C.MSG.AUTOJOBS.FLOW_START,
                         C.MSG.AUTOJOBS.FLOW_RESULT,
@@ -145,6 +148,12 @@
             // re-flushed by this context's ring; routing it here clears buffer +
             // storage atomically. Always available.
             this.track(Bus.runtime.on(C.MSG.AUTOJOBS.CLEAR_LOG, () => { this._clearActivityLog(); return { success: true }; }));
+
+            // Jobs panel "✕" on a FAILED row → dismiss that one job now
+            // (market.job.dismiss). Refused while the loop runs (a manual endpoint
+            // flip would flap the pipeline's SAI session mid-cycle) — the
+            // auto-dismiss step handles failed jobs while running instead.
+            this.track(Bus.runtime.on(C.MSG.AUTOJOBS.DISMISS_FAILED, (payload) => this._dismissOne(payload)));
 
             // ── Network Map graph plumbing ────────────────────────────────────
             // NM_GRAPH (the canonical topology from network-map.get.map) is
@@ -306,6 +315,14 @@
             await this._completeReadyJobs(token, packet);
             if (!this._alive(token)) return;
 
+            // Auto-dismiss FAILED jobs (terminal cleanup, gated by the
+            // Master-Switches "Auto-dismiss FAILED" toggle — default OFF). Runs
+            // here, where the endpoint is at home and no SAI flow is mid-batch,
+            // sharing the READY_TO_COMPLETE node region (it's terminal-job
+            // housekeeping like the completes above).
+            await this._dismissFailedJobs(token, packet);
+            if (!this._alive(token)) return;
+
             await this._setNode(NODE.QUEUE_EMPTY, token, { cycle });
             const empty = !packet.queue || packet.queue.length === 0;
             this.debug(`QUEUE:EMPTY? → ${empty ? 'YES' : 'NO'}`, { jobs: packet.queue ? packet.queue.length : 0 });
@@ -400,6 +417,63 @@
             }
             // A remote-market complete may have left the endpoint on DARK/SRM.
             Bus.window.post(C.MSG.GAME.REVERT_ENDPOINT_TO_HOME, null);
+        }
+
+        // Auto-dismiss every FAILED job on the board (status 'FAILED', stamped by
+        // UPDATE_MARKETS from the market's recentJobs). Gated by the
+        // Master-Switches "Auto-dismiss FAILED" toggle — OFF by default, so the
+        // user can inspect failed jobs first; nothing is cleared until they opt
+        // in. We send market.job.dismiss (MSG.GAME.DISMISS_JOB → __cor3DismissJob;
+        // the interceptor does the per-market endpoint flip+revert), paced like
+        // the completes, then revert to home. Fire-and-forget + self-healing: a
+        // dismiss that fails leaves the job FAILED → retried next cycle.
+        async _dismissFailedJobs(token, packet) {
+            if (!packet.queue) return;
+            // Read the toggle straight from its source (no prior-stage coupling —
+            // this step runs before CHECK_CONDITION stamps packet.masterSwitches).
+            // Absent === OFF (opposite of the markets/jobTypes switches): the user
+            // must explicitly enable auto-dismiss.
+            const switches = await Store.local.getOne(SL.AJ_MASTER_SWITCHES, {});
+            const on = !!(switches && switches.behaviour && switches.behaviour.autoDismissFailed);
+            if (!on) { this.debug('DISMISS_FAILED → auto-dismiss disabled (Master Switches)'); return; }
+
+            const failed = packet.queue.filter((j) => j.status === 'FAILED');
+            if (failed.length === 0) { this.debug('DISMISS_FAILED → none'); return; }
+            this.info(`DISMISS_FAILED → dismissing ${failed.length} failed job(s)`);
+            for (let i = 0; i < failed.length; i++) {
+                if (!this._alive(token)) return;
+                const job = failed[i];
+                if (!job.marketId) { this.warn(`DISMISS_FAILED: job ${job.id} has no marketId — cannot dismiss`); continue; }
+                Bus.window.post(C.MSG.GAME.DISMISS_JOB, { jobId: job.id, marketId: job.marketId });
+                this.info(`DISMISS_FAILED · dismiss ${job.id} (${job.type || '?'}) @ ${job.marketSlot}`);
+                // Pace the dismisses (each remote-market one does a set.endpoint
+                // flip+revert in the interceptor); skip the wait after the last.
+                if (i < failed.length - 1) await new Promise((r) => setTimeout(r, LOOP.ACCEPT_PACING_MS));
+            }
+            // A remote-market dismiss may have left the endpoint on DARK/SRM.
+            Bus.window.post(C.MSG.GAME.REVERT_ENDPOINT_TO_HOME, null);
+        }
+
+        // Manual dismiss of ONE failed job from the popup Jobs list (the ✕ button).
+        // Refused while the loop runs — __cor3SetEndpoint (used by the SAI flows) is
+        // NOT serialised through the interceptor's dismiss chain, so a manual
+        // endpoint flip could flap a running SAI batch's session. While running,
+        // the auto-dismiss step clears failed jobs instead. The interceptor's
+        // __cor3DismissJob self-reverts to the saved endpoint, so no REVERT here.
+        _dismissOne(payload) {
+            if (this._running) {
+                this.warn('Dismiss ignored — pipeline is running (enable Auto-dismiss FAILED in Master Switches to clear them while running)');
+                return { success: false, reason: 'running' };
+            }
+            const jobId = payload && payload.jobId;
+            const marketId = payload && payload.marketId;
+            if (!jobId || !marketId) {
+                this.warn('Dismiss ignored — missing jobId/marketId', { jobId, marketId });
+                return { success: false, reason: 'missing-id' };
+            }
+            this.info(`DISMISS_FAILED (manual) → dismiss ${jobId}`);
+            Bus.window.post(C.MSG.GAME.DISMISS_JOB, { jobId, marketId });
+            return { success: true };
         }
 
         // Run THIS cycle's BATCH of in-progress (TAKEN) jobs back-to-back, then

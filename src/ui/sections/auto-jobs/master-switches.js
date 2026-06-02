@@ -67,6 +67,10 @@
             const m = switches[group] || {};
             return m[key] !== false;  // absent === on
         };
+        // Behaviour toggles default OFF (absent === off) — the opposite of the
+        // markets/jobTypes switches: a behaviour like auto-dismiss must be opted
+        // into, never enabled silently on a fresh install.
+        const isBehaviourOn = (key) => (switches.behaviour || {})[key] === true;
         async function setSwitch(group, key, on) {
             const cur = (await Store.local.getOne(SL.AJ_MASTER_SWITCHES, {})) || {};
             cur[group] = cur[group] || {};
@@ -89,8 +93,15 @@
             let off = 0;
             for (const [slot] of MARKETS) if (!isOn('markets', slot)) off++;
             for (const tp of TYPES) if (!isOn('jobTypes', tp)) off++;
-            summary.textContent = off ? `${off} off` : 'all on';
+            // `off` counts markets/jobTypes (default-on) that are disabled; the
+            // behaviour toggle is default-off, so flag it separately when active.
+            const auto = isBehaviourOn('autoDismissFailed') ? ' · auto-dismiss' : '';
+            summary.textContent = (off ? `${off} off` : 'all on') + auto;
 
+            body.appendChild(group('Behaviour', [
+                chip('Auto-dismiss FAILED', isBehaviourOn('autoDismissFailed'),
+                    (on) => setSwitch('behaviour', 'autoDismissFailed', on)),
+            ]));
             body.appendChild(group('Markets', MARKETS.map(([slot, lbl]) =>
                 chip(lbl, isOn('markets', slot), (on) => setSwitch('markets', slot, on)))));
             body.appendChild(group('Job types', TYPES.map((tp) =>

@@ -34,11 +34,15 @@ is published to `STORAGE_LOCAL.AJ_PIPELINE_STATE`. See
 
 **Planning + acceptance half (isolated world):** `GET_SERVERS → CHECK_ACCESS →
 UPDATE_MARKETS → JOB_QUEUE → QUEUE:EMPTY? → HAVE_TASKS_IN_PROGRESS? → BUGGED? →
-JOB:SKIP → CHECK_CONDITION → JOB_ACCEPTION`. UPDATE_MARKETS reads both the
-market envelope's `jobs[]` (status `AVAILABLE`) and `recentJobs[]` (status
-`TAKEN` = in-progress); JOB_ACCEPTION accepts via the generic
-`MSG.GAME.ACCEPT_JOB` + `REVERT_ENDPOINT_TO_HOME` (decryption-priority, all
-markets). The orchestrator also owns persisting `NM_GRAPH` (it subscribes to
+JOB:SKIP → CHECK_CONDITION → JOB_ACCEPTION`. UPDATE_MARKETS reads the
+market envelope's `jobs[]` (status `AVAILABLE`) and the `recentJobs[]` entries
+tagged `TAKEN` (= in-progress) + `FAILED` (= failed, surfaced on the Job List
+and cleared by the auto-dismiss step / manual ✕); JOB_ACCEPTION accepts via the
+generic `MSG.GAME.ACCEPT_JOB` + `REVERT_ENDPOINT_TO_HOME` (decryption-priority,
+all markets). After JOB_QUEUE the orchestrator completes any `canComplete`
+TAKEN job and — iff `AJ_MASTER_SWITCHES.behaviour.autoDismissFailed` is on
+(default OFF) — `market.job.dismiss` (`MSG.GAME.DISMISS_JOB`)-es every FAILED
+job. The orchestrator also owns persisting `NM_GRAPH` (it subscribes to
 `MSG.GAME.NM_GRAPH`, fires an initial `REQUEST_NM_MAP`, re-requests on a long
 timer while idle, and relays the popup's `rescanNetworkMap` action).
 
@@ -81,7 +85,10 @@ one targeted pointer tap on the located tile.
 
 **Master Switches + eligibility sync.** A collapsible "Master Switches" panel
 (`src/ui/sections/auto-jobs/master-switches.js`) above the Network Map holds
-global market + job-type toggles in `STORAGE_LOCAL.AJ_MASTER_SWITCHES`. The
+global market + job-type toggles (default ON, absent === on) plus a `behaviour`
+group whose `autoDismissFailed` toggle (default OFF, absent === off) gates the
+orchestrator's auto-dismiss of FAILED jobs, all in
+`STORAGE_LOCAL.AJ_MASTER_SWITCHES`. The
 CONFIG part of a job's eligibility (markets/types/server-overrides) lives in ONE
 shared evaluator `COR3.ajEligibility.configSkipReason`
 (`src/shared/aj-eligibility.js`, loaded in the isolated world AND the popup).

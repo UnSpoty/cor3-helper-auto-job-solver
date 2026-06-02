@@ -60,10 +60,10 @@
             marketReachability: null,
 
             // ── filled by UPDATE_MARKETS ──
-            // [{ slot, reachable, refreshed, jobCount, takenCount, marketId, reason }]
+            // [{ slot, reachable, refreshed, jobCount, takenCount, failedCount, marketId, reason }]
             markets: null,
             // raw market jobs tagged with origin + source-derived status:
-            // [{ job, slot, marketId, status:'AVAILABLE'|'TAKEN' }]
+            // [{ job, slot, marketId, status:'AVAILABLE'|'TAKEN'|'FAILED' }]
             rawJobs: null,
 
             // ── filled by JOB_QUEUE ──
@@ -365,11 +365,14 @@
     // The market envelope is { marketId, jobs, recentJobs, … }: `jobs` is the
     // AVAILABLE board (acceptance candidates — they carry no status, being on
     // the board IS the status), while accepted jobs leave the board and appear
-    // in `recentJobs` tagged status:'TAKEN' (= in-progress). We pull BOTH and
-    // stamp each rawJob with a source-derived status so JOB_QUEUE /
-    // HAVE_TASKS_IN_PROGRESS / JOB_ACCEPTION can route on it. Other recentJobs
-    // states (FAILED/EXPIRED/COMPLETED/ready-to-claim) are out of the current pipeline's
-    // scope and intentionally not collected.
+    // in `recentJobs` tagged status:'TAKEN' (= in-progress) or status:'FAILED'
+    // (= failed, awaiting dismissal). We pull all three and stamp each rawJob
+    // with a source-derived status so JOB_QUEUE / HAVE_TASKS_IN_PROGRESS /
+    // JOB_ACCEPTION / DISMISS_FAILED can route on it. FAILED jobs are surfaced
+    // on the board (Job List) and cleared by the orchestrator's auto-dismiss
+    // step (gated by the Master-Switches toggle) or the popup's manual ✕. Other
+    // recentJobs states (EXPIRED/COMPLETED/ready-to-claim) are out of scope and
+    // intentionally not collected.
     const updateMarkets = {
         id: AJ.NODE.UPDATE_MARKETS,
         async run(packet, ctx) {
@@ -409,34 +412,40 @@
                     ctx.log.error(`UPDATE_MARKETS · ${m.label}: reachable market has no marketId in its envelope — its jobs cannot be accepted this cycle`);
                 }
 
-                // De-dup by job id across the AVAILABLE board and the TAKEN
-                // recentJobs: right after an accept the game can momentarily
-                // list the same job in both. The TAKEN entry wins (newer,
-                // in-progress state) so the queue never carries a duplicate
-                // that JOB_ACCEPTION would re-accept.
+                // De-dup by job id across the AVAILABLE board and the recentJobs
+                // (TAKEN / FAILED): right after an accept the game can momentarily
+                // list the same job in both. The recentJobs entry wins (newer,
+                // terminal/in-progress state) so the queue never carries a
+                // duplicate that JOB_ACCEPTION would re-accept.
                 const byId = new Map();
                 for (const job of available) {
                     if (job && job.id != null) byId.set(job.id, { job, slot: m.slot, marketId, status: 'AVAILABLE' });
                 }
                 let takenCount = 0;
+                let failedCount = 0;
                 for (const job of recent) {
-                    if (job && job.status === 'TAKEN' && job.id != null) {
+                    if (!job || job.id == null) continue;
+                    if (job.status === 'TAKEN') {
                         byId.set(job.id, { job, slot: m.slot, marketId, status: 'TAKEN' });
                         takenCount++;
+                    } else if (job.status === 'FAILED') {
+                        byId.set(job.id, { job, slot: m.slot, marketId, status: 'FAILED' });
+                        failedCount++;
                     }
                 }
                 for (const entry of byId.values()) rawJobs.push(entry);
 
-                markets.push({ slot: m.slot, reachable: true, refreshed, jobCount: available.length, takenCount, marketId, reason: null });
-                ctx.log.debug(`UPDATE_MARKETS · ${m.label}: ${available.length} available, ${takenCount} in-progress${refreshed ? '' : ' (stale)'}`);
+                markets.push({ slot: m.slot, reachable: true, refreshed, jobCount: available.length, takenCount, failedCount, marketId, reason: null });
+                ctx.log.debug(`UPDATE_MARKETS · ${m.label}: ${available.length} available, ${takenCount} in-progress, ${failedCount} failed${refreshed ? '' : ' (stale)'}`);
             }
 
             packet.markets = markets;
             packet.rawJobs = rawJobs;
             const avail = rawJobs.filter((r) => r.status === 'AVAILABLE').length;
-            const taken = rawJobs.length - avail;
-            ctx.log.info(`UPDATE_MARKETS → ${avail} available + ${taken} in-progress across ${markets.filter((x) => x.reachable).length} reachable market(s)`);
-            return stamp(packet, this.id, { available: avail, inProgress: taken });
+            const taken = rawJobs.filter((r) => r.status === 'TAKEN').length;
+            const failed = rawJobs.filter((r) => r.status === 'FAILED').length;
+            ctx.log.info(`UPDATE_MARKETS → ${avail} available + ${taken} in-progress + ${failed} failed across ${markets.filter((x) => x.reachable).length} reachable market(s)`);
+            return stamp(packet, this.id, { available: avail, inProgress: taken, failed });
         },
     };
 

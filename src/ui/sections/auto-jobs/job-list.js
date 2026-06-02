@@ -48,11 +48,14 @@
         }
     }
 
-    function jobRow(job, bugInfo, batch) {
+    function jobRow(job, bugInfo, batch, opts) {
         const isBugged = !!bugInfo;
-        const inProgress = !isBugged && job.status === 'TAKEN';
-        const skipped = !isBugged && !inProgress && job.eligible === false;
-        const pending = !isBugged && !inProgress && job.eligible == null;
+        // FAILED (from the market's recentJobs) — a terminal state the game won't
+        // clear on its own; surfaced here with a ✕ to dismiss it.
+        const isFailed = !isBugged && job.status === 'FAILED';
+        const inProgress = !isBugged && !isFailed && job.status === 'TAKEN';
+        const skipped = !isBugged && !isFailed && !inProgress && job.eligible === false;
+        const pending = !isBugged && !isFailed && !inProgress && job.eligible == null;
         // Live-batch membership (from AJ_PIPELINE_STATE.batch): these TAKEN
         // jobs are being run together this cycle; one is dispatching right now.
         const inBatch = !!(batch && Array.isArray(batch.jobIds) && batch.jobIds.indexOf(job.id) !== -1);
@@ -63,6 +66,7 @@
             + (inProgress ? ' is-active' : '')
             + (inBatch ? ' is-batch' : '')
             + (isRunning ? ' is-running' : '')
+            + (isFailed ? ' is-failed' : '')
             + (isBugged ? ' is-bugged' : ''));
 
         const head = el('div', 'aj-job-head');
@@ -74,6 +78,19 @@
             unbug.title = 'Remove from bugged list';
             unbug.addEventListener('click', (e) => { e.stopPropagation(); unbugJob(job.id); });
             head.appendChild(unbug);
+        } else if (isFailed) {
+            head.appendChild(el('span', 'pill aj-failed', 'FAILED'));
+            const running = !!(opts && opts.running);
+            const dismiss = el('button', 'aj-unbug aj-dismiss', '✕');
+            dismiss.disabled = running;
+            dismiss.title = running
+                ? 'Stop Auto Jobs to dismiss manually (or enable Auto-dismiss FAILED in Master Switches)'
+                : 'Dismiss this failed job';
+            dismiss.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (!running && opts && typeof opts.onDismiss === 'function') opts.onDismiss(job);
+            });
+            head.appendChild(dismiss);
         } else if (inProgress) {
             if (isRunning) {
                 head.appendChild(el('span', 'pill aj-batch-run', `running ▶ ${batch.index}/${batch.total}`));
@@ -110,7 +127,7 @@
     // One market block: a clickable header (caret + name + status + count) and a
     // collapsible body of its jobs. `collapsed` is a shared Set of slot keys, so
     // the expand/collapse state survives the component's frequent re-renders.
-    function marketSection(market, jobs, bugged, collapsed, batch) {
+    function marketSection(market, jobs, bugged, collapsed, batch, opts) {
         const slot = market.slot;
         const isCollapsed = collapsed.has(slot);
         const sec = el('div', 'aj-market' + (market.reachable === false ? ' is-unreachable' : ''));
@@ -134,7 +151,7 @@
             const why = market.reachable === false ? (market.reason || 'unreachable') : 'No jobs.';
             bodyWrap.appendChild(el('div', 'muted xs aj-market-empty', why));
         } else {
-            for (const job of jobs) bodyWrap.appendChild(jobRow(job, bugged && bugged[job.id], batch));
+            for (const job of jobs) bodyWrap.appendChild(jobRow(job, bugged && bugged[job.id], batch, opts));
         }
         sec.appendChild(bodyWrap);
 
@@ -158,6 +175,15 @@
         if (tab) { try { await chrome.tabs.sendMessage(tab.id, { action: C.MSG.AUTOJOBS.REFRESH_BOARD }); } catch (_) { /* tab not ready */ } }
     }
 
+    // Ask the orchestrator to dismiss one FAILED job now (market.job.dismiss).
+    // Refused orchestrator-side while the loop runs. No-op when no game tab open.
+    async function sendDismissFailed(jobId, marketId) {
+        if (!(typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.query)) return;
+        const tabs = await chrome.tabs.query({ url: ['https://cor3.gg/*', 'https://os.cor3.gg/*'] });
+        const tab = tabs && tabs[0];
+        if (tab) { try { await chrome.tabs.sendMessage(tab.id, { action: C.MSG.AUTOJOBS.DISMISS_FAILED, jobId, marketId }); } catch (_) { /* tab not ready */ } }
+    }
+
     function attach(container) {
         container.classList.add('aj-jobs-host');
         container.innerHTML = '';
@@ -168,10 +194,23 @@
         let overrides = {};
         let bugged = {};
         let batch = null;   // AJ_PIPELINE_STATE.batch — the live JOB_FLOW batch
+        let running = false; // AJ_PIPELINE_STATE.running — gates the manual ✕
 
         // Expand/collapse state per market slot — survives the frequent
         // re-renders (lives in this closure; resets when the popup reopens).
         const collapsed = new Set();
+
+        // Optimistically-dismissed FAILED job ids: hide the row the instant the
+        // user clicks ✕ (the dismiss WS round-trip + board rebuild lag a beat).
+        // Cleared whenever a fresh board arrives, so a dismiss that didn't take
+        // re-shows on the next rebuild rather than vanishing forever.
+        const dismissedIds = new Set();
+        function onDismiss(job) {
+            if (!job || !job.marketId) return;
+            dismissedIds.add(job.id);
+            sendDismissFailed(job.id, job.marketId);
+            render();
+        }
 
         const wrap = el('div', 'aj-jobs');
         const head = el('div', 'aj-jobs-head');
@@ -207,7 +246,8 @@
                 return;
             }
 
-            const jobs = Array.isArray(queue.jobs) ? queue.jobs : [];
+            // Hide rows the user just dismissed with ✕ (optimistic removal).
+            const jobs = (Array.isArray(queue.jobs) ? queue.jobs : []).filter((j) => !dismissedIds.has(j.id));
 
             // Live eligibility: derive display rows from the pipeline's DATA
             // verdict (job.dataSkipReason) + the CONFIG verdict re-derived NOW
@@ -217,7 +257,10 @@
             // storage value), which other readers treat as authoritative.
             const evalConfig = root.COR3.ajEligibility && root.COR3.ajEligibility.configSkipReason;
             const rows = jobs.map((job) => {
-                if (!evalConfig || job.status === 'TAKEN') return job;
+                // Eligibility only applies to AVAILABLE board jobs; TAKEN /
+                // FAILED rows pass through untouched (eligible:null), matching
+                // CHECK_JOBS_CONDITION which skips non-AVAILABLE jobs.
+                if (!evalConfig || job.status !== 'AVAILABLE') return job;
                 const bug = bugged[job.id];
                 const bugReason = bug ? `bugged: ${bug.reason || 'unknown'}` : null;
                 // CONFIG skip (market / job-type / server toggles) is re-derived
@@ -238,22 +281,25 @@
             });
 
             // Counts describe the acceptance board (available jobs); in-progress
-            // (TAKEN) and bugged jobs are reported separately. Bugged jobs are
-            // excluded from `skipped` so they are not tallied under both buckets.
-            const avail = rows.filter((j) => j.status !== 'TAKEN');
-            const inProgress = rows.length - avail.length;
+            // (TAKEN), failed (FAILED) and bugged jobs are reported separately.
+            // Bugged jobs are excluded from `skipped`/`failed` so they are not
+            // tallied under two buckets at once.
+            const avail = rows.filter((j) => j.status === 'AVAILABLE');
+            const inProgress = rows.filter((j) => j.status === 'TAKEN').length;
+            const failedN = rows.filter((j) => j.status === 'FAILED' && !bugged[j.id]).length;
             const evaluated = avail.filter((j) => j.eligible != null).length;
             const eligible = avail.filter((j) => j.eligible === true).length;
             const skipped = avail.filter((j) => j.eligible === false && !bugged[j.id]).length;
             const buggedN = rows.filter((j) => bugged[j.id]).length;
             const active = inProgress ? ` · ${inProgress} in-progress` : '';
+            const failedSuffix = failedN ? ` · ${failedN} failed` : '';
             const buggedSuffix = buggedN ? ` · ${buggedN} bugged` : '';
             const cyc = `cycle ${queue.cycle || '—'}`;
             summary.textContent = !jobs.length
                 ? `0 jobs · ${cyc}`
                 : evaluated
-                    ? `${avail.length} available · ${eligible} eligible · ${skipped} skip${active}${buggedSuffix} · ${cyc}`
-                    : `${avail.length} available${active}${buggedSuffix} · pending · ${cyc}`;
+                    ? `${avail.length} available · ${eligible} eligible · ${skipped} skip${active}${failedSuffix}${buggedSuffix} · ${cyc}`
+                    : `${avail.length} available${active}${failedSuffix}${buggedSuffix} · pending · ${cyc}`;
 
             // Live-batch banner — only while JOB_FLOW is actively running a
             // batch (the orchestrator clears AJ_PIPELINE_STATE.batch at cycle
@@ -283,7 +329,8 @@
                 ? queue.markets
                 : Object.keys(bySlot).map((slot) => ({ slot, reachable: true, refreshed: true, jobCount: bySlot[slot].length }));
 
-            for (const m of markets) list.appendChild(marketSection(m, bySlot[m.slot] || [], bugged, collapsed, batch));
+            const opts = { running, onDismiss };
+            for (const m of markets) list.appendChild(marketSection(m, bySlot[m.slot] || [], bugged, collapsed, batch, opts));
         }
 
         // The display re-renders when the job board OR the switches/overrides
@@ -291,18 +338,26 @@
         // reflected here immediately.
         const unsub = Store.local.onChanged((changes) => {
             let dirty = false;
-            if (changes[SL.AJ_JOB_QUEUE]) { lastQueue = changes[SL.AJ_JOB_QUEUE].newValue; dirty = true; }
+            if (changes[SL.AJ_JOB_QUEUE]) {
+                lastQueue = changes[SL.AJ_JOB_QUEUE].newValue;
+                // A fresh board reflects reality — drop the optimistic-dismiss
+                // veil so any FAILED job that wasn't actually cleared re-appears.
+                dismissedIds.clear();
+                dirty = true;
+            }
             if (changes[SL.AJ_MASTER_SWITCHES]) { switches = changes[SL.AJ_MASTER_SWITCHES].newValue || {}; dirty = true; }
             if (changes[SL.AJ_SERVER_OVERRIDES]) { overrides = changes[SL.AJ_SERVER_OVERRIDES].newValue || {}; dirty = true; }
             if (changes[SL.AJ_BUGGED_JOBS]) { bugged = changes[SL.AJ_BUGGED_JOBS].newValue || {}; dirty = true; }
-            // The live batch rides on the pipeline state (written every node
-            // transition); pull just its `batch` field. Re-render ONLY when the
-            // batch identity/progress actually changes — the state is written on
-            // every node transition, but the batch field changes far less often,
-            // so a signature gate avoids a re-render storm during a cycle.
+            // The live batch + running flag ride on the pipeline state (written
+            // every node transition); pull just `batch` and `running`. Re-render
+            // ONLY when the batch identity/progress or running state actually
+            // changes — the state is written on every node transition, but these
+            // fields change far less often, so the gate avoids a re-render storm.
             if (changes[SL.AJ_PIPELINE_STATE]) {
-                const nb = (changes[SL.AJ_PIPELINE_STATE].newValue || {}).batch || null;
+                const ps = changes[SL.AJ_PIPELINE_STATE].newValue || {};
+                const nb = ps.batch || null;
                 if (batchSig(nb) !== batchSig(batch)) { batch = nb; dirty = true; }
+                if (!!ps.running !== running) { running = !!ps.running; dirty = true; }
             }
             if (dirty) render();
         });
@@ -312,7 +367,7 @@
             Store.local.getOne(SL.AJ_SERVER_OVERRIDES, {}),
             Store.local.getOne(SL.AJ_BUGGED_JOBS, {}),
             Store.local.getOne(SL.AJ_PIPELINE_STATE, null),
-        ]).then(([q, s, o, b, ps]) => { lastQueue = q; switches = s || {}; overrides = o || {}; bugged = b || {}; batch = (ps || {}).batch || null; render(); });
+        ]).then(([q, s, o, b, ps]) => { lastQueue = q; switches = s || {}; overrides = o || {}; bugged = b || {}; batch = (ps || {}).batch || null; running = !!((ps || {}).running); render(); });
 
         return {
             destroy() {

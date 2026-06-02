@@ -44,8 +44,9 @@ START → DELAY:10s → ┌─ GET_SERVERS → CHECK_SERVERS_ACCESABILITY
 |---|---|---|
 | `GET_SERVERS` | `getServers` | reads `NM_GRAPH`; throws loud if the map was never opened. Copies `home` + `servers[]` onto the packet. |
 | `CHECK_ACCESS` | `checkAccess` | per server: `accessible` / `hasSaiAccess` / `onCooldown` from the graph flags. Resolves market reachability (home always; dark/srm unless their `*_AVAILABLE` flag is `false`). |
-| `UPDATE_MARKETS` | `updateMarkets` | for each **reachable** market: post `MSG.GAME.REFRESH_*`, await a fresh frame (≤6 s), then read the envelope. Pulls BOTH `jobs[]` (tag `status:'AVAILABLE'`) and `recentJobs[]` TAKEN entries (tag `status:'TAKEN'`). Unreachable markets recorded with a reason, not refreshed. |
+| `UPDATE_MARKETS` | `updateMarkets` | for each **reachable** market: post `MSG.GAME.REFRESH_*`, await a fresh frame (≤6 s), then read the envelope. Pulls `jobs[]` (tag `status:'AVAILABLE'`) and the `recentJobs[]` TAKEN (`status:'TAKEN'`) + FAILED (`status:'FAILED'`) entries. Unreachable markets recorded with a reason, not refreshed. |
 | `JOB_QUEUE` | `jobQueue` | normalises rawJobs → queue entries `{id, name, type, status, serverName, marketSlot, marketId, rewardCredits, eligible, skipReason}`; writes `AJ_JOB_QUEUE` for the UI. |
+| `READY_TO_COMPLETE` / dismiss | (orchestrator) | `_completeReadyJobs` completes any TAKEN job the game flags `canComplete`; `_dismissFailedJobs` then `market.job.dismiss`-es every FAILED job **iff** `AJ_MASTER_SWITCHES.behaviour.autoDismissFailed` is on (default OFF). Both run here with the endpoint at home, before any SAI flow. |
 | `QUEUE_EMPTY?` | (orchestrator) | empty board+in-progress → fall through to DELAY and loop. |
 | `HAVE_TASKS_IN_PROGRESS?` | (orchestrator) | any queue job with `status==='TAKEN'`. |
 | `BUGGED?` | `buggedJobs` + orchestrator | reads `AJ_BUGGED_JOBS`; if every in-progress job is bugged → `JOB:SKIP` (skip the cycle). |

@@ -99,6 +99,11 @@
             // like ACCEPT_JOB). Generic game RPC — used by the Auto Jobs flow
             // modules to claim a finished job.
             COMPLETE_JOB: 'COR3_COMPLETE_JOB',
+            // market.job.dismiss (endpoint-preflight handled in the interceptor,
+            // like COMPLETE_JOB). Clears a FAILED job from the market's
+            // recentJobs / "Active Jobs" panel. Used by the Auto Jobs
+            // orchestrator's auto-dismiss step + the popup's manual ✕ button.
+            DISMISS_JOB: 'COR3_DISMISS_JOB',
             RESPOND_DECISION: 'COR3_RESPOND_DECISION',
             REQUEST_NM_MAP: 'COR3_REQUEST_NM_MAP',
             NM_GRAPH: 'COR3_NM_GRAPH',
@@ -185,6 +190,13 @@
             // AND storage in one place, so a popup-side storage wipe can't be
             // clobbered by the content world re-flushing its in-memory ring.
             CLEAR_LOG: 'ajClearLog',
+
+            // popup Jobs list "✕" on a FAILED row → orchestrator: dismiss that
+            // one failed job now (market.job.dismiss). Payload: { jobId, marketId }.
+            // Refused while the loop runs (a manual endpoint flip would flap the
+            // pipeline's SAI session mid-cycle) — the auto-dismiss step handles it
+            // while running instead.
+            DISMISS_FAILED: 'ajDismissFailed',
 
             // isolated → MAIN window messages. Handled by the MAIN-world bridge.
             OPEN_SAI: 'COR3_AJ_OPEN_SAI',

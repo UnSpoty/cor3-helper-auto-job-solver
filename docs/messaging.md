@@ -80,6 +80,7 @@ the game-module helpers.
 | `GAME.COLLECT_ALL` | `COR3_COLLECT_ALL` | `{ expeditionId }` | `expeditions.collect.all`. |
 | `GAME.ACCEPT_JOB` | `COR3_ACCEPT_JOB` | `{ jobId, marketId }` | `market.job.take` (endpoint-preflight in the interceptor). |
 | `GAME.COMPLETE_JOB` | `COR3_COMPLETE_JOB` | `{ jobId, marketId }` | `market.job.complete`. Sent by the Auto Jobs flow modules after a job's minigame finishes. |
+| `GAME.DISMISS_JOB` | `COR3_DISMISS_JOB` | `{ jobId, marketId }` | `market.job.dismiss` (endpoint-preflight in the interceptor). Clears a FAILED job from the market's `recentJobs`. Sent by the orchestrator's auto-dismiss step + the popup's manual ✕. |
 | `GAME.RESPOND_DECISION` | `COR3_RESPOND_DECISION` | `{ expeditionId, messageId, selectedOption }` | `expeditions.respond.event`. |
 | `GAME.REFRESH_DARK_MARKET` / `GAME.REFRESH_SRM_MARKET` | `COR3_REFRESH_DARK_MARKET` / `COR3_REFRESH_SRM_MARKET` | `null` | set endpoint to the dark / SRM7-M server, then `get.options`. Used by auto-refresh and Auto Jobs's UPDATE_MARKETS. |
 | `GAME.REQUEST_NM_MAP` | `COR3_REQUEST_NM_MAP` | `null` | request `network-map.get.map`; the interceptor replies `GAME.NM_GRAPH` (which the orchestrator persists to `STORAGE_LOCAL.NM_GRAPH`). |
@@ -148,6 +149,7 @@ messages (`ACCEPT_JOB`, `COMPLETE_JOB`, `REVERT_ENDPOINT_TO_HOME`, `REFRESH_*`,
 | `AUTOJOBS.TOGGLE` | `toggleAutoJobs` | popup → isolated (runtime) | `{ settings: { enabled } }` | fired alongside the `AUTOJOBS_SETTINGS` sync write so the orchestrator starts/stops its loop immediately (Firefox sync.onChanged can be flaky cross-context). |
 | `AUTOJOBS.OPEN_SAI_ACTION` | `ajOpenSai` | popup → isolated (runtime) | `{ serverName, serverId, serverType }` | NM context-menu "Open SAI". Orchestrator forwards to the MAIN bridge — **refused while the loop runs**. `serverId` (from `NM_GRAPH`) is required for the WS connect; `serverType` (the server's `serverTypeName`, e.g. "CEDRT private") lets the hack path pick HACK software. |
 | `AUTOJOBS.OPEN_MARKET_ACTION` | `ajOpenMarket` | popup → isolated (runtime) | `{ serverName, serverId, serverType }` | NM context-menu "Open Market". Same refuse-while-running guard. `serverName`/`serverId` are `null` for the HOME market (`serverType` unused). |
+| `AUTOJOBS.DISMISS_FAILED` | `ajDismissFailed` | popup → isolated (runtime) | `{ jobId, marketId }` | Jobs list "✕" on a FAILED row. Orchestrator posts `MSG.GAME.DISMISS_JOB` — **refused while the loop runs** (a manual endpoint flip would flap a running SAI batch; the auto-dismiss step handles it instead). |
 | `AUTOJOBS.OPEN_SAI` | `COR3_AJ_OPEN_SAI` | isolated → MAIN (window) | `{ serverName, serverId, serverType }` | handled by `auto-jobs-bridge.js` — **no DOM coordinate clicks**: opens the Network Map window (`COR3.game.desktop.openAppAndWait`), connects via `__cor3SetEndpoint` (WS `set.endpoint`), opens the SAI terminal, then `saiAccess()` gains access — **Active Access** (`__cor3SaiGetLoginStatus` → `__cor3SaiLoginWithAccess`, a `task_access` grant, no password/passhack) or, with no grant, **hacks** the server (`COR3.game.loadout.ensureHack(serverType)` installs HACK software → click hack-tool row → solver wins the minigame → poll `get.login.status` for the new grant → `login.with-access`). |
 | `AUTOJOBS.OPEN_MARKET` | `COR3_AJ_OPEN_MARKET` | isolated → MAIN (window) | `{ serverName, serverId, serverType }` | handled by the bridge — same client-fn window-open + WS `set.endpoint` connect, then invokes the panel's Market control via `COR3.game.desktop.invokeReactClick` (text button for HOME, chest icon for DARK/SRM). `serverId` is `null` for HOME (no connect). |
 | `AUTOJOBS.FLOW_START` | `COR3_AJ_FLOW_START` | isolated → MAIN (window) | `{ jobId, marketId, jobType, fileCondition, fileId?, serverName? }` | JOB_FLOW dispatch. The MAIN `flow-*` module for `jobType` executes the job. **Field is `jobType` not `type`** — `Bus.window` builds the envelope as `Object.assign({type}, payload)`, so a payload `type` would clobber the Bus message id and never be delivered. |
@@ -210,10 +212,10 @@ Constants live under `STORAGE_LOCAL.AJ_*`.
 | Key | Shape | Owner |
 |---|---|---|
 | `ajPipelineState` | `{ running, cycle, node, startedAt, updatedAt, error? }` | `auto-jobs.js`. `node` ∈ `AJ.NODE.*` — drives the Flow Map highlight. |
-| `ajJobQueue` | `{ cycle, computedAt, markets:[{slot, reachable, refreshed, jobCount, takenCount, reason}], jobs:[{id, name, type, status, serverName, marketSlot, marketId, rewardCredits, eligible, skipReason}] }` | `auto-jobs/pipeline.js` (JOB_QUEUE / CHECK_CONDITION). `status` = `'AVAILABLE'` (board) or `'TAKEN'` (in-progress); `eligible` is null until CHECK_CONDITION runs. |
+| `ajJobQueue` | `{ cycle, computedAt, markets:[{slot, reachable, refreshed, jobCount, takenCount, failedCount, reason}], jobs:[{id, name, type, status, serverName, marketSlot, marketId, rewardCredits, eligible, skipReason}] }` | `auto-jobs/pipeline.js` (JOB_QUEUE / CHECK_CONDITION). `status` = `'AVAILABLE'` (board), `'TAKEN'` (in-progress) or `'FAILED'` (failed, awaiting dismissal); `eligible` is null until CHECK_CONDITION runs (and stays null for TAKEN/FAILED). |
 | `ajBuggedJobs` | `{ [jobId]: { reason, since } }` | written by JOB_FLOW's `_markBugged`; read by the pipeline (CHECK_CONDITION) + the Job List (shows a **BUGGED** pill live). The UI writes it too: per-job ✕ (un-bug) and the header **Clear Bugged** button (`= {}`). |
 | `ajServerOverrides` | `{ [serverName]: { skip: bool, disabledTypes: { [jobType]: true } } }` | NM context menu → read by CHECK_CONDITION + Job List (live). |
-| `ajMasterSwitches` | `{ markets: { home, dark, srm }, jobTypes: { [FLOW.*]: bool } }` | Master Switches panel. `false` = disabled globally (absent = on). Read by CHECK_CONDITION (acceptance) + Job List/Network Map (live display). |
+| `ajMasterSwitches` | `{ markets: { home, dark, srm }, jobTypes: { [FLOW.*]: bool }, behaviour: { autoDismissFailed } }` | Master Switches panel. For `markets`/`jobTypes`: `false` = disabled globally (absent = on). `behaviour.autoDismissFailed` defaults OFF (absent = off) — gates the orchestrator's auto-dismiss step. Read by CHECK_CONDITION (acceptance) + Job List/Network Map (live display) + the orchestrator (dismiss gate). |
 
 > **Config eligibility is shared.** The market/type/server-override part of a
 > job's verdict is computed by `COR3.ajEligibility.configSkipReason(job,
@@ -346,7 +348,7 @@ type Job = {
     conditions?: { items: { details: ConditionDetails }[] };
     isCompleted?: boolean;
     isExpired?: boolean;
-    status?: 'AVAILABLE' | 'TAKEN' | 'COMPLETED';
+    status?: 'AVAILABLE' | 'TAKEN' | 'FAILED' | 'COMPLETED';
 };
 
 type ConditionDetails = {
