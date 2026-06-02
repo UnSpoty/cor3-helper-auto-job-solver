@@ -37,10 +37,11 @@ and the runtime API. They communicate over `window.postMessage`.
 │    export) on COR3.uiComponents.*            │
 ├────────────────────────────────────────────────┤
 │ Isolated content (src/entry/content.js)        │
-│  • 12 data modules (auth, expeditions,         │
+│  • 13 data modules (auth, expeditions,         │
 │    archived-expeditions, decisions, market,    │
-│    dark-market, srm-market, stash, loadout,    │
-│    mercenaries, merc-config, expedition-config)│
+│    dark-market, srm-market, usol-market,       │
+│    stash, loadout, mercenaries, merc-config,   │
+│    expedition-config)                          │
 │  • automation: timers, auto-refresh, auto-send-│
 │    merc, auto-choose-decision, auto-decrypt,   │
 │    auto-ice-wall, auto-simple-decrypt, daily-  │
@@ -111,7 +112,7 @@ The order matters: core primitives must exist before modules use them.
 ```
 1-14. shared/* + core/* + i18n (same prelude as MAIN, minus interceptors)
 15.  src/modules/data/auth.js
-16-26. src/modules/data/*            ← 11 more data modules (incl. srm-market, loadout, archived-expeditions)
+16-27. src/modules/data/*            ← 12 more data modules (incl. srm-market, usol-market, loadout, archived-expeditions)
 27.  src/modules/automation/timers.js
 28.  src/modules/automation/auto-refresh.js
 29.  src/modules/automation/auto-send-merc.js
@@ -207,7 +208,7 @@ pipeline diagram lives in [pipelines.md](pipelines.md).)
   stage.
 - **Isolation.** The orchestrator runs in the isolated world, owns only
   `AJ_*` / `AUTOJOBS_SETTINGS` keys, logs under id `auto-jobs`, and reads only
-  shared read-only game state (`NM_GRAPH` + the three market envelopes). The
+  shared read-only game state (`NM_GRAPH` + the four market envelopes). The
   commands it posts are generic `MSG.GAME.*` (REFRESH_*, ACCEPT_JOB,
   COMPLETE_JOB, REVERT_ENDPOINT_TO_HOME, REQUEST_NM_MAP) + its own
   `MSG.AUTOJOBS.*`.

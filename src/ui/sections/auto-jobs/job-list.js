@@ -24,7 +24,7 @@
     const SL = C.STORAGE_LOCAL;
     const t = (k, vars) => root.COR3.i18n.t(k, vars);
 
-    // Friendly market-slot label (home/dark/srm) — falls back to the raw slot
+    // Friendly market-slot label (home/dark/srm/usol) — falls back to the raw slot
     // for any unexpected slot key.
     function marketLabel(slot) {
         const k = 'autojobs.market.' + slot;

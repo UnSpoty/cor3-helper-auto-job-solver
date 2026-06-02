@@ -78,7 +78,7 @@
                 id: 'auto-jobs',
                 name: 'Auto Jobs',
                 category: C.CATEGORY.AUTOMATION,
-                dependsOn: ['market', 'dark-market', 'srm-market'],
+                dependsOn: ['market', 'dark-market', 'srm-market', 'usol-market'],
                 owns: {
                     storageKeys: [
                         SS.AUTOJOBS_SETTINGS,
@@ -98,6 +98,7 @@
                         C.MSG.GAME.REFRESH_MARKET,
                         C.MSG.GAME.REFRESH_DARK_MARKET,
                         C.MSG.GAME.REFRESH_SRM_MARKET,
+                        C.MSG.GAME.REFRESH_USOL_MARKET,
                         C.MSG.GAME.ACCEPT_JOB,
                         C.MSG.GAME.COMPLETE_JOB,
                         C.MSG.GAME.DISMISS_JOB,

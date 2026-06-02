@@ -91,9 +91,9 @@
     }
 
     // ──────────────────────────────────────────────────────────────────────
-    // Market slot table — the three markets Auto Jobs knows about. Each is a server;
-    // home is always reachable, dark/srm reachability is the game-reported
-    // availability flag (false === "no path / market-not-reachable").
+    // Market slot table — the markets Auto Jobs knows about. Each is a server;
+    // home is always reachable, the remote markets' (dark/srm/usol) reachability
+    // is the game-reported availability flag (false === "no path / market-not-reachable").
     // ──────────────────────────────────────────────────────────────────────
     const MARKET_SLOTS = [
         {
@@ -110,6 +110,11 @@
             slot: 'srm', label: 'SRM7-M',
             storageKey: SL.SRM_MARKET, atKey: SL.SRM_MARKET_AT,
             refresh: C.MSG.GAME.REFRESH_SRM_MARKET, availableKey: SL.SRM_MARKET_AVAILABLE,
+        },
+        {
+            slot: 'usol', label: 'URM7-M',
+            storageKey: SL.USOL_MARKET, atKey: SL.USOL_MARKET_AT,
+            refresh: C.MSG.GAME.REFRESH_USOL_MARKET, availableKey: SL.USOL_MARKET_AVAILABLE,
         },
     ];
 

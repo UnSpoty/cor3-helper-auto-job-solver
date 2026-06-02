@@ -21,6 +21,8 @@
             DARK_MARKET_UNREACHABLE: 'COR3_WS_DARK_MARKET_UNREACHABLE',
             SRM_MARKET: 'COR3_WS_SRM_MARKET',
             SRM_MARKET_UNREACHABLE: 'COR3_WS_SRM_MARKET_UNREACHABLE',
+            USOL_MARKET: 'COR3_WS_USOL_MARKET',
+            USOL_MARKET_UNREACHABLE: 'COR3_WS_USOL_MARKET_UNREACHABLE',
             STASH: 'COR3_WS_STASH',
             MERCENARIES: 'COR3_WS_MERCENARIES',
             MERC_CONFIGURE: 'COR3_WS_MERC_CONFIGURE',
@@ -91,6 +93,7 @@
             REFRESH_MARKET: 'COR3_REFRESH_MARKET',
             REFRESH_DARK_MARKET: 'COR3_REFRESH_DARK_MARKET',
             REFRESH_SRM_MARKET: 'COR3_REFRESH_SRM_MARKET',
+            REFRESH_USOL_MARKET: 'COR3_REFRESH_USOL_MARKET',
             LAUNCH_EXPEDITION: 'COR3_LAUNCH_EXPEDITION',
             OPEN_CONTAINER: 'COR3_OPEN_CONTAINER',
             COLLECT_ALL: 'COR3_COLLECT_ALL',
@@ -255,6 +258,9 @@
         SRM_MARKET: 'srmMarketData',
         SRM_MARKET_AT: 'srmMarketDataUpdatedAt',
         SRM_MARKET_AVAILABLE: 'srmMarketAvailable',
+        USOL_MARKET: 'usolMarketData',
+        USOL_MARKET_AT: 'usolMarketDataUpdatedAt',
+        USOL_MARKET_AVAILABLE: 'usolMarketAvailable',
         MERCENARIES: 'mercenariesData',
         MERCENARIES_AT: 'mercenariesUpdatedAt',
         EXPEDITION_CONFIG: 'expeditionConfigData',
@@ -312,7 +318,7 @@
         // a disabled type rejects that job type on that server only.
         AJ_SERVER_OVERRIDES: 'ajServerOverrides',
         // Global Master Switches set from the "Master Switches" panel.
-        // Shape: { markets: { home, dark, srm }, jobTypes: { [FLOW.*]: bool } }.
+        // Shape: { markets: { home, dark, srm, usol }, jobTypes: { [FLOW.*]: bool } }.
         // A value of `false` disables that market/type globally (no jobs from a
         // disabled market are accepted; a disabled type is rejected everywhere).
         // Absent / undefined === enabled (the default is "everything on").
@@ -363,6 +369,10 @@
         AUTO_DECRYPT_ENABLED: 'autoDecryptEnabled',
         AUTO_ICE_WALL_ENABLED: 'autoIceWallEnabled',
         AUTO_SIMPLE_DECRYPT_ENABLED: 'autoSimpleDecryptEnabled',
+
+        // Auto Daily Ops — watcher auto-solves Daily Ops when the timer hits
+        // 00:00 (a new task is available) or the current day is still unsolved.
+        AUTO_DAILY_OPS_ENABLED: 'autoDailyOpsEnabled',
 
         // Auto-refresh
         AUTO_REFRESH: 'autoRefresh',

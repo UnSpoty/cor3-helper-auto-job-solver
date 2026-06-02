@@ -106,7 +106,7 @@
 
     // Locate the Market control in the open ServerInfoPanel. HOME (and any
     // market with a labelled button) shows a full-width "Market"/"Рынок"
-    // button; a remote connected market server (DARK/SRM) shows an icon-only
+    // button; a remote connected market server (DARK/SRM/USOL) shows an icon-only
     // "chest" button immediately to the RIGHT of the Login control in the
     // actions row (no stable id, so we walk the row — the shape the game uses).
     // Without the icon fallback, Open Market on a remote market would never
@@ -282,7 +282,7 @@
     // ── Open Market ───────────────────────────────────────────────────────────
     // HOME: open the map, select the Home tile, click the full-width "Market".
     // Remote market server: navigate (client fn + WS connect), then click the
-    // panel's Market control (text button for HOME, chest icon for DARK/SRM).
+    // panel's Market control (text button for HOME, chest icon for DARK/SRM/USOL).
     // All control clicks are React-onClick invocations. Wrapped in try/catch for
     // the same reason as Open SAI.
     Bus.window.on(AJ.OPEN_MARKET, async (env) => {

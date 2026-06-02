@@ -24,6 +24,8 @@ modules (auto-jobs, auto-send-merc).
 | `WS.MARKET` | `COR3_WS_MARKET` | `{ market: { marketId, jobs: Job[], recentJobs: Job[], nextJobsResetAt } }` | home market only (id `019d3ea4-…-8f7c85841134`). Built from the response to `market.get.jobs`. |
 | `WS.DARK_MARKET` | `COR3_WS_DARK_MARKET` | `{ market: same shape }` | dark market (id `019d3ea4-…-908ba9194aa0`). |
 | `WS.DARK_MARKET_UNREACHABLE` | `COR3_WS_DARK_MARKET_UNREACHABLE` | `{ error, serverId }` | emitted when `network-map.set.endpoint` returns `no-path-to-server`. Sets `darkMarketAvailable=false`; also sets `window.__serverPathFailed = Date.now()` for connect-step fast-fail. |
+| `WS.SRM_MARKET` / `WS.SRM_MARKET_UNREACHABLE` | `COR3_WS_SRM_MARKET` / `COR3_WS_SRM_MARKET_UNREACHABLE` | `{ market: same shape }` / `{ error, serverId }` | SRM7-M market (id `019da731-…-1ea3b9b78001`, server `019da6f1-…`). Behaves like dark — `set.endpoint` preflight then `get.jobs`. |
+| `WS.USOL_MARKET` / `WS.USOL_MARKET_UNREACHABLE` | `COR3_WS_USOL_MARKET` / `COR3_WS_USOL_MARKET_UNREACHABLE` | `{ market: same shape }` / `{ error, serverId }` | URM7-M market — USOL faction (market id `019e4065-…-58ab4f2cf7d7`, server `019e4052-…-883ffb1560cd`). Behaves like dark/srm. |
 | `WS.STASH` | `COR3_WS_STASH` | `{ stash: { items, currentUsage, maxCapacity } }` | inventory snapshot. |
 | `WS.MERCENARIES` | `COR3_WS_MERCENARIES` | `{ data: { mercenaries: Merc[] } | Merc[] }` | array OR `{mercenaries: [...]}` shape — handle both. |
 | `WS.MERC_CONFIGURE` | `COR3_WS_MERC_CONFIGURE` | `{ mercenaryId, data: { totalCost, riskScore, … } }` | per-merc cost/risk. Multiple events for one fetch (one per merc). |
@@ -82,7 +84,7 @@ the game-module helpers.
 | `GAME.COMPLETE_JOB` | `COR3_COMPLETE_JOB` | `{ jobId, marketId }` | `market.job.complete`. Sent by the Auto Jobs flow modules after a job's minigame finishes. |
 | `GAME.DISMISS_JOB` | `COR3_DISMISS_JOB` | `{ jobId, marketId }` | `market.job.dismiss` (endpoint-preflight in the interceptor). Clears a FAILED job from the market's `recentJobs`. Sent by the orchestrator's auto-dismiss step + the popup's manual ✕. |
 | `GAME.RESPOND_DECISION` | `COR3_RESPOND_DECISION` | `{ expeditionId, messageId, selectedOption }` | `expeditions.respond.event`. |
-| `GAME.REFRESH_DARK_MARKET` / `GAME.REFRESH_SRM_MARKET` | `COR3_REFRESH_DARK_MARKET` / `COR3_REFRESH_SRM_MARKET` | `null` | set endpoint to the dark / SRM7-M server, then `get.options`. Used by auto-refresh and Auto Jobs's UPDATE_MARKETS. |
+| `GAME.REFRESH_DARK_MARKET` / `GAME.REFRESH_SRM_MARKET` / `GAME.REFRESH_USOL_MARKET` | `COR3_REFRESH_DARK_MARKET` / `COR3_REFRESH_SRM_MARKET` / `COR3_REFRESH_USOL_MARKET` | `null` | set endpoint to the dark / SRM7-M / URM7-M server, then `get.jobs`. Used by auto-refresh and Auto Jobs's UPDATE_MARKETS. |
 | `GAME.REQUEST_NM_MAP` | `COR3_REQUEST_NM_MAP` | `null` | request `network-map.get.map`; the interceptor replies `GAME.NM_GRAPH` (which the orchestrator persists to `STORAGE_LOCAL.NM_GRAPH`). |
 | `GAME.NM_GRAPH` | `COR3_NM_GRAPH` | `{ home, currentEndpointId, servers:[…] }` | **inverse** — MAIN → isolated, the parsed BFS-depth graph. The Auto Jobs orchestrator subscribes and persists it. |
 | `GAME.REQUEST_LOADOUT` | `COR3_REQUEST_LOADOUT` | `null` | join `loadout` room → server replies `loadout/get.options` (→ `STORAGE_LOCAL.LOADOUT`). |
@@ -175,6 +177,8 @@ the market board's `jobs[]` and reappears in `recentJobs[]` with
 | `darkMarketAvailable` | `boolean` | `data/dark-market.js` | flips false on `WS.DARK_MARKET_UNREACHABLE`. |
 | `srmMarketData` | `{marketId, jobs, recentJobs, …}` | `data/srm-market.js` | SRM7-M market. + `srmMarketDataUpdatedAt`. |
 | `srmMarketAvailable` | `boolean` | `data/srm-market.js` | reachability flag (mirrors dark). |
+| `usolMarketData` | `{marketId, jobs, recentJobs, …}` | `data/usol-market.js` | URM7-M market (USOL faction). + `usolMarketDataUpdatedAt`. |
+| `usolMarketAvailable` | `boolean` | `data/usol-market.js` | reachability flag (mirrors dark). |
 | `loadoutData` | `{ …snapshot, _derived:{decryptExtensions, capabilities, canBoot} }` | `data/loadout.js` | from `loadout/get.options`. `_derived` is computed up-front so Auto Jobs doesn't recompute each cycle. |
 | `stashData` | `{items, currentUsage, maxCapacity}` | `data/stash.js` | + `stashDataUpdatedAt`. |
 | `mercenariesData` | `Merc[] \| {mercenaries: Merc[]}` | `data/mercenaries.js` | + `mercenariesUpdatedAt`. |
@@ -215,7 +219,7 @@ Constants live under `STORAGE_LOCAL.AJ_*`.
 | `ajJobQueue` | `{ cycle, computedAt, markets:[{slot, reachable, refreshed, jobCount, takenCount, failedCount, reason}], jobs:[{id, name, type, status, serverName, marketSlot, marketId, rewardCredits, eligible, skipReason}] }` | `auto-jobs/pipeline.js` (JOB_QUEUE / CHECK_CONDITION). `status` = `'AVAILABLE'` (board), `'TAKEN'` (in-progress) or `'FAILED'` (failed, awaiting dismissal); `eligible` is null until CHECK_CONDITION runs (and stays null for TAKEN/FAILED). |
 | `ajBuggedJobs` | `{ [jobId]: { reason, since } }` | written by JOB_FLOW's `_markBugged`; read by the pipeline (CHECK_CONDITION) + the Job List (shows a **BUGGED** pill live). The UI writes it too: per-job ✕ (un-bug) and the header **Clear Bugged** button (`= {}`). |
 | `ajServerOverrides` | `{ [serverName]: { skip: bool, disabledTypes: { [jobType]: true } } }` | NM context menu → read by CHECK_CONDITION + Job List (live). |
-| `ajMasterSwitches` | `{ markets: { home, dark, srm }, jobTypes: { [FLOW.*]: bool }, behaviour: { autoDismissFailed } }` | Master Switches panel. For `markets`/`jobTypes`: `false` = disabled globally (absent = on). `behaviour.autoDismissFailed` defaults OFF (absent = off) — gates the orchestrator's auto-dismiss step. Read by CHECK_CONDITION (acceptance) + Job List/Network Map (live display) + the orchestrator (dismiss gate). |
+| `ajMasterSwitches` | `{ markets: { home, dark, srm, usol }, jobTypes: { [FLOW.*]: bool }, behaviour: { autoDismissFailed } }` | Master Switches panel. For `markets`/`jobTypes`: `false` = disabled globally (absent = on). `behaviour.autoDismissFailed` defaults OFF (absent = off) — gates the orchestrator's auto-dismiss step. Read by CHECK_CONDITION (acceptance) + Job List/Network Map (live display) + the orchestrator (dismiss gate). |
 
 > **Config eligibility is shared.** The market/type/server-override part of a
 > job's verdict is computed by `COR3.ajEligibility.configSkipReason(job,
@@ -313,7 +317,7 @@ Used by Module Manager UI for grouping. Each module declares one in its
 | Constant | Value | Modules |
 |---|---|---|
 | `CATEGORY.CORE` | `core` | `runtime-bridge` |
-| `CATEGORY.DATA` | `data` | 12 data modules (auth, expeditions, archived-expeditions, decisions, market, dark-market, srm-market, stash, loadout, mercenaries, merc-config, expedition-config) |
+| `CATEGORY.DATA` | `data` | 13 data modules (auth, expeditions, archived-expeditions, decisions, market, dark-market, srm-market, usol-market, stash, loadout, mercenaries, merc-config, expedition-config) |
 | `CATEGORY.AUTOMATION` | `automation` | timers, auto-refresh, auto-send-merc, auto-choose-decision, auto-decrypt, auto-ice-wall, auto-simple-decrypt, daily-ops, auto-jobs, auto-jobs, runtime-bridge |
 | `CATEGORY.GAME` | `game` | loadout-panel, 9 Auto Jobs flow modules (the `auto-jobs-bridge` and `desktop-window.js` IIFEs are GAME-world `COR3.game.*` helpers, NOT registered Modules) |
 | `CATEGORY.SOLVER` | `solver` | solver-decrypt, solver-daily-ops, solver-ice-wall, solver-simple-decrypt |

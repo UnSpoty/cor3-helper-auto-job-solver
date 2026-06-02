@@ -21,7 +21,7 @@
     const SL = C.STORAGE_LOCAL;
     const t = (k, vars) => root.COR3.i18n.t(k, vars);
 
-    const MARKETS = ['home', 'dark', 'srm'];
+    const MARKETS = ['home', 'dark', 'srm', 'usol'];
     const TYPES = Object.values(C.FLOW);
 
     function el(tag, cls, text) {

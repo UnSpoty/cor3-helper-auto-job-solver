@@ -112,8 +112,8 @@ part live so toggling a switch / server-skip reflects instantly (no cycle wait).
    should see the one path it takes, not a tree of "in case X is missing"
    branches.
 2. **Shared game state is read-only.** The only shared inputs are pure game
-   state: `NM_GRAPH` and the three market envelopes
-   (`MARKET`/`DARK_MARKET`/`SRM_MARKET`). The subsystem owns its own keys
+   state: `NM_GRAPH` and the four market envelopes
+   (`MARKET`/`DARK_MARKET`/`SRM_MARKET`/`USOL_MARKET`). The subsystem owns its own keys
    (`AJ_PIPELINE_STATE`, `AJ_JOB_QUEUE`, `AJ_BUGGED_JOBS`, `AJ_SERVER_OVERRIDES`,
    `AJ_MASTER_SWITCHES`) + `AUTOJOBS_SETTINGS`, and its own message actions
    (`MSG.AUTOJOBS.*`).
@@ -154,10 +154,10 @@ cor3-helper/
     │                      errors, i18n, i18n-bridge
     ├── interceptors/     ws-interceptor, http-interceptor, solver-loader
     ├── modules/
-    │   ├── data/         12 modules — one per WS payload (auth, expeditions,
+    │   ├── data/         13 modules — one per WS payload (auth, expeditions,
     │   │                  archived-expeditions, decisions, market, dark-market,
-    │   │                  srm-market, stash, loadout, mercenaries, merc-config,
-    │   │                  expedition-config)
+    │   │                  srm-market, usol-market, stash, loadout, mercenaries,
+    │   │                  merc-config, expedition-config)
     │   ├── automation/   10 modules — timers, auto-refresh, auto-send-merc,
     │   │                  auto-choose-decision, auto-decrypt, auto-ice-wall,
     │   │                  auto-simple-decrypt, daily-ops, auto-jobs,
@@ -316,8 +316,8 @@ Quick list of every registered module ID and its world:
 
 **Isolated content_scripts:**
 - `auth`, `expeditions`, `archived-expeditions`, `decisions`, `market`,
-  `dark-market`, `srm-market`, `stash`, `loadout`, `mercenaries`,
-  `merc-config`, `expedition-config` — data
+  `dark-market`, `srm-market`, `usol-market`, `stash`, `loadout`,
+  `mercenaries`, `merc-config`, `expedition-config` — data
 - `timers`, `auto-refresh`, `auto-send-merc`, `auto-choose-decision`,
   `auto-decrypt`, `auto-ice-wall`, `auto-simple-decrypt`, `daily-ops`,
   `auto-jobs`, `runtime-bridge` — automation

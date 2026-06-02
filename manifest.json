@@ -115,6 +115,7 @@
         "src/modules/data/market.js",
         "src/modules/data/dark-market.js",
         "src/modules/data/srm-market.js",
+        "src/modules/data/usol-market.js",
         "src/modules/data/stash.js",
         "src/modules/data/loadout.js",
         "src/modules/data/mercenaries.js",

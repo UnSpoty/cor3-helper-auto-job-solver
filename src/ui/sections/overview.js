@@ -1,10 +1,10 @@
 // src/ui/sections/overview.js
 // Main dashboard. Aggregates everything that's "at-a-glance" useful:
-//   • Daily Ops card — timer + one-shot "Solve" button + Refresh on the
-//     same row (Daily Ops moved into the Game Center window, so a watcher
-//     toggle no longer makes sense; the user clicks Solve when they want
-//     to claim/replay)
-//   • Markets cards (home + dark + srm) — each card carries its own
+//   • Daily Ops card — timer + one-shot "Solve" button + an "Auto" toggle on
+//     the same row. Auto (AUTO_DAILY_OPS_ENABLED) hands off to the isolated
+//     daily-ops watcher, which auto-solves whenever the reset timer reaches
+//     00:00 or the current day is still unsolved.
+//   • Markets cards (home + dark + srm + usol) — each card carries its own
 //     Auto-refresh toggle
 //   • Auto solvers — Auto-decrypt + Auto-ICE-Wall
 //   • Game appearance — theme + system messages + background + network fog + map FX
@@ -53,6 +53,7 @@
             home_jobs: `${t('overview.homeMarket')} — ${t('overview.nextReset')}`,
             dark_jobs: `${t('overview.darkMarket')} — ${t('overview.nextReset')}`,
             srm_jobs: `${t('overview.srm')} — ${t('overview.nextReset')}`,
+            usol_jobs: `${t('overview.usol')} — ${t('overview.nextReset')}`,
         };
     }
 
@@ -97,11 +98,12 @@
         // Read everything once to seed the initial DOM. Subsequent updates
         // come through the targeted refresh*() functions below.
         const [
-            autoRefresh, autoDecrypt, autoIceWall, autoSimpleDecrypt,
+            autoRefresh, autoDailyOps, autoDecrypt, autoIceWall, autoSimpleDecrypt,
             disableSystemMessages, disableBackground, disableNetworkFog, disableMapFx,
             selectedTheme,
         ] = await Promise.all([
-            Store.sync.getOne(C.STORAGE_SYNC.AUTO_REFRESH, { home_jobs: false, dark_jobs: false, srm_jobs: false }),
+            Store.sync.getOne(C.STORAGE_SYNC.AUTO_REFRESH, { home_jobs: false, dark_jobs: false, srm_jobs: false, usol_jobs: false }),
+            Store.sync.getOne(C.STORAGE_SYNC.AUTO_DAILY_OPS_ENABLED, false),
             Store.sync.getOne(C.STORAGE_SYNC.AUTO_DECRYPT_ENABLED, false),
             // ICE WALL defaults ON to MATCH the solver module (auto-ice-wall.js
             // reads `true`): the toggle was showing OFF while the solver actually
@@ -114,13 +116,13 @@
             Store.sync.getOne('disableMapFxEnabled', false),
             Store.sync.getOne(C.STORAGE_SYNC.SELECTED_THEME, 'cor3'),
         ]);
-        const ar = autoRefresh || { home_jobs: false, dark_jobs: false, srm_jobs: false };
+        const ar = autoRefresh || { home_jobs: false, dark_jobs: false, srm_jobs: false, usol_jobs: false };
 
         panel = {
             container,
             timers: [],
             daily: null,
-            markets: { home: null, dark: null, srm: null },
+            markets: { home: null, dark: null, srm: null, usol: null },
             alarms: null,
             versions: null,
         };
@@ -144,9 +146,25 @@
         const solveBtn = el('button', 'btn small', t('common.solve'));
         solveBtn.addEventListener('click', () => sendToContent('solveDailyOps'));
         dailyActions.appendChild(solveBtn);
-        const dailyRefresh = el('button', 'btn small', t('common.refresh'));
-        dailyRefresh.addEventListener('click', () => sendToContent('fetchDailyOps'));
-        dailyActions.appendChild(dailyRefresh);
+        // "Auto" toggle (replaces the old Refresh button). When on, the
+        // isolated daily-ops watcher auto-solves whenever the reset timer hits
+        // 00:00 or the day is still unsolved — see modules/automation/daily-ops.js.
+        const autoSw = el('label', 'switch');
+        const autoInput = document.createElement('input');
+        autoInput.type = 'checkbox';
+        autoInput.checked = !!autoDailyOps;
+        autoSw.appendChild(autoInput);
+        autoSw.appendChild(el('span', 'switch-slider'));
+        autoInput.addEventListener('change', async (e) => {
+            const value = e.target.checked;
+            await Store.sync.setOne(C.STORAGE_SYNC.AUTO_DAILY_OPS_ENABLED, value);
+            sendToContent('settingChanged', { key: C.STORAGE_SYNC.AUTO_DAILY_OPS_ENABLED, value });
+        });
+        const autoRow = el('div', 'row gap-sm');
+        autoRow.title = t('overview.dailyAutoTip');
+        autoRow.appendChild(autoSw);
+        autoRow.appendChild(el('span', 'muted xs', t('overview.dailyAuto')));
+        dailyActions.appendChild(autoRow);
         dailyCard.appendChild(dailyActions);
 
         const dailyLogLine = el('div', 'muted xs mt-sm', '');
@@ -211,12 +229,17 @@
         const srm = buildMarketCard({
             baseLabel: t('overview.srm'), arKey: 'srm_jobs', refreshAction: 'refreshSrmMarket',
         });
+        const usol = buildMarketCard({
+            baseLabel: t('overview.usol'), arKey: 'usol_jobs', refreshAction: 'refreshUsolMarket',
+        });
         container.appendChild(home.card);
         container.appendChild(dark.card);
         container.appendChild(srm.card);
+        container.appendChild(usol.card);
         panel.markets.home = home;
         panel.markets.dark = dark;
         panel.markets.srm = srm;
+        panel.markets.usol = usol;
 
         // ─── Auto solvers (build-once; user-driven toggles) ───────────
         container.appendChild(el('div', 'section-title', t('overview.autoSolvers')));
@@ -597,18 +620,21 @@
     // any market payload arrives (jobs, reset time, or reachability).
     async function refreshMarkets() {
         if (!panel) return;
-        const [market, dark, darkAvail, srm, srmAvail, board] = await Promise.all([
+        const [market, dark, darkAvail, srm, srmAvail, usol, usolAvail, board] = await Promise.all([
             Store.local.getOne(C.STORAGE_LOCAL.MARKET),
             Store.local.getOne(C.STORAGE_LOCAL.DARK_MARKET),
             Store.local.getOne(C.STORAGE_LOCAL.DARK_MARKET_AVAILABLE, true),
             Store.local.getOne(C.STORAGE_LOCAL.SRM_MARKET),
             Store.local.getOne(C.STORAGE_LOCAL.SRM_MARKET_AVAILABLE, true),
+            Store.local.getOne(C.STORAGE_LOCAL.USOL_MARKET),
+            Store.local.getOne(C.STORAGE_LOCAL.USOL_MARKET_AVAILABLE, true),
             Store.local.getOne(C.STORAGE_LOCAL.AJ_JOB_QUEUE, null),
         ]);
         const boardJobs = (board && Array.isArray(board.jobs)) ? board.jobs : [];
         applyMarket('home', market, true,      false, boardJobs);
         applyMarket('dark', dark,   darkAvail, true,  boardJobs);
         applyMarket('srm',  srm,    srmAvail,  true,  boardJobs);
+        applyMarket('usol', usol,   usolAvail, true,  boardJobs);
     }
 
     // Update ONLY the breakdown text for all three market cards. Used
@@ -617,18 +643,21 @@
     // refreshMarkets because we don't touch timer instances.
     async function refreshInProgress() {
         if (!panel) return;
-        const [market, dark, darkAvail, srm, srmAvail, board] = await Promise.all([
+        const [market, dark, darkAvail, srm, srmAvail, usol, usolAvail, board] = await Promise.all([
             Store.local.getOne(C.STORAGE_LOCAL.MARKET),
             Store.local.getOne(C.STORAGE_LOCAL.DARK_MARKET),
             Store.local.getOne(C.STORAGE_LOCAL.DARK_MARKET_AVAILABLE, true),
             Store.local.getOne(C.STORAGE_LOCAL.SRM_MARKET),
             Store.local.getOne(C.STORAGE_LOCAL.SRM_MARKET_AVAILABLE, true),
+            Store.local.getOne(C.STORAGE_LOCAL.USOL_MARKET),
+            Store.local.getOne(C.STORAGE_LOCAL.USOL_MARKET_AVAILABLE, true),
             Store.local.getOne(C.STORAGE_LOCAL.AJ_JOB_QUEUE, null),
         ]);
         const boardJobs = (board && Array.isArray(board.jobs)) ? board.jobs : [];
         applyBreakdown('home', market, true,      false, boardJobs);
         applyBreakdown('dark', dark,   darkAvail, true,  boardJobs);
         applyBreakdown('srm',  srm,    srmAvail,  true,  boardJobs);
+        applyBreakdown('usol', usol,   usolAvail, true,  boardJobs);
     }
 
     function computeBreakdown(data, available, canBeUnreachable, boardJobs) {
@@ -765,6 +794,8 @@
                 if (changes[C.STORAGE_LOCAL.DARK_MARKET_AVAILABLE])  hits.add('markets');
                 if (changes[C.STORAGE_LOCAL.SRM_MARKET])             hits.add('markets');
                 if (changes[C.STORAGE_LOCAL.SRM_MARKET_AVAILABLE])   hits.add('markets');
+                if (changes[C.STORAGE_LOCAL.USOL_MARKET])            hits.add('markets');
+                if (changes[C.STORAGE_LOCAL.USOL_MARKET_AVAILABLE])  hits.add('markets');
                 if (changes[C.STORAGE_LOCAL.WEB_VERSION])            hits.add('versions');
                 if (changes[C.STORAGE_LOCAL.SYSTEM_VERSION])         hits.add('versions');
                 if (changes[C.STORAGE_LOCAL.AJ_JOB_QUEUE])           hits.add('inProgress');

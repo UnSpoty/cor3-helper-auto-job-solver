@@ -246,7 +246,7 @@
         noTabEl.appendChild(body);
         noTabEl.appendChild(btn);
 
-        // Last-known timers: Daily Ops + Home/Dark/SRM market resets.
+        // Last-known timers: Daily Ops + Home/Dark/SRM/USOL market resets.
         // Pulled from chrome.storage.local — populated by the data modules
         // during the previous live session. Even with no tab open the
         // countdown ticks correctly because the targets are absolute
@@ -254,15 +254,17 @@
         // unreachable show that label instead of a stale timer.
         const tm = root.COR3.uiComponents && root.COR3.uiComponents.timer;
         if (!tm) return;
-        let daily, market, dark, darkAvail, srm, srmAvail;
+        let daily, market, dark, darkAvail, srm, srmAvail, usol, usolAvail;
         try {
-            [daily, market, dark, darkAvail, srm, srmAvail] = await Promise.all([
+            [daily, market, dark, darkAvail, srm, srmAvail, usol, usolAvail] = await Promise.all([
                 Store.local.getOne(C.STORAGE_LOCAL.DAILY_OPS),
                 Store.local.getOne(C.STORAGE_LOCAL.MARKET),
                 Store.local.getOne(C.STORAGE_LOCAL.DARK_MARKET),
                 Store.local.getOne(C.STORAGE_LOCAL.DARK_MARKET_AVAILABLE, true),
                 Store.local.getOne(C.STORAGE_LOCAL.SRM_MARKET),
                 Store.local.getOne(C.STORAGE_LOCAL.SRM_MARKET_AVAILABLE, true),
+                Store.local.getOne(C.STORAGE_LOCAL.USOL_MARKET),
+                Store.local.getOne(C.STORAGE_LOCAL.USOL_MARKET_AVAILABLE, true),
             ]);
         } catch (_) { return; }
 
@@ -327,6 +329,7 @@
         list.appendChild(row(i18n.t('overview.homeMarket'), market && market.nextJobsResetAt, false));
         list.appendChild(row(i18n.t('overview.darkMarket'), dark && dark.nextJobsResetAt, darkAvail === false));
         list.appendChild(row(i18n.t('overview.srm'), srm && srm.nextJobsResetAt, srmAvail === false));
+        list.appendChild(row(i18n.t('overview.usol'), usol && usol.nextJobsResetAt, usolAvail === false));
         noTabEl.appendChild(list);
 
         const logo = document.createElement('img');
@@ -347,7 +350,8 @@
         if (changes[C.STORAGE_LOCAL.DAILY_OPS] ||
             changes[C.STORAGE_LOCAL.MARKET] ||
             changes[C.STORAGE_LOCAL.DARK_MARKET] || changes[C.STORAGE_LOCAL.DARK_MARKET_AVAILABLE] ||
-            changes[C.STORAGE_LOCAL.SRM_MARKET] || changes[C.STORAGE_LOCAL.SRM_MARKET_AVAILABLE]) {
+            changes[C.STORAGE_LOCAL.SRM_MARKET] || changes[C.STORAGE_LOCAL.SRM_MARKET_AVAILABLE] ||
+            changes[C.STORAGE_LOCAL.USOL_MARKET] || changes[C.STORAGE_LOCAL.USOL_MARKET_AVAILABLE]) {
             renderNoTab();
         }
     });

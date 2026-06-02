@@ -700,11 +700,12 @@
         let firstRender = true;
 
         async function refresh() {
-            const [graph, home, dark, srm, overrides, switches, queue] = await Promise.all([
+            const [graph, home, dark, srm, usol, overrides, switches, queue] = await Promise.all([
                 Store.local.getOne(SL.NM_GRAPH, null),
                 Store.local.getOne(SL.MARKET, null),
                 Store.local.getOne(SL.DARK_MARKET, null),
                 Store.local.getOne(SL.SRM_MARKET, null),
+                Store.local.getOne(SL.USOL_MARKET, null),
                 Store.local.getOne(SL.AJ_SERVER_OVERRIDES, {}),
                 Store.local.getOne(SL.AJ_MASTER_SWITCHES, {}),
                 Store.local.getOne(SL.AJ_JOB_QUEUE, null),
@@ -725,6 +726,7 @@
             }
             if (dark && dark.marketId) marketIdToSlot[dark.marketId] = 'dark';
             if (srm && srm.marketId) marketIdToSlot[srm.marketId] = 'srm';
+            if (usol && usol.marketId) marketIdToSlot[usol.marketId] = 'usol';
             for (const s of (graph && graph.servers) || []) {
                 if (!s || !s.name) continue;
                 if (s.name === homeNm || s.serverTypeName === 'Home') marketSlotByName[s.name] = 'home';
@@ -735,7 +737,7 @@
                 graph,
                 homeName: graph?.home || null,
                 currentEndpointName: graph?.currentEndpointName || null,
-                jobCounts: buildJobCounts([home, dark, srm]),
+                jobCounts: buildJobCounts([home, dark, srm, usol]),
                 overrides: overrides || {},
                 switches: switches || {},
                 marketSlotByName,
@@ -773,7 +775,7 @@
         }
 
         const localUnsub = Store.local.onChanged((c) => {
-            if (c[SL.NM_GRAPH] || c[SL.MARKET] || c[SL.DARK_MARKET] || c[SL.SRM_MARKET]
+            if (c[SL.NM_GRAPH] || c[SL.MARKET] || c[SL.DARK_MARKET] || c[SL.SRM_MARKET] || c[SL.USOL_MARKET]
                 || c[SL.AJ_SERVER_OVERRIDES] || c[SL.AJ_MASTER_SWITCHES] || c[SL.AJ_JOB_QUEUE]) refresh();
         });
 

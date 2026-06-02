@@ -43,7 +43,7 @@ START → DELAY:10s → ┌─ GET_SERVERS → CHECK_SERVERS_ACCESABILITY
 | Node (`AJ.NODE`) | Stage | What it does |
 |---|---|---|
 | `GET_SERVERS` | `getServers` | reads `NM_GRAPH`; throws loud if the map was never opened. Copies `home` + `servers[]` onto the packet. |
-| `CHECK_ACCESS` | `checkAccess` | per server: `accessible` / `hasSaiAccess` / `onCooldown` from the graph flags. Resolves market reachability (home always; dark/srm unless their `*_AVAILABLE` flag is `false`). |
+| `CHECK_ACCESS` | `checkAccess` | per server: `accessible` / `hasSaiAccess` / `onCooldown` from the graph flags. Resolves market reachability (home always; dark/srm/usol unless their `*_AVAILABLE` flag is `false`). |
 | `UPDATE_MARKETS` | `updateMarkets` | for each **reachable** market: post `MSG.GAME.REFRESH_*`, await a fresh frame (≤6 s), then read the envelope. Pulls `jobs[]` (tag `status:'AVAILABLE'`) and the `recentJobs[]` TAKEN (`status:'TAKEN'`) + FAILED (`status:'FAILED'`) entries. Unreachable markets recorded with a reason, not refreshed. |
 | `JOB_QUEUE` | `jobQueue` | normalises rawJobs → queue entries `{id, name, type, status, serverName, marketSlot, marketId, rewardCredits, eligible, skipReason}`; writes `AJ_JOB_QUEUE` for the UI. |
 | `READY_TO_COMPLETE` / dismiss | (orchestrator) | `_completeReadyJobs` completes any TAKEN job the game flags `canComplete`; `_dismissFailedJobs` then `market.job.dismiss`-es every FAILED job **iff** `AJ_MASTER_SWITCHES.behaviour.autoDismissFailed` is on (default OFF). Both run here with the endpoint at home, before any SAI flow. |
@@ -323,11 +323,14 @@ Helpers exposed:
 
 ## 5. Daily Ops fetch
 
-Triggered three ways:
+Triggered four ways:
 
 1. **WS connect** — interceptor's `__cor3InitialFetch()` posts `COR3_FETCH_DAILY_OPS`.
-2. **Popup refresh** — Overview tab's "Refresh" button → `chrome.tabs.sendMessage({action: 'fetchDailyOps'})` → `daily-ops.js`.
+2. **Legacy `fetchDailyOps` action** — kept for back-compat (the Overview card's
+   manual Refresh button has been replaced by the **Auto** toggle, see 5b).
 3. **Post-solve** — when `SOLVER.DAILY_OPS_LOG` carries a line starting with `solved:`, `daily-ops.js` schedules a `fetchOps()` 1.5 s later so the streak/claimed badge flips automatically.
+4. **Auto watcher** (see 5b) — its poll tick re-fetches whenever the snapshot
+   can't be trusted to reflect "solved today".
 
 ```
 fetchOps():
@@ -453,11 +456,12 @@ MAIN solver-daily-ops.runOnce(mod):
     wait .result-screen
     if .result-screen.success:
         click .result-screen .retry-button      // "Close" the success card
-        closePuzzleWindow()                     // → click ApplicationWindow
-                                                 // close-app-btn — without
-                                                 // this the puzzle UI
-                                                 // auto-rolls a new round
-                                                 // (designed for replay)
+        finishWidgets()                         // closes the puzzle window
+                                                 // (else the puzzle UI auto-
+                                                 // rolls a new round) PLUS the
+                                                 // Daily Ops + Game Center
+                                                 // windows — solving leaves a
+                                                 // clean desktop (manual + auto)
     else: warn 'server rejected fixes'
 ```
 
@@ -488,6 +492,50 @@ solve didn't register.
 shows the last solver line; `solved:` prefixed messages additionally
 reschedule a `fetchOps()` 1.5 s later so the card flips from "pending" to
 "claimed" without the user pressing Refresh.
+
+---
+
+## 5b. Daily Ops Auto watcher
+
+The Overview card's old **Refresh** button is replaced by an **Auto** toggle
+(`STORAGE_SYNC.AUTO_DAILY_OPS_ENABLED`, default OFF). When on, the isolated
+`automation/daily-ops.js` runs a poll loop that auto-launches the solver (5a)
+whenever the daily reset timer reaches 00:00 or the day is still unsolved.
+
+```
+toggle ON (popup → settingChanged + storage.sync) → startAuto():
+    setInterval(autoTick, 60 s)  +  one initial tick after 8 s
+
+autoTick():                                      // skipped while a solve is
+    if !enabled || inFlight || now < cooldown: return   // in flight / cooling
+
+    daily = Store.local.dailyOpsData
+    timerHitZero = !daily.nextTaskTime || now >= Date(daily.nextTaskTime)
+    looksSolved  = daily.hasClaimedToday === true
+
+    if timerHitZero || !looksSolved:             // snapshot can't be trusted —
+        daily = await fetchOps()                 // confirm against the server
+    if !daily: return                            // no token yet — retry next tick
+
+    if daily.hasClaimedToday === false:          // ← the only launch condition
+        inFlight = true
+        watchdog = setTimeout(4 min)             // clears inFlight + sets a
+                                                 // 15-min fail cooldown if no
+                                                 // terminal log ever arrives
+        Bus.window.post(START_DAILY_OPS)         // same entrypoint as manual Solve
+
+// terminal results (from the DAILY_OPS_LOG relay):
+//   'solved:…'  → cancel watchdog, inFlight=false   (re-fetch flips
+//                 hasClaimedToday → true, which gates further triggers)
+//   'Error:…'   → cancel watchdog, inFlight=false, cooldown = now + 15 min
+```
+
+Acceptance is self-gating: when already claimed with the timer in the future,
+`autoTick` does **no** fetch and **no** trigger (zero API traffic). The solver's
+`finishWidgets()` closes the puzzle + Daily Ops + Game Center windows after the
+reward is claimed (5a) on **every** solve (manual and auto), so a run leaves a
+clean desktop. The MAIN solver's `busy` guard is a second line of defence
+against re-entrant launches.
 
 ---
 
@@ -598,6 +646,10 @@ DARK_SERVER_ID = '019d29c5-4b37-79bf-b23e-304d8ea03c15'   // kept for the
                                                           // set.endpoint
                                                           // unreachable
                                                           // listener
+SRM_MARKET_ID  = '019da731-2db5-7d76-9447-1ea3b9b78001'   // SRM7-M (SOYUZ)
+SRM_SERVER_ID  = '019da6f1-16f7-75a6-b6d3-0b1d5f92a108'
+USOL_MARKET_ID = '019e4065-6ae8-760d-8724-58ab4f2cf7d7'   // URM7-M (USOL)
+USOL_SERVER_ID = '019e4052-c317-7388-9d71-883ffb1560cd'
 ```
 
 ---

@@ -376,8 +376,9 @@
             logUi(`solved: ${code} (${pick.encoding})`);
             // Close the puzzle window so the UI doesn't auto-roll a new
             // round (the daily reward is already credited at this point).
+            // Auto runs also close the Daily Ops + Game Center windows.
             await dom.sleep(400);
-            closePuzzleWindow();
+            await finishWidgets();
         }
     }
 
@@ -409,6 +410,29 @@
             { timeout: 3000 }
         );
         return true;
+    }
+
+    // Close the Game Center ApplicationWindow (the shell that hosts the Daily
+    // Ops card). Used by the auto-runner's post-solve cleanup.
+    function closeGameCenterWindow() {
+        let win = document.querySelector('[data-sentry-component="GameCenterApplication"]');
+        while (win && !win.matches?.('[data-component-name="ApplicationWindow"]') && win.parentElement) {
+            win = win.parentElement;
+        }
+        const close = win?.querySelector?.('[data-component-name="close-app-btn"]');
+        if (close) dom.clickEl(close);
+    }
+
+    // Post-solve cleanup (called once the reward is credited). Closes every
+    // window the solver opened — the puzzle, the Daily Ops MainScreen, and the
+    // Game Center shell — so solving leaves a clean desktop instead of stacking
+    // windows. Applies to both manual "Solve" and the Auto watcher.
+    async function finishWidgets() {
+        closePuzzleWindow();
+        await dom.sleep(300);
+        await closeDailyOpsWindow();
+        await dom.sleep(200);
+        closeGameCenterWindow();
     }
 
     // ─── System Log Integrity solver ──────────────────────────────────────
@@ -614,7 +638,7 @@
         const closeResult = result.querySelector('.retry-button');
         if (closeResult) dom.clickEl(closeResult);
         await dom.sleep(300);
-        closePuzzleWindow();
+        await finishWidgets();
     }
 
     // ─── Orchestrator ─────────────────────────────────────────────────────

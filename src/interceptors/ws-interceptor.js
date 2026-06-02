@@ -58,6 +58,7 @@
                 else if (op === 'market') root.__cor3RequestMarket();
                 else if (op === 'darkMarket') root.__cor3RequestDarkMarket();
                 else if (op === 'srmMarket') root.__cor3RequestSrmMarket();
+                else if (op === 'usolMarket') root.__cor3RequestUsolMarket();
                 else if (op === 'stash') root.__cor3RequestStash();
                 else if (op === 'dailyOps') post('COR3_FETCH_DAILY_OPS', null);
                 else if (op === 'networkMap') root.__cor3RequestNetworkMap();
@@ -193,7 +194,7 @@
             // handler's __cor3InitialFetch is a no-op once initialFetchDone is
             // set, so without queueing them here the depth graph and the
             // archive go stale after every token-expired reconnect.
-            ['expeditions', 'market', 'darkMarket', 'srmMarket', 'stash', 'dailyOps', 'networkMap', 'archivedExpeditions'].forEach(queueRetryOp);
+            ['expeditions', 'market', 'darkMarket', 'srmMarket', 'usolMarket', 'stash', 'dailyOps', 'networkMap', 'archivedExpeditions'].forEach(queueRetryOp);
             post(MSG.AUTH.TOKEN_EXPIRED, null);
             for (const s of trackedSockets.slice()) {
                 try { s.close(); } catch (_) {}
@@ -471,6 +472,8 @@
                         post(MSG.WS.DARK_MARKET_UNREACHABLE, { error: payload.error.message, serverId: payload.error.serverId });
                     } else if (payload.error.serverId === SRM_SERVER_ID) {
                         post(MSG.WS.SRM_MARKET_UNREACHABLE, { error: payload.error.message, serverId: payload.error.serverId });
+                    } else if (payload.error.serverId === USOL_SERVER_ID) {
+                        post(MSG.WS.USOL_MARKET_UNREACHABLE, { error: payload.error.message, serverId: payload.error.serverId });
                     }
                     root.__serverPathFailed = true;
                     setTimeout(() => { root.__serverPathFailed = false; }, 5000);
@@ -617,6 +620,7 @@
             [HOME_MARKET_ID]: home?.id || HOME_SERVER_ID,
             [DARK_MARKET_ID]: DARK_SERVER_ID,
             [SRM_MARKET_ID]:  SRM_SERVER_ID,
+            [USOL_MARKET_ID]: USOL_SERVER_ID,
         };
         const depthsByMarket = {};
         for (const mid of Object.keys(marketRootIds)) {
@@ -1274,6 +1278,10 @@
     const DARK_SERVER_ID = '019d29c5-4b37-79bf-b23e-304d8ea03c15';
     const SRM_MARKET_ID  = '019da731-2db5-7d76-9447-1ea3b9b78001';
     const SRM_SERVER_ID  = '019da6f1-16f7-75a6-b6d3-0b1d5f92a108';
+    // URM7-M — USOL-faction public server (cluster "USOL RM7 South").
+    // Captured from network-map.get.map (server.marketId + server.id).
+    const USOL_MARKET_ID = '019e4065-6ae8-760d-8724-58ab4f2cf7d7';
+    const USOL_SERVER_ID = '019e4052-c317-7388-9d71-883ffb1560cd';
 
     // Map marketId → { name (for logs), unreachable (Bus type), main (Bus type) }
     // Lets the get.jobs response handler post to the right Bus channel without
@@ -1286,6 +1294,7 @@
         [HOME_MARKET_ID]: { serverId: HOME_SERVER_ID, name: 'home', main: 'MARKET',      unreachable: null },
         [DARK_MARKET_ID]: { serverId: DARK_SERVER_ID, name: 'dark', main: 'DARK_MARKET', unreachable: 'DARK_MARKET_UNREACHABLE' },
         [SRM_MARKET_ID]:  { serverId: SRM_SERVER_ID,  name: 'srm',  main: 'SRM_MARKET',  unreachable: 'SRM_MARKET_UNREACHABLE' },
+        [USOL_MARKET_ID]: { serverId: USOL_SERVER_ID, name: 'usol', main: 'USOL_MARKET', unreachable: 'USOL_MARKET_UNREACHABLE' },
     };
 
     // Tracks the user's current network-map endpoint server. Initial value is
@@ -1496,9 +1505,15 @@
         return true;
     };
 
+    root.__cor3RequestUsolMarket = function () {
+        fetchRemoteMarketSequence(USOL_MARKET_ID, USOL_SERVER_ID);
+        return true;
+    };
+
     root.__cor3RefreshMarket = root.__cor3RequestMarket;
     root.__cor3RefreshDarkMarket = root.__cor3RequestDarkMarket;
     root.__cor3RefreshSrmMarket = root.__cor3RequestSrmMarket;
+    root.__cor3RefreshUsolMarket = root.__cor3RequestUsolMarket;
 
     let initialFetchDone = false;
     root.__cor3ResetInitialFetch = function () {
@@ -1519,6 +1534,7 @@
         // case (currentEndpoint === HOME on startup).
         setTimeout(() => root.__cor3RequestDarkMarket(), 1000);
         setTimeout(() => root.__cor3RequestSrmMarket(),  1100);
+        setTimeout(() => root.__cor3RequestUsolMarket(), 1200);
         // Expeditions / stash / archived run on plain timers; they don't
         // touch network-map and won't conflict with the remote-fetch chain.
         setTimeout(() => root.__cor3RequestExpeditions(), 6500);
@@ -1581,6 +1597,7 @@
         'COR3_REQUEST_MARKET': () => root.__cor3RequestMarket(),
         'COR3_REQUEST_DARK_MARKET': () => root.__cor3RequestDarkMarket(),
         'COR3_REQUEST_SRM_MARKET': () => root.__cor3RequestSrmMarket(),
+        'COR3_REQUEST_USOL_MARKET': () => root.__cor3RequestUsolMarket(),
         [MSG.GAME.REQUEST_NM_MAP]: () => root.__cor3RequestNetworkMap(),
         [MSG.GAME.REVERT_ENDPOINT_TO_HOME]: () => {
             // Serialise behind any in-flight WS dance — both the accept
@@ -1601,6 +1618,7 @@
         [MSG.GAME.REFRESH_MARKET]: () => root.__cor3RefreshMarket(),
         [MSG.GAME.REFRESH_DARK_MARKET]: () => root.__cor3RefreshDarkMarket(),
         [MSG.GAME.REFRESH_SRM_MARKET]: () => root.__cor3RefreshSrmMarket(),
+        [MSG.GAME.REFRESH_USOL_MARKET]: () => root.__cor3RefreshUsolMarket(),
         'COR3_LEAVE_STASH': () => leaveRoom('stash'),
         'COR3_SELL_ITEM': (e) => root.__cor3SellItem(e.itemId, e.quantity || 1),
         [MSG.GAME.RESPOND_DECISION]: (e) => root.__cor3RespondDecision(e.expeditionId, e.messageId, e.selectedOption),
