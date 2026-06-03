@@ -618,7 +618,7 @@
         }
     }
 
-    // Update breakdown text + timer for all three market cards. Used when
+    // Update breakdown text + timer for all four market cards. Used when
     // any market payload arrives (jobs, reset time, or reachability).
     async function refreshMarkets() {
         if (!panel) return;
@@ -639,8 +639,8 @@
         applyMarket('usol', usol,   usolAvail, true,  boardJobs);
     }
 
-    // Update ONLY the breakdown text for all three market cards. Used
-    // when AUTOJOBS_QUEUE / AUTOJOBS_STATE change — the in-progress count
+    // Update ONLY the breakdown text for all four market cards. Used
+    // when AJ_JOB_QUEUE / AJ_PIPELINE_STATE change — the in-progress count
     // shifts but the underlying market data didn't. Cheaper than
     // refreshMarkets because we don't touch timer instances.
     async function refreshInProgress() {

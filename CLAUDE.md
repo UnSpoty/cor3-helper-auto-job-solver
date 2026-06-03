@@ -28,9 +28,11 @@ orchestrator) owns START/STOP and runs an infinite loop; the pipeline "modules"
 are plain stage objects under `COR3.autoJobs.pipeline.stages.*`, each with a
 uniform `async run(packet, ctx) -> packet` contract. A single growing **packet**
 envelope flows stage→stage. Flowchart node ids live in `constants.AJ.NODE`
-(shared between orchestrator execution and the Flow Map drawing); live progress
-is published to `STORAGE_LOCAL.AJ_PIPELINE_STATE`. See
-[docs/pipelines.md → Auto Jobs](docs/pipelines.md) for the full diagram.
+(shared between orchestrator execution and the compact pipeline status readout
+in [src/ui/sections/auto-jobs/flow-map.js](src/ui/sections/auto-jobs/flow-map.js)
+— the old SVG Flow Map was dropped); live progress is published to
+`STORAGE_LOCAL.AJ_PIPELINE_STATE`. See
+[docs/pipelines.md → Auto Jobs](docs/pipelines.md) for the full loop diagram.
 
 **Planning + acceptance half (isolated world):** `GET_SERVERS → CHECK_ACCESS →
 UPDATE_MARKETS → JOB_QUEUE → QUEUE:EMPTY? → HAVE_TASKS_IN_PROGRESS? → BUGGED? →
@@ -166,7 +168,7 @@ cor3-helper/
     │   │                  COR3.autoJobs.pipeline.*, not a Registry-registered
     │   │                  module)
     │   ├── game/         desktop-window, auto-jobs-bridge, loadout-panel,
-    │   │                  flows/auto-jobs/ (10 Auto Jobs flow modules + _sai-flow base)
+    │   │                  flows/auto-jobs/ (9 Auto Jobs flow modules + _sai-flow base)
     │   ├── solvers/      decrypt, daily-ops, ice-wall, simple-decrypt
     │   └── appearance/   4 CSS/DOM toggles
     ├── ui/               popup.html + popup.css + shell.js + components/ + sections/

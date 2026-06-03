@@ -776,9 +776,9 @@
     // socket.io's pipeline drops frames silently under bursts (observed:
     // 4-5 frames within ~50 ms intermittently disappear with no error
     // event). Pacing every wsSend with a minimum spacing protects the
-    // hot paths: requestMarketRefresh fires HOME+DARK+SRM almost
-    // simultaneously; __cor3InitialFetch fires NM + MARKET + DARK + SRM
-    // within ~1.1 s; the bulk-accept loop flips set.endpoint repeatedly.
+    // hot paths: requestMarketRefresh fires HOME+DARK+SRM+USOL almost
+    // simultaneously; __cor3InitialFetch fires NM + MARKET + DARK + SRM + USOL
+    // within ~1.2 s; the bulk-accept loop flips set.endpoint repeatedly.
     //
     // The synchronous return value of wsSend stays true if a socket is
     // available (immediate or queued); false only when there's literally

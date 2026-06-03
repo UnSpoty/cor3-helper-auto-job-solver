@@ -19,34 +19,41 @@ a tile selects it and reveals a side panel with Connect / Login icons.
 Servers can be on **K/D**.
 
 **K/D (Killswitch / Countdown / Kingdom-Down)** — a server's maintenance
-timer. While active the server is unreachable. In DOM:
-`MaintenanceTimer` containing a `TimerIcon` SVG = K/D. A `MaintenanceTimer`
-without the icon (text-only) is a regular cooldown — server is still
-reachable. Auto-jobs blacklists K/D servers for the timer duration + 5 min
-buffer (see `parseKDTimerMs`).
+state. While active the server is unreachable. It is read from the
+`network-map.get.map` WS frame: each server carries an `isInMaintenance` flag,
+surfaced on `NM_GRAPH.servers[]` and consumed by the pipeline's `checkAccess`
+stage as `onCooldown`. A job whose server is on K/D is **postponed** by
+`jobServerReachable()` (never bugged) until the next rescan clears it.
 
-**Home Market** — the player's market. Market id
-`019d3ea4-85bd-7389-904d-8f7c85841134`.
-
-**Dark Market (D4RK)** — secondary market accessible only by setting the
-WS endpoint to a specific server (`019d29c5-4b37-79bf-b23e-304d8ea03c15`).
-Market id `019d3ea4-85bd-7389-904d-908ba9194aa0`. May be unreachable
-(no-path-to-server) — `darkMarketAvailable` flag tracks this.
+**Markets** — four job boards. **Home Market** (id
+`019d3ea4-85bd-7389-904d-8f7c85841134`) is the player's own. **Dark Market
+(D4RK)** (market `019d3ea4-…-908ba9194aa0`, server
+`019d29c5-4b37-79bf-b23e-304d8ea03c15`), **SRM7-M (SOYUZ)** (market
+`019da731-…`, server `019da6f1-…`) and **URM7-M (USOL)** (market `019e4065-…`,
+server `019e4052-…`) are remote: fetching them flips the WS endpoint to their
+server, runs `get.jobs`, then reverts to home. Each may be unreachable
+(no-path-to-server) — the `darkMarketAvailable` / `srmMarketAvailable` /
+`usolMarketAvailable` flags track this.
 
 **Job** — a task on the market. Has a `name`, `category`, `relatedServers`
 (IDs of servers needed to complete it), and `conditions` (the params:
-file names, IPs, log seqs, etc.). Statuses: `AVAILABLE`, `TAKEN`, `COMPLETED`.
+file names, IPs, log seqs, etc.). Statuses: `AVAILABLE`, `TAKEN` (in-progress),
+`FAILED` (surfaced on the Job List, dismissable), `COMPLETED`.
 
 **Job type** — derived from job name keywords. We support 9 types — see
 [messaging.md → FLOW](messaging.md#flow--job-type-identifiers).
 
-**SAI (Server Administration Interface)** — the in-game window that opens
-after Login. Has tabs for Logs, Files, Transit Access. Each tab has a
-scroll container, an Add button, etc.
+**SAI (Server Administration Interface)** — the in-game server admin
+subsystem (Logs, Files, Transit Access). The extension no longer scrapes the
+SAI terminal DOM: the flows read + mutate it **purely over WS** via the
+`__cor3Sai*` helpers (`get.transit`/`get.files`/`get.logs` + the
+`transit/file/log` mutations), resolving each reply off `MSG.WS.SAI_*`.
 
-**Active Access** — login method panel that appears between Login click
-and SAI open. Has rows of pre-cached credentials; clicking the first one
-auto-fills credentials and opens the SAI.
+**Active Access** — a `task_access` grant that lets the player log into a
+server without a password. Read from `sai.get.login.status` (`activeAccesses[]`)
+and used headlessly by `__cor3SaiLoginWithAccess`. With no grant the flow HACKS
+the server instead (install HACK software → solve the hack minigame → use the
+freshly-minted grant).
 
 **Container** — reward chest at the end of a successful expedition. Must
 be opened (`open.container`) before items can be `collect.all`'d into the
@@ -77,7 +84,8 @@ disables itself when stash doesn't have ≥ 2 free slots.
 
 **CATEGORY** — module category for Module Manager UI grouping.
 
-**LIMITS** — tunables (TTLs, ring sizes).
+**LIMITS** — tunables (ring-buffer sizes). Auto Jobs loop/timeout tunables live
+under `AJ.LOOP.*`, not `LIMITS`.
 
 **AJ** — Auto Jobs constant group (`constants.AJ`): `NODE` (flowchart
 node ids), `LOOP` (cadence), `PACKET_TYPE`. Storage keys are `STORAGE_LOCAL.AJ_*`.
@@ -113,53 +121,30 @@ directly, but can post messages to it via `window.postMessage`.
 
 ## DOM selectors of note
 
-| Selector | What it identifies |
-|---|---|
-| `[data-sentry-component="ServerItem"]` | one tile in the Network Map |
-| `[data-sentry-element="ServerItemNameStyled"] span` | server name text |
-| `[data-sentry-component="MaintenanceTimer"]` | K/D or cooldown timer on a server tile |
-| `[data-sentry-component="TimerIcon"]` (child of MaintenanceTimer) | confirms K/D (vs cooldown) |
-| `[data-sentry-component="HomeServerIcon"]` | marks the home server tile (skipped in scrape) |
-| `[data-sentry-component="ConnectIcon"]` | Connect button in side panel |
-| `[data-sentry-component="LoginIcon"]` | Login button in side panel |
-| `[data-sentry-element="SaiBottomPanelStyled"][data-sentry-source-file="sai-login.tsx"]` | login method dialog |
-| `[data-sentry-component="SaiActiveAccess"]` | Active Access list inside login dialog |
-| `[data-sentry-component="ArrowRightIcon"]` (inside SaiActiveAccess) | arrow on each Active Access row — wait on this to ride the React mount race |
-| `[data-sentry-component="ServerAdministrationInterfaceApplication"]` | SAI window (one per connected server) |
-| `[data-sentry-element="SaiHeaderTitleStyled"]` | SAI title (matches server name) |
-| `[data-sentry-element="SaiTabStyled"]` | individual SAI tab button (Logs/Files/Transit) |
-| `[data-sentry-component="SaiLogs"]` / `SaiFiles` / `SaiTransit` | SAI tab content |
-| `[data-sentry-element="SaiScrollContainerStyled"]` | scroll viewport inside any SAI tab — **re-query after mutations** |
-| `[data-sentry-component="LogIcon"]` / `FileIcon` | per-row icons in Logs/Files |
-| `[data-sentry-component="TrashIcon"]` / `DownloadIcon` | row action icons |
-| `[data-sentry-element="SaiAddButtonStyled"]` | Add button in any SAI tab |
-| `[data-sentry-component="SaiAddIpModal"]` | Add-IP dialog overlay |
-| `[data-sentry-element="SaiModalInputStyled"]` | input in Add-IP dialog |
-| `[data-sentry-element="SaiModalButtonStyled"]` | dialog button(s) |
-| `[data-sentry-element="SaiDeleteModalStyled"]` | delete-confirm overlay |
-| `[data-sentry-element="SaiDeleteConfirmButtonStyled"]` | delete-confirm button |
-| `[data-component-name="FolderApplication"]` | Downloads folder window (desktop app) |
-| `.folder-application[data-app-id]` | individual file in Downloads folder |
-| `[data-sentry-component="Shortcut"]` | desktop shortcut (e.g. Downloads icon) |
-| `[data-sentry-component="NotificationIcon"]` | "NEW" badge on freshly-downloaded files |
-| `[data-sentry-component="FilePickerGrid"]` | Add-file picker (during upload flow) |
-| `[data-sentry-element="FilePickerGridStyled"]` | inner grid |
-| `.file-picker-name` | file name inside picker grid |
-| `[data-sentry-element="FilePickerAttachButtonStyled"]` | Upload submit button |
-| `[data-sentry-component="ConfigHackApplication"]` | the decrypt minigame app (use this as the watch root) |
-| `[data-sentry-component="ParameterCells"]` | the decrypt minigame's parameter row (4 cell buttons + Send) |
-| `[data-sentry-element="SendButtonStyled"]` | the decrypt minigame's Send button (mousedown+mouseup+click submits) |
-| `[data-sentry-element="LogContentStyled"]` | log panel inside ConfigHackApplication |
-| `.pulse-timeline` / `.pulse-group` / `.pulse-bar` | Signal Hack puzzle DOM |
-| `.log-entries` (or variants) / `.log-entry` | System Log Integrity puzzle |
-| `.confirm-button` / `.error-type-button` / `.fix-error-button` / `.error-analysis-block` | log-integrity solver UI |
-| `[data-component-name="TabBarItem-NETWORK_MAP"]` | taskbar shortcut to open NM |
-| `[data-component-name="JobCard"]` | a job card on the market |
-| `[data-component-name="MarketNav"]` | market window's tab bar |
-| `[data-sentry-component="MarketIcon"]` | Market button in server side panel |
-| `[data-sentry-component="CloseApp"]` | × button on any app window (locked while pipeline active) |
-| `[data-sentry-component="Application"]` / `[data-sentry-component="ApplicationWidget"]` | wrapper around any app window |
-| `[data-sentry-component="NetworkMapApplication"]` | the NM window itself |
+The SAI flow is now driven purely over WS (no SAI-terminal / server-connect /
+Add-IP / file-picker / market-window DOM scrape), so the only DOM the code still
+touches is: the Network-Map tiles (to tap a server — the map exposes no callable
+selection handler), the dock launcher (to open windows via React handlers), and
+the minigame / puzzle roots the solvers watch. Selectors still referenced in
+code:
+
+| Selector | What it identifies | Used by |
+|---|---|---|
+| `[data-sentry-component="ServerItem"]` | one tile in the Network Map | `desktop-window.js` `findServerTile` / `selectServerTile` |
+| `[data-sentry-component="HomeServerIcon"]` | marks the home server tile | `desktop-window.js` |
+| `[data-sentry-component="NetworkMapApplication"]` | the NM window itself (panel-button search root) | `desktop-window.js` |
+| `[data-onboarding-300-id="…"]` | panel buttons (`ServerInfoPanelLoginButton`) + the `SaiHackTools` section | `desktop-window.js` `findPanelButton`, `_sai-flow.js` hack path |
+| `[data-component-name="TabBarItem-<APP>"]` | dock launcher per desktop app (e.g. `TabBarItem-NETWORK_MAP`) | `desktop-window.js`, `solver-daily-ops` |
+| `[data-component-name="FolderApplication"]` | Downloads folder window | `file-decryption.js` |
+| `[data-sentry-component="ConfigHackApplication"]` | the decrypt (config-hack) minigame app (watch root) | `solver-decrypt`, `_sai-flow.js` presence probe |
+| `[data-sentry-component="ParameterCells"]` | the decrypt minigame's parameter row (4 cell buttons + Send) | `solver-decrypt` |
+| `[data-sentry-element="SendButtonStyled"]` | the decrypt minigame's Send button (mousedown+mouseup+click submits) | `solver-decrypt` |
+| `[data-sentry-element="LogContentStyled"]` | log panel inside ConfigHackApplication (also the minigame-presence probe) | `solver-decrypt`, `file-decryption.js`, `_sai-flow.js`, `auto-jobs-bridge.js` |
+| `[data-sentry-component="IceWallBreakApplication"]` | the ICE WALL break minigame | `solver-ice-wall`, `_sai-flow.js` presence probe |
+| `[data-sentry-component="SimpleDecryptApplication"]` / `[data-component-name="SimpleDecryptApplication"]` | the one-click Simple Decrypt minigame | `solver-simple-decrypt`, `_sai-flow.js` presence probe |
+| `.pulse-timeline` / `.pulse-group` / `.pulse-bar` | Signal Hack puzzle DOM | `solver-daily-ops` |
+| `.log-entries` (or variants) / `.log-entry` | System Log Integrity puzzle | `solver-daily-ops` |
+| `.confirm-button` / `.error-type-button` / `.fix-error-button` / `.error-analysis-block` | log-integrity solver UI | `solver-daily-ops` |
 
 ## Solver-specific maps
 
@@ -179,7 +164,7 @@ directly, but can post messages to it via `window.postMessage`.
     submit when focus is on the LAST cell — fragile; clicks work from
     any state)
 
-`solver-daily-hack`:
+`solver-daily-ops`:
 - **System Log Integrity:** picks 2 worst log lines, fills in error fixes
 - **Signal Hack:** decodes pulse groups as Morse (5-pulse) or Binary (4-pulse), reports value
 
@@ -213,9 +198,9 @@ Game events to listen on (in order of frequency):
 | eventName | Action(s) | Module that consumes |
 |---|---|---|
 | `expeditions` | `get.active`, `get.config`, `get.mercenaries`, `get.archived`, `configure`, `launch`, `open.container`, `collect.all`, `respond.event`, `update` | `data/expeditions.js`, `data/decisions.js`, `data/mercenaries.js`, `data/merc-config.js`, `data/expedition-config.js`, `auto-send-merc.js` |
-| `market` | `get.options`, `job.take`, `job.complete` (or `job.completed`) | `data/market.js`, `data/dark-market.js`, `auto-jobs.js` |
+| `market` | `get.jobs`, `job.take`, `job.complete` (or `job.completed`), `job.dismiss` | `data/market.js`, `data/dark-market.js`, `data/srm-market.js`, `data/usol-market.js`, `auto-jobs.js` |
 | `stash` | (room-based push) | `data/stash.js` |
-| `network-map` | `set.endpoint`, `get.map`, `scan.server` | `data/dark-market.js` (unreachable detection); interceptor `computeNmGraph` → `NM_GRAPH`; the bridge connects via `__cor3SetEndpoint` (`set.endpoint`) |
+| `network-map` | `set.endpoint`, `get.map`, `scan.server` | `data/{dark,srm,usol}-market.js` (unreachable detection); interceptor `computeNmGraph` → `NM_GRAPH`; the bridge + SAI flows connect via `__cor3SetEndpoint` (`set.endpoint`) |
 | `sai` | `get.login.status`, `login.with-access`, `hack.start` | the bridge SAI access (`saiAccess`): `__cor3SaiGetLoginStatus` (one-shot promise), `__cor3SaiLoginWithAccess`, `__cor3SaiHackStart`. Interceptor routes `get.login.status` to the one-shot and surfaces the `login.with-access` verdict on `MSG.JOB.LOG` |
 | `desktop` | `get.options`, `open.folder`, `open.file`, `get.file.analysis`, `update.file` | interceptor → `MSG.WS.DESKTOP_OPTIONS`/`_FOLDER`/`_FILE` (+ caches `__cor3DownloadFolderId`). the file-decryption flow finds the file via `open.folder` and opens it via `open.file` — the latter bypasses the new `get.file.analysis` info window (`FileAnalysisProtocolApplication`) that a DOM double-click now opens |
 | `minigames` | `start.minigame` (+ `open`/`finish`/`get.state`) | interceptor caches the launched game's meta in `__cor3LastMinigame` (notably `timerDurationMs`); the minigame itself runs on a separate Colyseus server (`svc-corie.cor3.gg/games/<room>`) |

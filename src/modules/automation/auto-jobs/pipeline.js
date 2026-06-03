@@ -7,8 +7,8 @@
 //
 // A single "packet" envelope flows through them, getting enriched at each
 // stage (see createPacket() for its shape). The orchestrator
-// (auto-jobs.js) owns the loop, decides the order, drives the Flow Map
-// highlight, and persists pipeline progress; the stages here are pure data
+// (auto-jobs.js) owns the loop, decides the order, drives the pipeline status
+// readout, and persists pipeline progress; the stages here are pure data
 // work — read the shared game state, compute, write the Auto-Jobs-owned outputs.
 //
 // ctx is supplied by the orchestrator:
@@ -24,7 +24,8 @@
 // recorded with an explicit reason on the packet (an unreachable market, a
 // job that fails a condition) and logged — never quietly dropped.
 //
-// Shared, read-only game inputs: NM_GRAPH + the three market envelopes.
+// Shared, read-only game inputs: NM_GRAPH + the four market envelopes
+// (home / dark / SRM / USOL).
 // The only command this pipeline issues is a generic market refresh
 // (MSG.GAME.REFRESH_*) — the same one the UI Refresh buttons and auto-refresh
 // use; the resulting writes land in the data modules' keys.
@@ -53,7 +54,7 @@
             home: null,
             servers: null,            // NM_GRAPH.servers (read-only copy)
 
-            // ── filled by CHECK_SERVERS_ACCESABILITY ──
+            // ── filled by CHECK_ACCESS ──
             // { [serverName]: { accessible, hasSaiAccess, onCooldown } }
             accessibility: null,
 
@@ -72,7 +73,7 @@
             // ── filled by BUGGED_JOBS ──
             buggedJobs: null,         // { [jobId]: { reason, since } }
 
-            // ── filled by CHECK_JOBS_CONDITION ──
+            // ── filled by CHECK_CONDITION ──
             serverOverrides: null,    // AJ_SERVER_OVERRIDES snapshot used this cycle
             masterSwitches: null,     // AJ_MASTER_SWITCHES snapshot used this cycle
             evaluations: null,        // { [jobId]: { eligible, skipReason } }
@@ -332,7 +333,7 @@
         },
     };
 
-    // MODULE:CHECK_SERVERS_ACCESABILITY — for each server, do we have access,
+    // MODULE:CHECK_ACCESS — for each server, do we have access,
     // SAI access, and is it on K/D cooldown. Market reachability is NOT decided
     // here: it is the OUTPUT of UPDATE_MARKETS' refresh probe (see below).
     const checkAccess = {
@@ -532,7 +533,7 @@
         },
     };
 
-    // MODULE:CHECK_JOBS_CONDITION — filter the queue down to the jobs we can
+    // MODULE:CHECK_CONDITION — filter the queue down to the jobs we can
     // actually do. Each non-eligible job carries an explicit skipReason that
     // the UI renders as a SKIP flag.
     //

@@ -1,8 +1,8 @@
 // src/modules/automation/timers.js
 // Alarm engine. Reads alarm config from chrome.storage.sync.alarms, ticks
 // every second, computes remaining seconds for each timerSource (daily,
-// home_jobs, dark_jobs, exp_<id>), and plays an audio alert when the
-// configured threshold is crossed.
+// home_jobs, dark_jobs, srm_jobs, usol_jobs, exp_<id>), and plays an audio
+// alert when the configured threshold is crossed.
 //
 // Owned storage: chrome.storage.sync.alarms (array of alarm objects).
 // Bus: none (audio is local; UI controls alarms via storage).

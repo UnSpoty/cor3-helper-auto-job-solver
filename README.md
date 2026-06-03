@@ -10,8 +10,8 @@ wire format.
 ## Features
 
 ### Live game data
-- **Markets** — Home, Dark (D4RK) and SRM markets with job lists, reset timers
-  and reachability flags.
+- **Markets** — Home, Dark (D4RK), SRM (SOYUZ) and USOL markets with job lists,
+  reset timers and reachability flags.
 - **Expeditions** — active expedition tracker, container-open + collect-all
   workflow, archived-runs history with loot / cost / risk per run.
 - **Pending decisions** — option list per expedition with risk score, deadline
@@ -23,24 +23,24 @@ wire format.
 - **Daily Ops** — countdown to next reset, streak/level info.
 
 ### Automation
-- **Auto Jobs** — end-to-end orchestrator that scans Home / Dark / SRM
+- **Auto Jobs** — end-to-end orchestrator that scans Home / Dark / SRM / USOL
   markets, qualifies jobs against per-server reachability and K/D state,
-  accepts them in batches, opens the Network Map, connects through the right
-  server, navigates SAI, and runs the matching flow:
+  accepts and works them **sequentially, one server at a time** (connect +
+  log into a server once, run its whole batch, then move on), all over WS:
   - 9 job types: `file_decryption`, `ip_injection`, `ip_cleanup`,
     `file_upload`, `log_deletion`, `log_download`, `file_elimination`,
     `data_download`, `decrypt_extract`
-  - K/D detection (skipped for the timer's duration + safety buffer),
-    server-unreachable detection, per-server priority sort, transitive
-    blocking via `ajServerReadiness`, per-cycle reject list with reasons
-    surfaced in the popup.
+  - K/D / on-cooldown and unreachable servers are read from the Network Map
+    graph and **postponed** (never failed); FAILED jobs are surfaced in the
+    Job List with an opt-in auto-dismiss; every job's skip reason is shown
+    live in the popup.
 - **Auto-send mercenary** — when an expedition completes, opens the container,
   collects rewards, then re-launches with the cheapest available mercenary
   (configurable per merc, re-enabled when stash recovers from full).
 - **Auto-choose decision** — picks the highest-scoring decision option a
   configurable amount of time before the deadline; single `Risk threshold`
   slider (0..10) drives the cut-off.
-- **Auto-refresh markets** — periodic re-fetch of Home / Dark / SRM jobs.
+- **Auto-refresh markets** — periodic re-fetch of Home / Dark / SRM / USOL jobs.
 - **Multi-alarm** — alarms tick every second, audio alerts via the Web Audio
   API; threshold, volume and continuous-mode are per-alarm.
 
@@ -55,6 +55,8 @@ wire format.
 - **Daily Ops** — full Game Center one-shot: opens the Game Center,
   starts the Daily Ops card, routes by puzzle type (System Log Integrity,
   Signal Hack), submits, watches for verified / reward / fail feedback.
+  An optional **Auto** toggle auto-launches this solver when the daily timer
+  resets or the day is still unsolved.
 
 ### Appearance toggles
 - Hide system messages, disable background animations, hide Network Map fog,
@@ -81,16 +83,15 @@ wire format.
 
 ## Usage
 
+The popup has **5 tabs** (see `TABS` in `src/ui/shell.js`):
+
 | Tab | What's there |
 |---|---|
-| **Overview** | Daily ops timer, Home + Dark + SRM market resets, active expedition, pending decisions |
-| **Stash** | Capacity bar, item list |
-| **Mercs** | Roster with cost / risk badges, Auto-send toggles |
-| **Auto Jobs** | Master toggle, current state pill, queue, rejected jobs with reasons, source filters (Home / Dark / SRM), debug mode, state-transition timeline, activity log |
-| **Alarms** | Existing alarms + form to add a new one |
+| **Overview** | Daily Ops timer (+ Solve + Auto), Home / Dark / SRM / USOL market resets with per-market auto-refresh, auto-solver toggles (decrypt / ICE WALL / simple-decrypt), theme picker + appearance toggles, alarms (add + Test/Stop-all) |
+| **Expeditions** | Active expeditions, recent runs (archived), pending decisions, auto-choose decision + risk threshold, auto-send mercenary, mercenary roster, stash |
+| **Auto Jobs** | START/STOP, Master Switches panel (per-market + per-type + behaviour), Network Map (context menu: Open SAI / Open Market / per-server skips), grouped Job List (Locate + Details + bugged/skip pills), compact pipeline status, activity log |
 | **Modules** | Every registered module with on/off + log toggle, grouped by category |
 | **Logs** | Live stream from all modules with module + level filters |
-| **Settings** | Auto-refresh markets, auto-decrypt, auto-ice-wall, auto-daily-ops, auto-choose decision + risk threshold, appearance toggles |
 
 ## Project layout
 
@@ -111,17 +112,17 @@ cor3-helper/
     ├── shared/            ← constants, dom helpers, ws-frames (msgpack codec), errors
     ├── interceptors/      ← MAIN-world WS + HTTP wrapping; solver-loader
     ├── modules/
-    │   ├── data/          ← 9 modules, one per WS payload
-    │   ├── automation/    ← timers, auto-refresh, auto-jobs, auto-send-merc, …
-    │   ├── game/          ← desktop-window, auto-jobs-bridge, loadout-panel, 9 Auto Jobs flows
-    │   ├── solvers/       ← decrypt, daily-ops, ice-wall
+    │   ├── data/          ← 13 modules, one per WS payload
+    │   ├── automation/    ← timers, auto-refresh, auto-jobs (+ auto-jobs/pipeline), auto-send-merc, …
+    │   ├── game/          ← desktop-window, auto-jobs-bridge, loadout-panel, 9 Auto Jobs flows (+ _sai-flow base)
+    │   ├── solvers/       ← decrypt, daily-ops, ice-wall, simple-decrypt
     │   └── appearance/    ← system-messages, background, network-fog, map-fx
-    ├── ui/                ← popup.html + popup.css + components/ + sections/
+    ├── ui/                ← popup.html + popup.css + shell.js + components/ + sections/
     └── entry/             ← content-early.js, content.js, background.js
 ```
 
-~70 modules across 5 execution contexts (MAIN content, isolated content,
-popup / side-panel, background SW, ad-hoc injected scripts).
+~85 files across 5 execution contexts (MAIN content, isolated content,
+popup / side-panel, background SW).
 
 ## Development
 

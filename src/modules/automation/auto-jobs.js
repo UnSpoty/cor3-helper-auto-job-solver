@@ -4,7 +4,7 @@
 // its logs and the stages' logs land in the Activity Log). It does NOT
 // implement job logic itself — it drives the flowchart:
 //
-//   START → DELAY:10s → ┌─ GET_SERVERS → CHECK_SERVERS_ACCESABILITY
+//   START → DELAY:10s → ┌─ GET_SERVERS → CHECK_ACCESS
 //                       │   → UPDATE_MARKETS → JOB_QUEUE → READY_TO_COMPLETE
 //                       │   → DISMISS_FAILED → <QUEUE:EMPTY?>
 //                       │     YES ───────────────────────────────────────┐
@@ -24,8 +24,8 @@
 // The inter-cycle DELAY is 30s when idle, but a short CYCLE_DELAY_ACTIVE_MS
 // (~5s) when the cycle did real work (a flow batch ran, or jobs were accepted) —
 // so a chain of in-progress jobs isn't gated by 30s of dead air between each.
-// The actual delay in effect is published as state.delayMs so the Flow Map's
-// DELAY countdown reflects the real wait (5s vs 30s), not a hard-coded 30s.
+// The actual delay in effect is published as state.delayMs so the pipeline
+// status's DELAY countdown reflects the real wait (5s vs 30s), not a hard-coded 30s.
 //
 // JOB_FLOW dispatches a BATCH of in-progress (TAKEN) jobs per cycle, then parks
 // on each one's FLOW_RESULT in turn — so the loop pauses for each minigame,
@@ -47,8 +47,8 @@
 //     (and the matching toggleAutoJobs runtime message for Firefox).
 //   • Run the infinite loop, calling each stage in order, passing the one
 //     packet between them (the stages live in auto-jobs/pipeline.js).
-//   • Drive the Flow Map: write AJ_PIPELINE_STATE (running, cycle, node) on
-//     every node transition so the popup highlights the live stage.
+//   • Drive the pipeline status: write AJ_PIPELINE_STATE (running, cycle, node)
+//     on every node transition so the popup labels the live stage.
 //   • Cancel cleanly on STOP — a generation token invalidates any in-flight
 //     sleep so a half-run cycle never leaks past a STOP.
 //
@@ -286,7 +286,7 @@
                 }
                 if (!this._alive(token)) return;
                 // Publish the ACTUAL delay (active=5s vs idle=30s) as state.delayMs
-                // so the Flow Map countdown matches the real wait instead of a
+                // so the pipeline status countdown matches the real wait instead of a
                 // hard-coded 30s (which made the active short-delay look "skipped").
                 const delay = active ? LOOP.CYCLE_DELAY_ACTIVE_MS : LOOP.CYCLE_DELAY_MS;
                 await this._setNode(NODE.DELAY_CYCLE, token, { cycle, delayMs: delay });
@@ -329,7 +329,7 @@
             // Auto-dismiss FAILED jobs (terminal cleanup, gated by the
             // Master-Switches "Auto-dismiss FAILED" toggle — default OFF). Runs
             // here, where the endpoint is at home and no SAI flow is mid-batch.
-            // Its own Flow-Map node (DISMISS_FAILED) is always visited so the
+            // Its own pipeline node (DISMISS_FAILED) is always visited so the
             // pipeline stays linear; like READY_TO_COMPLETE it is simply a no-op
             // when the toggle is off / nothing failed.
             await this._setNode(NODE.DISMISS_FAILED, token, { cycle });
@@ -814,7 +814,7 @@
         // subscriptions immediately — they live outside this.track(), so a
         // `watch` interval drops them within 200ms of STOP instead of leaking
         // for up to FLOW_TIMEOUT_MS. While the flow runs, FLOW_STEP messages
-        // are relayed into the live pipeline node so the Flow Map highlights
+        // are relayed into the live pipeline node so the pipeline status shows
         // the sub-step the MAIN flow is on.
         _dispatchFlow(payload, token) {
             return new Promise((resolve) => {
@@ -863,7 +863,7 @@
         // read-only half of the pipeline (servers → access → markets → queue →
         // condition) and republish AJ_JOB_QUEUE, WITHOUT accepting or running
         // any job. Refused while the loop runs (it already rebuilds each cycle)
-        // and debounced against itself. Does not touch the Flow-Map state.
+        // and debounced against itself. Does not touch the pipeline-status state.
         async _refreshBoardOnce() {
             if (this._running) { this.warn('Jobs refresh ignored — the pipeline is running (it rebuilds the board each cycle)'); return; }
             if (this._refreshing) { this.debug('Jobs refresh already in progress'); return; }
@@ -921,7 +921,7 @@
             };
         }
 
-        // ── pipeline-state persistence (drives the Flow Map highlight) ─────
+        // ── pipeline-state persistence (drives the pipeline status readout) ──
         async _setNode(node, token, extra) {
             if (!this._alive(token)) return;
             await this._writeState(Object.assign({ running: true, node }, extra));

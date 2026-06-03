@@ -4,7 +4,7 @@
 // switches, with no pipeline data): global market toggles, global job-type
 // toggles, and per-server overrides. It is the single source of truth used by
 // BOTH worlds so the displayed and the enforced verdicts can never drift:
-//   • the isolated pipeline (CHECK_JOBS_CONDITION) — for actual acceptance,
+//   • the isolated pipeline (CHECK_CONDITION) — for actual acceptance,
 //   • the popup Job List — to re-derive the SKIP flag live the instant a
 //     switch/override changes, without waiting for the next pipeline cycle.
 //

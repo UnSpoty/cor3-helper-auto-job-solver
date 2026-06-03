@@ -75,8 +75,7 @@ the game-module helpers.
 | Constant | Wire string | Payload | What it does |
 |---|---|---|---|
 | `GAME.REQUEST_EXPEDITIONS` | `COR3_REQUEST_EXPEDITIONS` | `null` | join `expeditions` room and `get.active`. |
-| `GAME.REFRESH_MARKET` | `COR3_REFRESH_MARKET` | `null` | re-send `market.get.options` for home market. |
-| `GAME.REFRESH_DARK_MARKET` | `COR3_REFRESH_DARK_MARKET` | `null` | set endpoint to dark-market server, then `get.options`. |
+| `GAME.REFRESH_MARKET` | `COR3_REFRESH_MARKET` | `null` | re-send `market.get.jobs` for the home market. |
 | `GAME.LAUNCH_EXPEDITION` | `COR3_LAUNCH_EXPEDITION` | `{ config: {mercenaryId, marketId, locationConfigId, zoneConfigId, objectiveId, hasInsurance} }` | `expeditions.configure` then `expeditions.launch`. |
 | `GAME.OPEN_CONTAINER` | `COR3_OPEN_CONTAINER` | `{ expeditionId }` | `expeditions.open.container`. |
 | `GAME.COLLECT_ALL` | `COR3_COLLECT_ALL` | `{ expeditionId }` | `expeditions.collect.all`. |
@@ -94,8 +93,8 @@ the game-module helpers.
 ### Off-enum
 
 - `COR3_REQUEST_STASH` — joins `stash` room (which triggers a stash push).
-- `COR3_REQUEST_MARKET` — sends `market.get.options` for home.
-- `COR3_REQUEST_DARK_MARKET` — sets dark endpoint then `get.options`.
+- `COR3_REQUEST_MARKET` — sends `market.get.jobs` for home.
+- `COR3_REQUEST_DARK_MARKET` — sets dark endpoint then `get.jobs`.
 - `COR3_REQUEST_MERCENARIES` — `expeditions.get.mercenaries`.
 - `COR3_REQUEST_EXPEDITION_CONFIG` — `expeditions.get.config`.
 - `MSG.GAME.REQUEST_ARCHIVED_EXPEDITIONS` (`COR3_REQUEST_ARCHIVED_EXPEDITIONS`) — re-fetch archived expedition list; popup's "Refresh" button on the Recent runs block triggers this via runtime-bridge.
@@ -108,16 +107,24 @@ the game-module helpers.
 
 ## MSG.SOLVER — Minigame solver lifecycle
 
-Direction: bidirectional. `START_*` and `STOP_*` are isolated → MAIN; `DAILY_HACK_LOG` is MAIN → isolated.
+Direction: mixed. `START_*` / `STOP_*` and `ICE_WALL_DB` are isolated → MAIN;
+`DAILY_OPS_LOG`, `ICE_WALL_BUSY`, `ICE_WALL_DB_REQUEST` and `ICE_WALL_LEARN`
+are MAIN → isolated.
 
 | Constant | Wire string | Payload | What it does |
 |---|---|---|---|
 | `SOLVER.START_DECRYPT` | `COR3_START_DECRYPT_SOLVER` | `null` | starts the watcher in `solver-decrypt` (config-hack minigame). Idempotent. |
 | `SOLVER.STOP_DECRYPT` | `COR3_STOP_DECRYPT_SOLVER` | `null` | sets `window.__solverAbort=true`. |
-| `SOLVER.START_DAILY_OPS` | `COR3_START_DAILY_OPS` | `null` | one-shot trigger for `solver-daily-ops` (MAIN). Posted by `automation/daily-ops.js` when the popup sends `solveDailyOps`. The solver navigates Game Center → Daily Ops → Start, detects puzzle type (signal vs log), and submits. |
-| `SOLVER.DAILY_OPS_LOG` | `COR3_DAILY_OPS_LOG` | `{ message }` | progress + result lines from `solver-daily-ops`. Mirrored into `STORAGE_LOCAL.DAILY_HACK_LOG` (storage key name preserved) so the Overview card can show the last line; success messages also retrigger a REST refetch so the streak/claimed badge flips without a Refresh click. |
+| `SOLVER.START_DAILY_OPS` | `COR3_START_DAILY_OPS` | `null` | one-shot trigger for `solver-daily-ops` (MAIN). Posted by `automation/daily-ops.js` when the popup sends `solveDailyOps`, or by the Auto Daily Ops watcher. The solver navigates Game Center → Daily Ops → Start, detects puzzle type (signal vs log), and submits. |
+| `SOLVER.DAILY_OPS_LOG` | `COR3_DAILY_OPS_LOG` | `{ message }` | progress + result lines from `solver-daily-ops`. Mirrored into `STORAGE_LOCAL.DAILY_HACK_LOG` (storage key name preserved) so the Overview card can show the last line; `solved:`/`Error:` lines also drive the Auto watcher's terminal handling + a REST refetch so the streak/claimed badge flips without a Refresh click. |
 | `SOLVER.START_ICE_WALL` | `COR3_START_ICE_WALL` | `null` | starts the watcher in `solver-ice-wall` (Porter-lite r4 minigame opened from SAI). |
 | `SOLVER.STOP_ICE_WALL` | `COR3_STOP_ICE_WALL` | `null` | sets `window.__iceWallAbort=true`. |
+| `SOLVER.ICE_WALL_BUSY` | `COR3_ICE_WALL_BUSY` | `{ busy, ts }` | MAIN → isolated heartbeat — posted when the solver detects an `IceWallBreakApplication` and again when that window closes. |
+| `SOLVER.ICE_WALL_DB_REQUEST` | `COR3_ICE_WALL_DB_REQUEST` | `null` | MAIN solver asks the isolated bridge for the learned shape→click DB (MAIN has no `chrome.storage`). |
+| `SOLVER.ICE_WALL_DB` | `COR3_ICE_WALL_DB` | `{ db }` | isolated → MAIN reply with `STORAGE_LOCAL.ICE_WALL_CLICK_DB`. |
+| `SOLVER.ICE_WALL_LEARN` | `COR3_ICE_WALL_LEARN` | `{ shapeKey, entry }` | MAIN solver learned a new shape→cell; the isolated bridge persists it (serialised, then re-broadcasts `ICE_WALL_DB`). |
+| `SOLVER.START_SIMPLE_DECRYPT` | `COR3_START_SIMPLE_DECRYPT` | `{ owner }` | starts the watcher in `solver-simple-decrypt` (one-click "Decrypt" minigame). |
+| `SOLVER.STOP_SIMPLE_DECRYPT` | `COR3_STOP_SIMPLE_DECRYPT` | `{ owner }` | stops the simple-decrypt watcher. |
 
 ---
 
@@ -154,9 +161,10 @@ messages (`ACCEPT_JOB`, `COMPLETE_JOB`, `REVERT_ENDPOINT_TO_HOME`, `REFRESH_*`,
 | `AUTOJOBS.DISMISS_FAILED` | `ajDismissFailed` | popup → isolated (runtime) | `{ jobId, marketId }` | Jobs list "✕" on a FAILED row. Orchestrator posts `MSG.GAME.DISMISS_JOB` — **refused while the loop runs** (a manual endpoint flip would flap a running SAI batch; the auto-dismiss step handles it instead). |
 | `AUTOJOBS.OPEN_SAI` | `COR3_AJ_OPEN_SAI` | isolated → MAIN (window) | `{ serverName, serverId, serverType }` | handled by `auto-jobs-bridge.js` — **no DOM coordinate clicks**: opens the Network Map window (`COR3.game.desktop.openAppAndWait`), connects via `__cor3SetEndpoint` (WS `set.endpoint`), opens the SAI terminal, then `saiAccess()` gains access — **Active Access** (`__cor3SaiGetLoginStatus` → `__cor3SaiLoginWithAccess`, a `task_access` grant, no password/passhack) or, with no grant, **hacks** the server (`COR3.game.loadout.ensureHack(serverType)` installs HACK software → click hack-tool row → solver wins the minigame → poll `get.login.status` for the new grant → `login.with-access`). |
 | `AUTOJOBS.OPEN_MARKET` | `COR3_AJ_OPEN_MARKET` | isolated → MAIN (window) | `{ serverName, serverId, serverType }` | handled by the bridge — same client-fn window-open + WS `set.endpoint` connect, then invokes the panel's Market control via `COR3.game.desktop.invokeReactClick` (text button for HOME, chest icon for DARK/SRM). `serverId` is `null` for HOME (no connect). |
-| `AUTOJOBS.FLOW_START` | `COR3_AJ_FLOW_START` | isolated → MAIN (window) | `{ jobId, marketId, jobType, fileCondition, fileId?, serverName? }` | JOB_FLOW dispatch. The MAIN `flow-*` module for `jobType` executes the job. **Field is `jobType` not `type`** — `Bus.window` builds the envelope as `Object.assign({type}, payload)`, so a payload `type` would clobber the Bus message id and never be delivered. |
-| `AUTOJOBS.FLOW_RESULT` | `COR3_AJ_FLOW_RESULT` | MAIN → isolated (window) | `{ jobId, marketId, success, didWork, reason }` | flow outcome. `success&&didWork` = completed; `success&&!didWork` = can't do it → bugged; `success:false` = failure → bugged. |
-| `AUTOJOBS.FLOW_STEP` | `COR3_AJ_FLOW_STEP` | MAIN → isolated (window) | `{ jobId, node }` | live sub-step report (`node` ∈ `AJ.NODE.fd-*`). The orchestrator relays it to `AJ_PIPELINE_STATE` so the Flow Map highlights the current step inside JOB_FLOW. |
+| `AUTOJOBS.FLOW_START` | `COR3_AJ_FLOW_START` | isolated → MAIN (window) | type-specific: base `{ jobId, marketId, jobType }`; file_decryption adds `fileCondition`; SAI types add `{ serverId, serverName, serverType, batchKey, deferComplete, <targets> }` | JOB_FLOW dispatch. The MAIN `flow-*` module for `jobType` executes the job. **Field is `jobType` not `type`** — `Bus.window` builds the envelope as `Object.assign({type}, payload)`, so a payload `type` would clobber the Bus message id and never be delivered. `batchKey` scopes SAI login reuse across one server's batch; `deferComplete` makes `complete()` a no-op so the orchestrator can send `job.complete` for the whole batch at the end. |
+| `AUTOJOBS.FLOW_ABORT` | `COR3_AJ_FLOW_ABORT` | isolated → MAIN (window) | `{ jobId }` | cancel the in-flight job (STOP pressed or `FLOW_TIMEOUT_MS` elapsed): the flow flips its abort flag and bails WITHOUT `job.complete`. |
+| `AUTOJOBS.FLOW_RESULT` | `COR3_AJ_FLOW_RESULT` | MAIN → isolated (window) | `{ jobId, marketId, success, didWork, reason, retryable }` | flow outcome. `success&&didWork` = completed; `success&&!didWork` = can't do it → bugged; `success:false` = failure (→ retried next cycle if `retryable:true`, else bugged). |
+| `AUTOJOBS.FLOW_STEP` | `COR3_AJ_FLOW_STEP` | MAIN → isolated (window) | `{ jobId, node }` | live sub-step report (`node` ∈ `AJ.NODE.*` flow sub-steps — `fd-*`, `de-*`, the SAI `*-access/*-action/*-complete`, `sai-hack`). The orchestrator relays it to `AJ_PIPELINE_STATE` so the pipeline status shows the current step inside JOB_FLOW. |
 
 Acceptance confirmation is **not** a dedicated message: an accepted job leaves
 the market board's `jobs[]` and reappears in `recentJobs[]` with
@@ -215,7 +223,7 @@ Constants live under `STORAGE_LOCAL.AJ_*`.
 
 | Key | Shape | Owner |
 |---|---|---|
-| `ajPipelineState` | `{ running, cycle, node, startedAt, updatedAt, error? }` | `auto-jobs.js`. `node` ∈ `AJ.NODE.*` — drives the Flow Map highlight. |
+| `ajPipelineState` | `{ running, cycle, node, startedAt, updatedAt, delayMs?, error? }` | `auto-jobs.js`. `node` ∈ `AJ.NODE.*` — drives the compact pipeline status readout; `delayMs` is the real inter-cycle wait (5 s active / 30 s idle) so the countdown bar is accurate. |
 | `ajJobQueue` | `{ cycle, computedAt, markets:[{slot, reachable, refreshed, jobCount, takenCount, failedCount, reason}], jobs:[{id, name, type, status, serverName, marketSlot, marketId, rewardCredits, eligible, skipReason}] }` | `auto-jobs/pipeline.js` (JOB_QUEUE / CHECK_CONDITION). `status` = `'AVAILABLE'` (board), `'TAKEN'` (in-progress) or `'FAILED'` (failed, awaiting dismissal); `eligible` is null until CHECK_CONDITION runs (and stays null for TAKEN/FAILED). |
 | `ajBuggedJobs` | `{ [jobId]: { reason, since } }` | written by JOB_FLOW's `_markBugged`; read by the pipeline (CHECK_CONDITION) + the Job List (shows a **BUGGED** pill live). The UI writes it too: per-job ✕ (un-bug) and the header **Clear Bugged** button (`= {}`). |
 | `ajServerOverrides` | `{ [serverName]: { skip: bool, disabledTypes: { [jobType]: true } } }` | NM context menu → read by CHECK_CONDITION + Job List (live). |
@@ -249,13 +257,15 @@ Constants live under `STORAGE_LOCAL.AJ_*`.
 
 | Key | Shape | Default | Owner |
 |---|---|---|---|
-| `selectedTheme` | string | `'default'` | (unused; UI ships a single theme) |
+| `selectedTheme` | `'cor3' \| 'amber-console' \| 'neon'` | `'cor3'` | `ui/shell.js` `applyTheme` + the Overview theme picker. `'cor3'` (or absent) = no body class. |
 | `alarms` | `Alarm[]` | `[]` | popup `alarms` section + `automation/timers.js` |
 | `autoJobsSettings` | `{enabled}` | `{enabled:false}` | `auto-jobs.js` — the only sync key Auto Jobs owns; toggling it starts/stops the loop (alongside `MSG.AUTOJOBS.TOGGLE`). |
 | `autoSendMerc` | `{enabled, autoChooseMerc, mercenaryId, mercenaryName, disabledReason}` | `{enabled:false, autoChooseMerc:true}` | `auto-send-merc.js`, mercenaries section |
 | `autoDecryptEnabled` | bool | `false` | `auto-decrypt.js` |
 | `autoIceWallEnabled` | bool | `false` | `auto-ice-wall.js` — toggle gates the SAI Porter-lite r4 watcher. |
-| `autoRefresh` | `{home_jobs: bool, dark_jobs: bool}` | `{home:false, dark:false}` | `auto-refresh.js` |
+| `autoSimpleDecryptEnabled` | bool | `false` | `auto-simple-decrypt.js` — toggle gates the one-click "Decrypt" watcher. |
+| `autoDailyOpsEnabled` | bool | `false` | `automation/daily-ops.js` — Auto Daily Ops watcher (auto-launches the Daily Ops solver on reset / unsolved day). |
+| `autoRefresh` | `{home_jobs, dark_jobs, srm_jobs, usol_jobs: bool}` | all `false` | `auto-refresh.js` |
 | `autoChooseEnabled` | bool | `false` | `auto-choose-decision.js` |
 | `riskThreshold` | `0..10` | `5` | `auto-choose-decision.js`. Score = `loot - risk*((10-threshold)/5)`. |
 | `disableSystemMessages` | bool | `false` | `appearance/system-messages.js` |
@@ -294,18 +304,20 @@ when the orchestrator dispatches a TAKEN job to its MAIN `flow-*` module.
 ## AJ — Auto Jobs flowchart nodes & loop cadence
 
 Lives in `constants.AJ`. The single source of truth shared between the
-orchestrator (execution order + `AJ_PIPELINE_STATE.node`) and the popup Flow
-Map (which boxes to draw and highlight).
+orchestrator (execution order + `AJ_PIPELINE_STATE.node`) and the popup
+pipeline status readout (which node label to show).
 
 | Field | Value | Notes |
 |---|---|---|
 | `AJ.PACKET_TYPE` | `'aj/packet'` | `type` stamped on the packet that flows stage→stage. |
-| `AJ.NODE.*` | top-level: `start`, `delay-initial`, `get-servers`, `check-access`, `update-markets`, `job-queue`, `queue-empty`, `have-tasks-in-progress`, `bugged-jobs`, `job-skip`, `check-condition`, `job-acception`, `job-flow`, `delay-cycle`; file_decryption sub-flow: `fd-read-format`, `fd-check-loadout`, `fd-install-sw`, `fd-open-downloads`, `fd-solve`, `fd-complete`, `mark-as-bugged` | flowchart node ids. The `fd-*` sub-steps are reported live by the MAIN flow via `FLOW_STEP` and highlighted on the Flow Map. |
+| `AJ.NODE.*` | top-level: `start`, `delay-initial`, `get-servers`, `check-access`, `update-markets`, `job-queue`, `ready-to-complete`, `dismiss-failed`, `queue-empty`, `have-tasks-in-progress`, `bugged-jobs`, `job-skip`, `check-condition`, `job-acception`, `job-flow`, `mark-as-bugged`, `delay-cycle`; file_decryption sub-flow: `fd-read-format`, `fd-check-loadout`, `fd-install-sw`, `fd-open-downloads`, `fd-solve`, `fd-complete`; SAI sub-flows: shared `sai-hack` (no-grant hack) + each type's `<p>-access` / `<p>-<action>` / `<p>-complete` (e.g. `ii-access`/`ii-inject`/`ii-complete`); decrypt_extract: `de-access`/`de-download`/`de-install-sw`/`de-solve`/`de-complete` | flowchart node ids. The flow sub-steps are reported live by the MAIN flow via `FLOW_STEP` and shown in the pipeline status. |
 | `AJ.LOOP.INITIAL_DELAY_MS` | `10000` | one-time delay after START before the first cycle. |
-| `AJ.LOOP.CYCLE_DELAY_MS` | `30000` | gap between cycles. |
+| `AJ.LOOP.CYCLE_DELAY_MS` | `30000` | idle inter-cycle gap (nothing to do). |
+| `AJ.LOOP.CYCLE_DELAY_ACTIVE_MS` | `5000` | active inter-cycle gap — used instead of `CYCLE_DELAY_MS` when a cycle did real work (a flow ran / jobs accepted), so chained in-progress jobs proceed without 30 s of dead air. |
 | `AJ.LOOP.MARKET_REFRESH_TIMEOUT_MS` | `6000` | UPDATE_MARKETS wait for a refreshed market frame before logging loud & moving on. |
 | `AJ.LOOP.ACCEPT_PACING_MS` | `1200` | gap between successive `ACCEPT_JOB` posts in JOB_ACCEPTION. |
 | `AJ.LOOP.FLOW_TIMEOUT_MS` | `300000` | max time JOB_FLOW parks on one `FLOW_RESULT` before bugging the job. |
+| `AJ.LOOP.MAX_FLOW_ATTEMPTS` | `2` | total JOB_FLOW attempts for a TAKEN job (1 try + 1 retry) before it's bugged; transient/flow-busy/cancel don't count. |
 
 ---
 
@@ -318,7 +330,7 @@ Used by Module Manager UI for grouping. Each module declares one in its
 |---|---|---|
 | `CATEGORY.CORE` | `core` | `runtime-bridge` |
 | `CATEGORY.DATA` | `data` | 13 data modules (auth, expeditions, archived-expeditions, decisions, market, dark-market, srm-market, usol-market, stash, loadout, mercenaries, merc-config, expedition-config) |
-| `CATEGORY.AUTOMATION` | `automation` | timers, auto-refresh, auto-send-merc, auto-choose-decision, auto-decrypt, auto-ice-wall, auto-simple-decrypt, daily-ops, auto-jobs, auto-jobs, runtime-bridge |
+| `CATEGORY.AUTOMATION` | `automation` | timers, auto-refresh, auto-send-merc, auto-choose-decision, auto-decrypt, auto-ice-wall, auto-simple-decrypt, daily-ops, auto-jobs (orchestrator) — `runtime-bridge` lives in `src/modules/automation/` but declares `CATEGORY.CORE` |
 | `CATEGORY.GAME` | `game` | loadout-panel, 9 Auto Jobs flow modules (the `auto-jobs-bridge` and `desktop-window.js` IIFEs are GAME-world `COR3.game.*` helpers, NOT registered Modules) |
 | `CATEGORY.SOLVER` | `solver` | solver-decrypt, solver-daily-ops, solver-ice-wall, solver-simple-decrypt |
 | `CATEGORY.APPEARANCE` | `appearance` | 4 appearance modules |

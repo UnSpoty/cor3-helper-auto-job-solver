@@ -3,10 +3,12 @@
 // A collapsible card above the Network Map with global on/off toggles:
 //   • Markets   — a disabled market's jobs are never accepted.
 //   • Job types — a disabled type is rejected on every server/market.
+//   • Behaviour — autoDismissFailed (default OFF) gates the orchestrator's
+//                 auto-dismiss of FAILED jobs.
 //
-// Writes STORAGE_LOCAL.AJ_MASTER_SWITCHES (Auto-Jobs-owned). The pipeline's
-// CHECK_JOBS_CONDITION and the Job List both read it through the shared
-// evaluator (COR3.ajEligibility), so toggling here updates both the
+// Writes STORAGE_LOCAL.AJ_MASTER_SWITCHES (Auto-Jobs-owned). For markets/types
+// the pipeline's CHECK_CONDITION and the Job List both read it through the
+// shared evaluator (COR3.ajEligibility), so toggling here updates both the
 // enforced verdict (next cycle) and the displayed SKIP flags (instantly).
 //
 // Default semantics: a switch is ON unless explicitly stored `false`

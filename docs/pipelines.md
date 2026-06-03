@@ -18,24 +18,27 @@ Each flowchart box is a plain *stage* object on
 `COR3.autoJobs.pipeline.stages.*` (`automation/auto-jobs/pipeline.js`) with
 `async run(packet, ctx) -> packet`. A single growing **packet** flows
 stage→stage. The orchestrator stamps the active `AJ.NODE.*` onto
-`STORAGE_LOCAL.AJ_PIPELINE_STATE` so the popup Flow Map highlights the live
-node. Cadence: 10 s initial delay, then a cycle every 30 s. STOP invalidates the
-in-flight cycle via a generation token.
+`STORAGE_LOCAL.AJ_PIPELINE_STATE` so the popup **pipeline status** readout
+(`ui/sections/auto-jobs/flow-map.js` — a compact current-stage + cycle + DELAY
+line; the old SVG Flow Map was dropped) labels the live node. Cadence: 10 s
+initial delay, then an inter-cycle DELAY of 5 s after a cycle that did real work
+(`CYCLE_DELAY_ACTIVE_MS`) or 30 s when idle (`CYCLE_DELAY_MS`), published as
+`state.delayMs`. STOP invalidates the in-flight cycle via a generation token.
 
 ### Loop (per cycle)
 
 ```
-START → DELAY:10s → ┌─ GET_SERVERS → CHECK_SERVERS_ACCESABILITY
-                    │   → UPDATE_MARKETS → JOB_QUEUE → <QUEUE:EMPTY?>
+START → DELAY:10s → ┌─ GET_SERVERS → CHECK_ACCESS → UPDATE_MARKETS → JOB_QUEUE
+                    │   → READY_TO_COMPLETE → DISMISS_FAILED → <QUEUE:EMPTY?>
                     │       YES ───────────────────────────────────────┐
                     │       NO → <HAVE_TASKS_IN_PROGRESS?>             │
                     │              YES → <BUGGED?>                     │
                     │                      YES → JOB:SKIP ─────────────┤
                     │                      NO ─┐                       │
-                    │              NO ─────────┴→ CHECK_JOBS_CONDITION │
+                    │              NO ─────────┴→ CHECK_CONDITION      │
                     │                            → JOB_ACCEPTION       │
                     │                            → JOB_FLOW           │
-                    └──────────────── DELAY:30s ←──────────────────────┘  (loop)
+                    └──── DELAY:5s active / 30s idle ←──────────────────┘  (loop)
 ```
 
 ### Stages (isolated world)
@@ -43,8 +46,8 @@ START → DELAY:10s → ┌─ GET_SERVERS → CHECK_SERVERS_ACCESABILITY
 | Node (`AJ.NODE`) | Stage | What it does |
 |---|---|---|
 | `GET_SERVERS` | `getServers` | reads `NM_GRAPH`; throws loud if the map was never opened. Copies `home` + `servers[]` onto the packet. |
-| `CHECK_ACCESS` | `checkAccess` | per server: `accessible` / `hasSaiAccess` / `onCooldown` from the graph flags. Resolves market reachability (home always; dark/srm/usol unless their `*_AVAILABLE` flag is `false`). |
-| `UPDATE_MARKETS` | `updateMarkets` | for each **reachable** market: post `MSG.GAME.REFRESH_*`, await a fresh frame (≤6 s), then read the envelope. Pulls `jobs[]` (tag `status:'AVAILABLE'`) and the `recentJobs[]` TAKEN (`status:'TAKEN'`) + FAILED (`status:'FAILED'`) entries. Unreachable markets recorded with a reason, not refreshed. |
+| `CHECK_ACCESS` | `checkAccess` | per server: `accessible` / `hasSaiAccess` / `onCooldown` (the last from the graph's `isInMaintenance` flag). Does **not** decide market reachability — that is the OUTPUT of UPDATE_MARKETS' refresh probe (see below). |
+| `UPDATE_MARKETS` | `updateMarkets` | refresh **every** market every cycle: post `MSG.GAME.REFRESH_*`, await a fresh frame (≤6 s; the `atKey` bumps on both a job frame and an unreachable error, so the wait resolves either way), then read the envelope. Reachability is the probe's OUTPUT — home is always reachable; a remote market flips its `*_AVAILABLE` flag false on a market-not-reachable `get.jobs`, recorded with a reason (a transient failure self-heals next cycle — gating the refresh on a stored flag made one transient miss stick forever). Pulls `jobs[]` (tag `status:'AVAILABLE'`) and the `recentJobs[]` TAKEN (`status:'TAKEN'`) + FAILED (`status:'FAILED'`) entries. |
 | `JOB_QUEUE` | `jobQueue` | normalises rawJobs → queue entries `{id, name, type, status, serverName, marketSlot, marketId, rewardCredits, eligible, skipReason}`; writes `AJ_JOB_QUEUE` for the UI. |
 | `READY_TO_COMPLETE` / dismiss | (orchestrator) | `_completeReadyJobs` completes any TAKEN job the game flags `canComplete`; `_dismissFailedJobs` then `market.job.dismiss`-es every FAILED job **iff** `AJ_MASTER_SWITCHES.behaviour.autoDismissFailed` is on (default OFF). Both run here with the endpoint at home, before any SAI flow. |
 | `QUEUE_EMPTY?` | (orchestrator) | empty board+in-progress → fall through to DELAY and loop. |
@@ -112,12 +115,13 @@ orchestrator (isolated) ◀──FLOW_RESULT { jobId, marketId, success, didWork
 - timeout (`AJ.LOOP.FLOW_TIMEOUT_MS`, 5 min) → no result → `MARK_AS_BUGGED`.
 
 While the flow runs it also posts `FLOW_STEP { jobId, node }` per sub-step; the
-orchestrator relays it to `AJ_PIPELINE_STATE`, so the **Flow Map highlights the
-live decrypt step** (READ FORMAT → DECRYPT SW? → INSTALL/SWAP → OPEN DOWNLOADS →
-SOLVE → COMPLETE, or → MARK_AS_BUGGED). The file_decryption sub-flow is drawn as
-its own branch off the JOB_FLOW node.
+orchestrator relays it to `AJ_PIPELINE_STATE`, so the **pipeline status shows the
+live flow step** (file_decryption: READ FORMAT → DECRYPT SW? → INSTALL/SWAP →
+OPEN DOWNLOADS → SOLVE → COMPLETE, or → MARK_AS_BUGGED; the SAI types report
+ACCESS → ACTION → COMPLETE, plus the shared SAI_HACK step when there is no Active
+Access grant).
 
-**`file_decryption` — implemented** (`game/flows/auto-jobs/file-decryption.js`,
+**`file_decryption`** (`game/flows/auto-jobs/file-decryption.js`,
 id `flow-file-decryption`). The most unique flow, because it manages the
 loadout:
 
@@ -137,14 +141,20 @@ loadout:
    (config-hack / ICE WALL / Simple Decrypt) to mount, then to close.
 5. Send `job.complete`; report `didWork:true`.
 
-> Status: the WS file-find/open path + the direct minigame launch are verified
-> live; the full solve→complete cycle needs a run with the loaded extension.
+**SAI flow types** — the other 8 flows each touch a server and share the
+`_sai-flow.js` base factory: connect (`__cor3SetEndpoint`) + Active-Access /
+hack login (`ensureAccess`, reused across a server's batch), then the
+`get.*` / `mutate.*` WS loop, then `job.complete` (deferred to the end of the
+SAI batch — see above). By job type:
 
-**Remaining types — TODO:** ip_injection/ip_cleanup (Transit Access),
-file_elimination (FILES), log_deletion/log_download (LOGS),
-data_download/data_upload (Downloads widget), decrypt_extract (download then
-file_decryption logic) — each a new `flow-*` module behind the same protocol,
-plus `CLOSE_SAI_TERMINAL`.
+- **ip_injection / ip_cleanup** — Transit Access: add / remove IPs.
+- **file_elimination** — delete files.
+- **data_download / file_upload** — download / upload files (file_upload is the
+  game's data_upload).
+- **log_download / log_deletion** — download / delete logs (rejected up-front for
+  the `NO_LOGS_SERVERS` D4RK servers that have no Logs section).
+- **decrypt_extract** — SAI download + decrypt-SW install/swap + the decrypt
+  minigame solve.
 
 ### Cross-references in code
 
@@ -153,7 +163,7 @@ plus `CLOSE_SAI_TERMINAL`.
 | Orchestrator / loop | `automation/auto-jobs.js` | `_loop()`, `_runCycle()`, `_ctx()`, `_setNode()` |
 | Stages | `automation/auto-jobs/pipeline.js` | `stages.*`, `createPacket()`, `MARKET_SLOTS` |
 | Node ids / cadence | `shared/constants.js` | `AJ.NODE`, `AJ.LOOP` |
-| Flow Map | `ui/sections/auto-jobs/flow-map.js` | `NODES`, `EDGES`, `edgePoints()` |
+| Pipeline status | `ui/sections/auto-jobs/flow-map.js` | `attach()`, `renderState()`, `LABELS` |
 | Job List | `ui/sections/auto-jobs/job-list.js` | `render()`, `jobRow()` |
 | JOB_FLOW dispatch | `automation/auto-jobs.js` | `_runJobFlows()`, `_selectBatch()`, `_dispatchFlow()`, `_completeBatchJobs()`, `_markBugged()` |
 | file_decryption flow (MAIN) | `game/flows/auto-jobs/file-decryption.js` | `runFileDecryption()` |
@@ -273,51 +283,52 @@ tick():
 
 ---
 
-## 4. Game-flow startup (NM → SC → SAI)
+## 4. SAI flow startup (pure WS — no DOM scrape)
 
-Used by every flow that touches a server (all except `file_decryption`).
+Used by every flow that touches a server (all except `file_decryption`). All 8
+SAI flows are built by the `_sai-flow.js` factory (`defineFlow`) and run almost
+entirely over WS — the only screen interaction is the hack path (which needs the
+SAI terminal window open to click the hack-tool row). There is NO
+NetworkMap/SAI DOM-scrape layer anymore (`COR3.game.networkMap` /
+`serverConnect` / `sai` / `flows` no longer exist).
 
 ```
-flow.run(jobId, marketId, serverName, ...):
-    flows.setWatching(true)
-    sai = await SAI.findOrOpenSai(serverName)
-        ├─ closeAllSaiTerminals()
-        ├─ NM.ensureNetworkMapOpen(15 s)
-        │     ├─ if no ServerItem in DOM: click TabBarItem-NETWORK_MAP
-        │     └─ wait for ServerItem to appear
-        ├─ SC.connect(serverName)
-        │     ├─ findServerItemByName(serverName)
-        │     ├─ checkServerKD(item)
-        │     │     └─ if hasKD: post COR3_JOB_KD_DETECTED, return false
-        │     ├─ click server icon, wait for side-panel name update
-        │     ├─ if no LoginIcon: click ConnectIcon, wait 700 ms
-        │     ├─ wait up to 12 s for LoginIcon, ConnectIcon (rejected),
-        │     │  SAI app (auto-login), or __serverPathFailed (no-path-to-server)
-        │     ├─ click LoginIcon
-        │     ├─ wait for SaiBottomPanelStyled
-        │     ├─ wait for ArrowRightIcon inside SaiActiveAccess (5 s)
-        │     └─ click first Active Access entry
-        └─ wait up to 15 s for SAI app for serverName
+spec.run(env, helpers):                     // env = FLOW_START payload
+    step(<P>_ACCESS)                          // pipeline-status sub-step
+    a = await ensureAccess(serverId, serverType, serverName)
+        │  // batch-aware: reuse one server's login across its whole batch,
+        │  // gated on the live endpoint + epoch still pointing at the server
+        ├─ __cor3SetEndpoint(serverId)                    // network-map.set.endpoint
+        ├─ status = await __cor3SaiGetLoginStatus(serverId)  // activeAccesses[]+hackTools[]
+        ├─ grant = pickGrant(status)                      // task_access grant
+        ├─ if grant:  __cor3SaiLoginWithAccess(serverId, grant.id)   // headless, no window
+        └─ else (no grant) → hackForAccess():             // surfaced as SAI_HACK step
+              ├─ openAppAndWait('NETWORK_MAP') + selectServerTile(serverName)
+              ├─ click Login → ensureHack(serverType) installs HACK software
+              ├─ click the hack-tool row → startSolvers() → standalone solver wins
+              └─ pollForGrant(serverId) → __cor3SaiLoginWithAccess(serverId, grant.id)
+    if !a.ok: return { success:false, retryable:a.retryable, reason:a.reason }
 
-    if sai is null: flows.sendTimeout(jobId, marketId); return
+    step(<P>_<ACTION>)
+    list = await getTransit|getFiles|getLogs(serverId)    // __cor3SaiGet* over WS
+    for each target:
+        await awaitAction(() => __cor3SaiTransitAdd/Remove | File/LogDownload/Delete(...))
 
-    [navigate to specific tab — Logs/Files/Transit]
-    SAI.navigateToSection(sai, SEL.LOGS|FILES|TRANSIT)
-    SAI.waitForSaiContent(sai, 5 s)
-
-    [flow-specific work...]
-
-    flows.sendDone(jobId, marketId)  // or sendTimeout
-    flows.setWatching(false)
+    step(<P>_COMPLETE)
+    helpers.complete()        // job.complete now, OR a no-op when deferComplete
+    return { success:true, didWork:true }
 ```
 
-Helpers exposed:
-- `COR3.game.networkMap.{ensureNetworkMapOpen, findServerItemByName, checkServerKD, listServersOnKD, openServerMarket, scrapeAndPostServers, SEL}`
-- `COR3.game.serverConnect.{connect, getSaiForServer}`
-- `COR3.game.sai.{findOrOpenSai, navigateToSection, waitForSaiContent, addIpViaModal, downloadsWatcher, find* row helpers, SEL}`
-- `COR3.game.flows.{isWatching, setWatching, sendDone, sendTimeout, userLog, startFlow}`
-- `COR3.game.desktop.{openApp, openAppAndWait, isAppOpen, invokeReactClick, findClickableByText, findServerTile, selectServerTile, findPanelButton, waitFor}` (the bridge — opens windows via React handlers, no DOM coordinate clicks)
-- `COR3.game.loadout.{getSnapshot, decryptExtensions, planDecrypt, ensureDecrypt, hackServerTypes, planHack, ensureHack}` (headless capability/install API for the file-decryption flow + the bridge's Open-SAI hack path)
+**Helpers handed to `spec.run`** (from `_sai-flow.js`):
+`{ root, dom, C, MSG, sleep, say, step, abort, ensureAccess, awaitBus,
+awaitAction, getTransit, getFiles, getLogs, findDownloadsFileId, startSolvers,
+stopSolvers, findMinigame, complete }`.
+
+The WS RPC helpers themselves live on `window.__cor3Sai*` /
+`window.__cor3Desktop*` (in `interceptors/ws-interceptor.js`); window-opening
+goes through the bridge's `COR3.game.desktop` helper:
+- `COR3.game.desktop.{openApp, openAppAndWait, isAppOpen, invokeReactClick, findClickableByText, findServerTile, selectServerTile, findPanelButton, waitFor}` (opens windows via React handlers + one targeted server-tile tap — no DOM coordinate clicks)
+- `COR3.game.loadout.{getSnapshot, decryptExtensions, planDecrypt, ensureDecrypt, hackServerTypes, planHack, ensureHack}` (headless capability/install API for the file-decryption flow + the SAI hack path)
 
 ---
 
@@ -552,6 +563,8 @@ tick():
             // 'daily' → dailyOpsData.nextTaskTime
             // 'home_jobs' → marketData.nextJobsResetAt
             // 'dark_jobs' → darkMarketData.nextJobsResetAt
+            // 'srm_jobs'  → srmMarketData.nextJobsResetAt
+            // 'usol_jobs' → usolMarketData.nextJobsResetAt
             // 'exp_<id>' → expedition.endTime
         if remaining is null: continue
         if remaining <= threshold AND remaining > 0 AND !triggered[a.id]:
@@ -580,8 +593,10 @@ cor3.gg's market API splits responsibilities across three actions:
 
 Triggered by:
 
-1. **WS connect** — `__cor3InitialFetch()` calls `__cor3RequestMarket()` then
-   `__cor3RequestDarkMarket()` 1 s later.
+1. **WS connect** — `__cor3InitialFetch()` calls `__cor3RequestMarket()`
+   immediately, then `__cor3RequestDarkMarket()` / `__cor3RequestSrmMarket()` /
+   `__cor3RequestUsolMarket()` staggered ~1 s later (serialised through
+   `inflightRemoteFetch`).
 2. **Popup Refresh** — Overview card → `sendToContent('refreshMarket')` →
    `runtime-bridge` → `MSG.GAME.REFRESH_MARKET` → MAIN → same call.
 3. **Auto-refresh** — `automation/auto-refresh.js` ticks the timer and
@@ -589,16 +604,14 @@ Triggered by:
 
 ```
 __cor3RequestMarket():
-    sendGetJobs(HOME_MARKET_ID)
+    sendGetJobs(HOME_MARKET_ID)               // home needs no endpoint flip
 
-__cor3RequestDarkMarket():
-    sendGetJobs(DARK_MARKET_ID)
-    // No network-map.set.endpoint preflight — the server looks up by
-    // marketId regardless of current endpoint. Verified by inspecting
-    // cor3.gg's own client when the user opens D4RK manually: it sends
-    // only join-room + get.{options,lots,jobs}, no set.endpoint at all.
-    // An older preflight added 1500ms of delay and could falsely trip
-    // darkMarketAvailable=false via no-path-to-server.
+__cor3RequestDarkMarket() / __cor3RequestSrmMarket() / __cor3RequestUsolMarket():
+    fetchRemoteMarketSequence(<MARKET_ID>, <SERVER_ID>)
+    // serialised via inflightRemoteFetch — one remote fetch at a time:
+    //   set.endpoint(serverId) → get.jobs(marketId) → revert endpoint to HOME.
+    // A set.endpoint that returns no-path-to-server posts
+    //   MSG.WS.<MARKET>_UNREACHABLE (flips the *_AVAILABLE flag false) instead.
 
 sendGetJobs(marketId):
     pendingMarketJobsRequests.push({ marketId, sentAt })
@@ -612,10 +625,9 @@ queue growth on dropped requests.
 ```
 on incoming market.get.jobs:
     pending = popPendingMarketJobsRequest()      // FIFO
-    if pending.marketId === DARK_MARKET_ID:
-        post MSG.WS.DARK_MARKET, { market: { marketId, jobs, recentJobs, nextJobsResetAt } }
-    else:
-        post MSG.WS.MARKET,      { market: { marketId, jobs, recentJobs, nextJobsResetAt } }
+    cfg = MARKET_BY_ID[pending.marketId]         // home / dark / srm / usol
+    post cfg.busType (MSG.WS.MARKET | DARK_MARKET | SRM_MARKET | USOL_MARKET),
+         { market: { marketId, jobs, recentJobs, nextJobsResetAt } }
 
 on incoming market.get.options or market.get.lots:
     swallow (we don't fetch these proactively, but the cor3.gg client
@@ -627,7 +639,7 @@ Storage shape ends up flat:
 
 ```
 chrome.storage.local.marketData = {
-    marketId,        // home or dark UUID
+    marketId,        // home / dark / srm / usol UUID
     jobs,            // Job[]
     recentJobs,      // Job[] (recently-completed)
     nextJobsResetAt  // ISO timestamp
@@ -662,13 +674,13 @@ to MAIN. Hold a 10 s back-off to avoid hammering.
 
 ```
 tick():
-    for each k in ['home_jobs','dark_jobs']:
+    for each k in ['home_jobs','dark_jobs','srm_jobs','usol_jobs']:
         if !settings[k]: continue
         if retryPending[k]: continue
         sec = await getSeconds(k)  // see Alarm tick
         if sec !== null AND sec <= 0:
             retryPending[k] = true
-            post COR3_REFRESH_MARKET or COR3_REFRESH_DARK_MARKET
+            post COR3_REFRESH_MARKET / _DARK_MARKET / _SRM_MARKET / _USOL_MARKET
             after 10 s: retryPending[k] = false
 ```
 

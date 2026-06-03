@@ -184,8 +184,10 @@
             'logs.allLevels': 'all levels',
 
             // ── Auto Jobs sub-components (Master Switches, Job List, Network
-            //    Map, Flow Map, section chrome) — i18n pass. Flowchart node
-            //    names + the debug-bundle text stay English by design.
+            //    Map, pipeline status, section chrome) — i18n pass. Flowchart
+            //    node names + the debug-bundle text stay English by design.
+            //    (The `autojobs.flow*` keys keep their name but now label the
+            //    compact pipeline status, not the old SVG Flow Map.)
             'autojobs.masterSwitches': 'Master Switches',
             'autojobs.msAllOn': 'all on',
             'autojobs.msNOff': '{n} off',

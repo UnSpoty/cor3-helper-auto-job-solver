@@ -270,14 +270,15 @@ fallback'ов/тихих скипов, свои ключи `AJ_*`, лог под
   (paced-приём в JOB_ACCEPTION) бросить работу сразу при STOP.
 - **Node ids — единый источник правды.** Каждый узел флоучарта объявлен в
   `constants.AJ.NODE.*`. Оркестратор штампует активный узел в
-  `STORAGE_LOCAL.AJ_PIPELINE_STATE`, а Flow Map
-  (`COR3.uiComponents.flowMap`) подсвечивает по тем же id.
+  `STORAGE_LOCAL.AJ_PIPELINE_STATE`, а компактный статус пайплайна
+  (`COR3.uiComponents.flowMap` — readout в `flow-map.js`, бывший SVG Flow Map
+  убран) читает те же id и подписывает активный узел.
 - **Загрузка:** `pipeline.js` в manifest идёт ДО `auto-jobs.js` (оркестратор
   читает стейджи на `start()`).
 
 Новый стейдж: добавить объект в `pipeline.js` + экспорт в `stages`, узел в
 `constants.AJ.NODE`, вызов в нужном месте `_runCycle()` оркестратора и
-(если виден на схеме) узел/ребро в `flow-map.js`.
+(если нужна читаемая метка в статусе) запись в `LABELS` в `flow-map.js`.
 
 ### Game module (MAIN world)
 
@@ -376,8 +377,8 @@ overview и logs-panel в мае 2026; не наступай ещё раз.
 - **Ошибки не валят Registry.** Исключение в `init()` или `start()`
   логируется в `cor3_logs[<id>]`, но Registry продолжает работать
   с остальными модулями.
-- **Cascade-stop.** Выключение `network-map` через Module Manager
-  останавливает всех, у кого `network-map` в `dependsOn` (например, все
+- **Cascade-stop.** Выключение `loadout-panel` через Module Manager
+  останавливает всех, у кого `loadout-panel` в `dependsOn` (например, все
   flow-модули). При повторном включении — каскадный re-start.
 - **MAIN-world Module Manager не работает.** См.
   [debugging.md → "Module Manager toggles do nothing for MAIN modules"](debugging.md#module-manager-toggles-do-nothing-for-main-modules).

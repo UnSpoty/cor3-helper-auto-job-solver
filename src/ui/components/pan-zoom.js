@@ -1,11 +1,11 @@
 // Shared pan / wheel-zoom / fit camera controller for the SVG maps.
 //
-// The Auto Jobs Network Map and the Flow Map both draw a world into an
-// <svg><g class="…-camera"> over a CSS dotted-grid layer, and both pan/zoom
-// that camera identically. This is the one implementation of that mechanic —
-// drag-to-pan, wheel-zoom-to-cursor, fit-to-world, the 6-stop grid background
-// string, and a debounced ResizeObserver refit — so a fix lands in one place
-// instead of byte-for-byte copies.
+// The Auto Jobs Network Map draws its world into an
+// <svg><g class="…-camera"> over a CSS dotted-grid layer and pans/zooms that
+// camera. This is the one implementation of that mechanic — drag-to-pan,
+// wheel-zoom-to-cursor, fit-to-world, the 6-stop grid background string, and a
+// debounced ResizeObserver refit. (The old Flow Map used it too before it was
+// replaced by the compact pipeline status; the controller stays map-agnostic.)
 //
 // Neutral namespace (COR3.panZoom) so any map can use it.
 //

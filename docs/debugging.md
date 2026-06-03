@@ -36,11 +36,11 @@ Run any of these in the MCP browser console:
 
 | Probe | World | What it tells you |
 |---|---|---|
-| `window.COR3.Registry.list().length` | isolated **or** MAIN | how many modules registered (expect ~26 isolated, ~14 MAIN; the `auto-jobs-bridge` and `desktop-window` IIFEs are not counted) |
+| `window.COR3.Registry.list().length` | isolated **or** MAIN | how many modules registered (expect ~27 isolated, ~14 MAIN; the `auto-jobs-bridge` and `desktop-window` IIFEs are not counted) |
 | `window.COR3.Registry.snapshot()` | either | full list with `{id, category, dependsOn, started, enabled}` |
 | `Object.keys(window.COR3.game ?? {})` | MAIN | should print `['loadout','desktop']` (the Auto Jobs game-core helpers) |
 | `await chrome.storage.local.get('cor3_logs')` | isolated/popup | full per-module ring buffers |
-| `await chrome.storage.local.get(['ajPipelineState','ajJobQueue','ajBuggedJobs'])` | isolated/popup | **Auto Jobs** runtime: `ajPipelineState.node` = the live flowchart node; `ajJobQueue.jobs[].status` = `AVAILABLE`/`TAKEN` |
+| `await chrome.storage.local.get(['ajPipelineState','ajJobQueue','ajBuggedJobs'])` | isolated/popup | **Auto Jobs** runtime: `ajPipelineState.node` = the live flowchart node; `ajJobQueue.jobs[].status` = `AVAILABLE`/`TAKEN`/`FAILED` |
 | `window.COR3.Registry.get('auto-jobs')?.started` | isolated | whether the orchestrator loop is running |
 | `Object.keys(window.COR3.autoJobs?.pipeline?.stages ?? {})` | isolated | the stage objects (getServers, checkAccess, updateMarkets, jobQueue, buggedJobs, checkCondition, jobAcception) |
 | `await chrome.storage.sync.get(['autoJobsSettings','modules','autoSendMerc'])` | isolated/popup | user prefs + module state (Auto Jobs is `{enabled}`) |
@@ -123,7 +123,7 @@ service the F12 keypress.
 **Fix:** see `src/core/logger.js` — the `Bus.setTrace(...)` registration is
 now gated on `HAS_STORAGE`, so MAIN never installs a tracer; an `inTrace`
 re-entry guard and a `COR3_LOG_REMOTE` filter add belt-and-suspenders. See
-[architecture.md → Bus tracer recursion](architecture.md#bus-tracer-recursion-resolved-may-2026)
+[architecture.md → Bus tracer recursion](architecture.md#bus-tracer-recursion)
 for full detail.
 
 **If the tab ever freezes like this again:**
@@ -189,15 +189,24 @@ settings on cold boot.
 
 ### "K/D detected on a server that's actually accessible"
 
-Check `network-map.js → checkServerKD()`. The current heuristic:
+K/D is no longer scraped from the DOM — it comes from the `network-map.get.map`
+WS payload. The interceptor's `computeNmGraph()` copies each server's
+`isInMaintenance` flag onto `NM_GRAPH.servers[]`; the pipeline's `checkAccess`
+stage reads it as `onCooldown` (`pipeline.js`), and `jobServerReachable()` then
+postpones any job on an `onCooldown` (or non-`accessible`) server.
 
-```
-hasKD = MaintenanceTimer exists AND MaintenanceTimer contains TimerIcon SVG
+If a reachable server is being treated as on-cooldown, inspect the graph
+directly:
+
+```js
+(await chrome.storage.local.get('networkMapGraph')).networkMapGraph
+    .servers.filter(s => s.isInMaintenance)
 ```
 
-Plain text-only `MaintenanceTimer` (no icon child) is a *cooldown*, not
-K/D — server is still reachable. If the heuristic mis-classifies, the
-DOM has changed. Re-verify the SVG component name in the live DOM.
+If the flag is wrong there, the server-side `isInMaintenance` field changed
+shape — re-verify the `network-map.get.map` frame in DevTools → Network → WS.
+A stale graph self-heals on the next rescan (`REQUEST_NM_MAP` / the Network Map
+"Refresh" button).
 
 ### "Auto-send merc launches with the wrong merc"
 
@@ -316,9 +325,10 @@ After any code change:
 1. Open cor3.gg, log in, wait for "WS connected".
 2. Expect popup Overview tab to show daily ops timer + market timers within
    ~10 s (initial-fetch cascade is staggered by 1–6 s).
-3. Open Auto Jobs tab → toggle ON (requires the decrypt/ICE-WALL solvers ON in
-   Overview, else START is blocked).
-4. Watch the Flow Map highlight step through the pipeline nodes
+3. Open Auto Jobs tab → toggle ON (requires all three auto-solvers — Auto-decrypt,
+   Auto-simple-decrypt, Auto-ICE-WALL — ON in Overview, else START is gated/warned;
+   any of the three minigames can mount during a job).
+4. Watch the pipeline status step through the pipeline nodes
    (`GET_SERVERS → CHECK_ACCESS → UPDATE_MARKETS → JOB_QUEUE → …`); the Job List
    fills from `AJ_JOB_QUEUE`.
 5. If a qualifying AVAILABLE job is on the board, expect (within a minute):

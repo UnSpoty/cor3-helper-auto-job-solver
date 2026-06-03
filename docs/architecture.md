@@ -28,13 +28,14 @@ and the runtime API. They communicate over `window.postMessage`.
 ```
 ┌────────────────────────────────────────────────┐
 │ UI  (src/ui/popup.html + popup.css + shell.js) │
-│  • 6 tabs — Overview, Expeditions, Auto Jobs,  │
-│    Auto Jobs, Modules, Logs                 │
+│  • 5 tabs — Overview, Expeditions, Auto Jobs,  │
+│    Modules, Logs                               │
 │  • components — icons, timer, module-card,     │
-│    log-viewer, network-map                     │
-│  • Auto Jobs UI: sections/auto-jobs/*    │
-│    (network-map, job-list, flow-map, log-      │
-│    export) on COR3.uiComponents.*            │
+│    log-viewer, pan-zoom                        │
+│  • Auto Jobs UI: sections/auto-jobs/* on       │
+│    COR3.uiComponents.* (network-map, job-list, │
+│    master-switches, pipeline-status (flow-     │
+│    map.js), log-export, section)               │
 ├────────────────────────────────────────────────┤
 │ Isolated content (src/entry/content.js)        │
 │  • 13 data modules (auth, expeditions,         │
@@ -45,8 +46,7 @@ and the runtime API. They communicate over `window.postMessage`.
 │  • automation: timers, auto-refresh, auto-send-│
 │    merc, auto-choose-decision, auto-decrypt,   │
 │    auto-ice-wall, auto-simple-decrypt, daily-  │
-│    ops, auto-jobs (+ auto-jobs/ helpers),      │
-│    auto-jobs (+ auto-jobs/pipeline),     │
+│    ops, auto-jobs (+ auto-jobs/pipeline),      │
 │    runtime-bridge                              │
 │  • 4 appearance modules                        │
 ├────────────────────────────────────────────────┤
@@ -111,21 +111,22 @@ The order matters: core primitives must exist before modules use them.
 
 ```
 1-14. shared/* + core/* + i18n (same prelude as MAIN, minus interceptors)
-15.  src/modules/data/auth.js
-16-27. src/modules/data/*            ← 12 more data modules (incl. srm-market, usol-market, loadout, archived-expeditions)
-27.  src/modules/automation/timers.js
-28.  src/modules/automation/auto-refresh.js
-29.  src/modules/automation/auto-send-merc.js
-30.  src/modules/automation/auto-choose-decision.js
-31.  src/modules/automation/auto-decrypt.js
-32.  src/modules/automation/auto-ice-wall.js
-33.  src/modules/automation/auto-simple-decrypt.js
-34.  src/modules/automation/daily-ops.js
-35.  src/modules/automation/auto-jobs/pipeline.js  ← Auto Jobs pipeline stages (plain objects)
-36.  src/modules/automation/auto-jobs.js           ← Auto Jobs orchestrator (Module)
-37.  src/modules/automation/runtime-bridge.js
-38-41. src/modules/appearance/*      ← 4 appearance modules
-42.  src/entry/content.js            ← Registry.boot() + log-bridge
+15.  src/shared/aj-eligibility.js    ← shared Auto Jobs config-skip evaluator (isolated + popup)
+16.  src/modules/data/auth.js
+17-28. src/modules/data/*            ← 12 more data modules (incl. srm-market, usol-market, loadout, archived-expeditions)
+29.  src/modules/automation/timers.js
+30.  src/modules/automation/auto-refresh.js
+31.  src/modules/automation/auto-send-merc.js
+32.  src/modules/automation/auto-choose-decision.js
+33.  src/modules/automation/auto-decrypt.js
+34.  src/modules/automation/auto-ice-wall.js
+35.  src/modules/automation/auto-simple-decrypt.js
+36.  src/modules/automation/daily-ops.js
+37.  src/modules/automation/auto-jobs/pipeline.js  ← Auto Jobs pipeline stages (plain objects)
+38.  src/modules/automation/auto-jobs.js           ← Auto Jobs orchestrator (Module)
+39.  src/modules/automation/runtime-bridge.js
+40-43. src/modules/appearance/*      ← 4 appearance modules
+44.  src/entry/content.js            ← Registry.boot() + log-bridge
 ```
 
 > Load order matters: `auto-jobs/pipeline.js` must load **before**
@@ -185,9 +186,9 @@ The Module base class provides:
 
 ## Auto Jobs subsystem (orchestrator + stages)
 
-Auto Jobs is a ground-up rewrite of the job pipeline and uses a different
-shape from the rest of the codebase — worth understanding before touching it.
-(Rules and status live in [CLAUDE.md → Active work](../CLAUDE.md); the full
+Auto Jobs uses a different shape from the rest of the codebase — worth
+understanding before touching it. (Rules live in
+[CLAUDE.md → Auto Jobs subsystem](../CLAUDE.md#auto-jobs-subsystem); the full
 pipeline diagram lives in [pipelines.md](pipelines.md).)
 
 - **One Module, many stages.** Exactly one registered `COR3.Module`
@@ -200,12 +201,13 @@ pipeline diagram lives in [pipelines.md](pipelines.md).)
 - **Packet envelope.** A single growing object (`type: 'aj/packet'`) flows
   stage→stage, getting enriched at each hop. The orchestrator owns ordering,
   cancellation (a generation token invalidates an in-flight cycle on STOP),
-  and Flow-Map highlighting.
+  and publishing live progress to the pipeline status readout.
 - **Node ids are shared truth.** `constants.AJ.NODE.*` names every flowchart
   node. The orchestrator stamps the active node onto
-  `STORAGE_LOCAL.AJ_PIPELINE_STATE`; the popup Flow Map
-  (`COR3.uiComponents.flowMap`) reads the same ids to highlight the live
-  stage.
+  `STORAGE_LOCAL.AJ_PIPELINE_STATE`; the popup pipeline status
+  (`COR3.uiComponents.flowMap` — the compact readout in
+  `ui/sections/auto-jobs/flow-map.js`, which replaced the old SVG Flow Map)
+  reads the same ids to label the live stage.
 - **Isolation.** The orchestrator runs in the isolated world, owns only
   `AJ_*` / `AUTOJOBS_SETTINGS` keys, logs under id `auto-jobs`, and reads only
   shared read-only game state (`NM_GRAPH` + the four market envelopes). The
@@ -221,8 +223,10 @@ pipeline diagram lives in [pipelines.md](pipelines.md).)
   gains server access via **Active Access** (`__cor3SaiGetLoginStatus` →
   `__cor3SaiLoginWithAccess`) or, with no grant, by **hacking** the server
   (`COR3.game.loadout.ensureHack` installs HACK software → click the hack-tool →
-  the standalone solver wins the minigame → use the granted access). Phase 2's job
-  execution (`JOB_FLOW` → `flow-*`) will extend this bridge.
+  the standalone solver wins the minigame → use the granted access). The
+  `JOB_FLOW` → `flow-*` execution reuses the same helpers: `COR3.game.desktop`
+  + the `__cor3Sai*` / `__cor3Desktop*` WS RPCs (the SAI flow types via the
+  `_sai-flow.js` base factory, the local file flow via `file-decryption.js`).
 
 ## Cross-world communication
 

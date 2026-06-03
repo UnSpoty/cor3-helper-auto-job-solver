@@ -116,7 +116,7 @@
     function stopSolvers() { for (const m of SOLVER_STOP) Bus.window.post(m, { owner: 'flow' }); }
 
     // Returns the FLOW_RESULT body (minus jobId/marketId). `step(node)` reports
-    // the live sub-step to the orchestrator so the Flow Map can highlight it.
+    // the live sub-step to the orchestrator so the pipeline status can show it.
     async function runFileDecryption(job, say) {
         const step = (node) => Bus.window.post(AJ.FLOW_STEP, { jobId: job.jobId, node });
 

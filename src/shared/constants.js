@@ -220,7 +220,7 @@
             FLOW_ABORT: 'COR3_AJ_FLOW_ABORT',
             // MAIN flow → isolated orchestrator: "I'm now on sub-step <node>".
             // Payload: { jobId, node } where node ∈ AJ.NODE.*. The orchestrator
-            // relays it to AJ_PIPELINE_STATE so the Flow Map highlights the
+            // relays it to AJ_PIPELINE_STATE so the pipeline status shows the
             // live sub-step inside JOB_FLOW.
             FLOW_STEP: 'COR3_AJ_FLOW_STEP',
             // MAIN flow → isolated orchestrator. Payload:
@@ -295,33 +295,37 @@
 
         // ── Auto Jobs runtime ────────────────────────────────────────────────
         // Pipeline progress, driven by the orchestrator and consumed by the
-        // popup Flow Map highlight. Shape:
-        //   { running, cycle, node, startedAt, updatedAt, error? }
+        // popup pipeline status readout. Shape:
+        //   { running, cycle, node, startedAt, updatedAt, delayMs?, error? }
         // `node` is one of AJ.NODE.* — the flowchart node currently executing.
         AJ_PIPELINE_STATE: 'ajPipelineState',
         // The job board the pipeline produced this cycle. Shape:
         //   { cycle, computedAt,
-        //     markets: [{ slot, reachable, refreshed, jobCount, reason }],
+        //     markets: [{ slot, reachable, refreshed, jobCount, takenCount, failedCount, reason }],
         //     jobs: [{ id, name, type, status, serverName, marketSlot, marketId,
         //              rewardCredits, eligible, skipReason }] }
         // `markets` lets the UI group jobs per market (incl. reachable-but-
-        // empty / unreachable ones). `status` is 'AVAILABLE' | 'TAKEN' (TAKEN =
-        // in-progress). `eligible` is null until CHECK_JOBS_CONDITION runs, then
-        // bool; `skipReason` is the human-readable reason a job was marked SKIP.
+        // empty / unreachable ones). `status` is 'AVAILABLE' | 'TAKEN'
+        // (in-progress) | 'FAILED' (awaiting dismissal). `eligible` is null until
+        // CHECK_CONDITION runs, then bool (stays null for TAKEN/FAILED);
+        // `skipReason` is the human-readable reason a job was marked SKIP.
         AJ_JOB_QUEUE: 'ajJobQueue',
         // Bugged-job registry the pipeline reads and writes itself.
         // Shape: { [jobId]: { reason, since } }.
         AJ_BUGGED_JOBS: 'ajBuggedJobs',
         // Per-server user overrides set from the Network Map context menu.
         // Shape: { [serverName]: { skip: bool, disabledTypes: { [jobType]: true } } }
-        // Read by CHECK_JOBS_CONDITION: a skipped server rejects all its jobs;
+        // Read by CHECK_CONDITION: a skipped server rejects all its jobs;
         // a disabled type rejects that job type on that server only.
         AJ_SERVER_OVERRIDES: 'ajServerOverrides',
         // Global Master Switches set from the "Master Switches" panel.
-        // Shape: { markets: { home, dark, srm, usol }, jobTypes: { [FLOW.*]: bool } }.
-        // A value of `false` disables that market/type globally (no jobs from a
-        // disabled market are accepted; a disabled type is rejected everywhere).
-        // Absent / undefined === enabled (the default is "everything on").
+        // Shape: { markets: { home, dark, srm, usol }, jobTypes: { [FLOW.*]: bool },
+        //          behaviour: { autoDismissFailed } }.
+        // For markets/jobTypes a value of `false` disables that market/type
+        // globally (no jobs from a disabled market are accepted; a disabled type
+        // is rejected everywhere); absent === enabled (default "everything on").
+        // behaviour.autoDismissFailed defaults OFF (absent === off) — it gates
+        // the orchestrator's auto-dismiss of FAILED jobs.
         AJ_MASTER_SWITCHES: 'ajMasterSwitches',
         // ICE WALL solver's learned shape→click-cell database (persisted by the
         // isolated auto-ice-wall bridge on behalf of the MAIN solver).
@@ -451,10 +455,10 @@
     // Auto Jobs pipeline contract
     // ──────────────────────────────────────────────────────────────────────
     // Single source of truth shared by the isolated-world orchestrator (which
-    // executes the nodes) and the popup Flow Map (which draws + highlights
-    // them). Both reference these ids; the Flow Map keeps the (x,y) layout,
-    // the orchestrator keeps the execution sequence — neither hard-codes the
-    // string ids.
+    // executes the nodes) and the popup pipeline status readout (which labels
+    // the live node). Both reference these ids; the orchestrator keeps the
+    // execution sequence, the status readout maps each id to a label — neither
+    // hard-codes the string ids.
     const AJ = {
         // Envelope `type` stamped on the packet that flows stage→stage.
         PACKET_TYPE: 'aj/packet',
@@ -478,7 +482,7 @@
             JOB_FLOW: 'job-flow',          // selector — dispatches each TAKEN job to its flow module
             // file_decryption sub-flow. The MAIN flow module reports its
             // current step via MSG.AUTOJOBS.FLOW_STEP; the orchestrator
-            // relays it into AJ_PIPELINE_STATE so the Flow Map lights it.
+            // relays it into AJ_PIPELINE_STATE so the pipeline status shows it.
             FD_READ_FORMAT: 'fd-read-format',
             FD_CHECK_LOADOUT: 'fd-check-loadout',  // decision: can we (get capability to) decrypt?
             FD_INSTALL_SW: 'fd-install-sw',

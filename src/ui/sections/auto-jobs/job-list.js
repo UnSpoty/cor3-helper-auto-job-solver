@@ -1,14 +1,14 @@
 // Auto Jobs — Job List.
 //
-// Sits between the Network Map and the Flow Map. Renders the job board the
-// pipeline produced (MODULE:JOB_QUEUE), with the detail of each job and a
-// SKIP flag (+ reason) for jobs that CHECK_JOBS_CONDITION ruled out.
+// Sits between the Network Map and the pipeline status. Renders the job board
+// the pipeline produced (MODULE:JOB_QUEUE), with the detail of each job and a
+// SKIP flag (+ reason) for jobs that CHECK_CONDITION ruled out.
 //
 // Pure read of the Auto-Jobs-owned AJ_JOB_QUEUE key — written by the pipeline,
 // never by this component. Shape:
 //   { cycle, computedAt, jobs: [{ id, name, type, serverName, marketSlot,
 //     marketId, rewardCredits, eligible, skipReason }] }
-// `eligible` is null until CHECK_JOBS_CONDITION runs, then a bool.
+// `eligible` is null until CHECK_CONDITION runs, then a bool.
 //
 // Also reads AJ_PIPELINE_STATE.batch (the live JOB_FLOW batch:
 //   { label, serverId, serverName, jobIds, total, index, currentJobId, oneLogin })
@@ -335,7 +335,7 @@
             const rows = jobs.map((job) => {
                 // Eligibility only applies to AVAILABLE board jobs; TAKEN /
                 // FAILED rows pass through untouched (eligible:null), matching
-                // CHECK_JOBS_CONDITION which skips non-AVAILABLE jobs.
+                // CHECK_CONDITION which skips non-AVAILABLE jobs.
                 if (!evalConfig || job.status !== 'AVAILABLE') return job;
                 const bug = bugged[job.id];
                 const bugReason = bug ? `bugged: ${bug.reason || 'unknown'}` : null;
@@ -344,7 +344,7 @@
                 // instantly, without waiting for the next pipeline cycle.
                 const configSkip = evalConfig(job, switches, overrides);
                 // DATA skip (K/D cooldown, server access) is only known once
-                // CHECK_JOBS_CONDITION has stamped dataSkipReason onto the job.
+                // CHECK_CONDITION has stamped dataSkipReason onto the job.
                 const dataKnown = 'dataSkipReason' in job;
                 const dataSkip = dataKnown ? job.dataSkipReason : null;
                 const skipReason = [bugReason, dataSkip, configSkip].filter(Boolean).join('; ') || null;
