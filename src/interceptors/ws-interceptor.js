@@ -1108,7 +1108,27 @@
     };
 
     root.__cor3RequestLoadout = function () {
-        enterRooms(['loadout']);
+        // join-room loadout is *meant* to make the server push a
+        // loadout/get.options snapshot, but that push is unreliable when we're
+        // already in the room — the server dedupes the join and never re-emits,
+        // so a cold flow (user never opened the Loadout panel) waits forever.
+        // Mirror __cor3RequestExpeditions: join, then if no snapshot arrives
+        // shortly after, send the explicit get.options RPC the native LOADOUT
+        // app uses on mount.
+        let gotData = false;
+        const onLoadout = (evt) => {
+            if (evt.data && evt.data.type === MSG.WS.LOADOUT) {
+                gotData = true;
+                window.removeEventListener('message', onLoadout);
+            }
+        };
+        window.addEventListener('message', onLoadout);
+        enterRooms(['loadout']).then(() => {
+            setTimeout(() => {
+                window.removeEventListener('message', onLoadout);
+                if (!gotData) wsSendRpc('loadout', 'get.options', {});
+            }, 1500);
+        });
         return true;
     };
 
