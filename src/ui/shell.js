@@ -33,6 +33,14 @@
         document.body.classList.add(`mode-${mode}`);
     }
 
+    // ─── Build stamp ──────────────────────────────────────────────────
+    // Surface the hand-maintained commit hash next to the title so a glance
+    // at the header tells which build is running (matches the debug bundle).
+    const build = root.COR3.buildInfo;
+    const buildEl = document.getElementById('appBuild');
+    buildEl.textContent = build.commit;
+    buildEl.title = `Build ${build.commit} (${build.date})`;
+
     // ─── Theme switcher ───────────────────────────────────────────────
     // Default cor3-style theme is the palette baked into popup.css's :root.
     // Optional themes are layered as `body.theme-<name>` overrides; the

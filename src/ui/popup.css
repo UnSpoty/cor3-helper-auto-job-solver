@@ -82,6 +82,21 @@ a { color: var(--os-color-primary-hex); }
     font-size: 14px;
 }
 .app-title small { color: var(--os-color-text-secondary); font-weight: 400; margin-left: 4px; }
+.app-build-sep {
+    color: var(--os-color-text-secondary);
+    font-weight: 400;
+    margin-left: 6px;
+    opacity: 0.6;
+}
+.app-build {
+    color: var(--os-color-text-secondary);
+    font-weight: 400;
+    font-size: 10px;
+    margin-left: 6px;
+    opacity: 0.6;
+    font-family: monospace;
+    letter-spacing: 0;
+}
 
 .header-actions { display: flex; gap: 6px; }
 .icon-btn {
