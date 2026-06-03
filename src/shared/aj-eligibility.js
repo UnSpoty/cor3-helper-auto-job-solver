@@ -41,5 +41,24 @@
         return null;
     }
 
-    root.COR3.ajEligibility = { configSkipReason };
+    // Hack capability for a server type, derived from LOADOUT._derived.hackServerTypes
+    // ({ owned:[], active:[] }, both lowercased). Mirrors the loadout panel's
+    // active(green) / owned-not-active(grey) split, so the pipeline (acceptance +
+    // reachability) and the popup (Job List + Network Map) agree on whether a
+    // not-accessible server is hackable and in what state:
+    //   'active'    — an EQUIPPED HACK tool already covers the type (hack now).
+    //   'available' — only an OWNED-not-equipped tool covers it (ensureHack will
+    //                 install it during the hack).
+    //   null        — no owned HACK software covers the type.
+    function hackState(serverTypeName, derivedHack) {
+        if (!serverTypeName || !derivedHack) return null;
+        const lt = String(serverTypeName).toLowerCase();
+        const active = derivedHack.active || [];
+        const owned = derivedHack.owned || [];
+        if (active.indexOf(lt) !== -1) return 'active';
+        if (owned.indexOf(lt) !== -1) return 'available';
+        return null;
+    }
+
+    root.COR3.ajEligibility = { configSkipReason, hackState };
 })();

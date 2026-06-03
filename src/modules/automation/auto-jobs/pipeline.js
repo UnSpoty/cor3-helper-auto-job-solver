@@ -215,19 +215,21 @@
         return (rawJob && rawJob.conditions && rawJob.conditions.serverConfigId) || null;
     }
     // Can a TAKEN job be dispatched this cycle? file_decryption is local (no
-    // server → always). An SAI job needs its target server both accessible and
-    // off K/D cooldown. A server missing from the accessibility map passes
-    // deliberately — we let the flow run and surface the real error rather than
-    // silently stranding a job whose name didn't match the NM graph. The
-    // orchestrator's _runJobFlows uses this to decide which TAKEN jobs to work,
-    // and JOB_ACCEPTION uses it so its hold-gate only counts jobs that are
-    // actually workable (an unreachable TAKEN job must NOT block fresh accepts).
+    // server → always). An SAI job needs its target server off K/D cooldown and
+    // either already accessible OR hackable (we own HACK software for its type —
+    // the flow's establishAccess connects + hacks for access). A server missing
+    // from the accessibility map passes deliberately — we let the flow run and
+    // surface the real error rather than silently stranding a job whose name
+    // didn't match the NM graph. The orchestrator's _runJobFlows uses this to
+    // decide which TAKEN jobs to work, and JOB_ACCEPTION uses it so its hold-gate
+    // only counts jobs that are actually workable (an unreachable TAKEN job must
+    // NOT block fresh accepts).
     function jobServerReachable(job, accessibility) {
         if (job.type === C.FLOW.FILE_DECRYPTION) return true;
         if (!job.serverName) return true;
         const a = accessibility[job.serverName];
         if (!a) return true;
-        return !!a.accessible && !a.onCooldown;
+        return (!!a.accessible || !!a.hackState) && !a.onCooldown;
     }
     function ipsForJob(rawJob) {
         const out = [];
@@ -341,23 +343,33 @@
         async run(packet, ctx) {
             if (!packet.servers) throw new Error('CHECK_ACCESS: packet.servers missing (GET_SERVERS must run first)');
 
+            // Hack capability per server type, read from the loadout snapshot the
+            // `loadout` data module keeps current. A not-accessible server is only
+            // workable if we own HACK software for its type (CHECK_CONDITION
+            // downgrades its skip to a WARN, jobServerReachable lets the flow run).
+            const loadout = await ctx.store.local.getOne(SL.LOADOUT, null);
+            const derivedHack = loadout && loadout._derived && loadout._derived.hackServerTypes;
+            const hackStateFn = root.COR3.ajEligibility.hackState;
+
             const accessibility = {};
-            let accessible = 0, onCooldown = 0;
+            let accessible = 0, onCooldown = 0, hackable = 0;
             for (const s of packet.servers) {
                 if (!s || !s.name) continue;
                 const entry = {
                     accessible: !!s.isAccessible,
                     hasSaiAccess: !!s.hasAdminAccess,
                     onCooldown: !!s.isInMaintenance,
+                    hackState: hackStateFn(s.serverTypeName, derivedHack),  // 'active' | 'available' | null
                 };
                 accessibility[s.name] = entry;
                 if (entry.accessible) accessible++;
                 if (entry.onCooldown) onCooldown++;
+                if (!entry.accessible && entry.hackState) hackable++;
             }
             packet.accessibility = accessibility;
 
-            ctx.log.debug(`CHECK_ACCESS → ${accessible}/${packet.servers.length} accessible, ${onCooldown} on K/D`, {
-                accessible, onCooldown,
+            ctx.log.debug(`CHECK_ACCESS → ${accessible}/${packet.servers.length} accessible, ${onCooldown} on K/D, ${hackable} hackable`, {
+                accessible, onCooldown, hackable,
             });
             return stamp(packet, this.id, { accessible, onCooldown });
         },
@@ -588,13 +600,25 @@
                     continue;
                 }
                 // ── DATA reasons (pipeline-only inputs, baked onto the job) ──
+                // A not-accessible server is NOT a hard skip when we own HACK
+                // software for its type: it becomes a non-blocking WARN and the
+                // job stays eligible (the flow connects + hacks for access).
+                //   hackState 'active'    — equipped tool covers it (hack now)
+                //   hackState 'available' — owned-not-equipped (ensureHack installs)
                 const dataReasons = [];
+                let dataWarnReason = null;
+                let hackState = null;
                 if (job.serverName) {
                     const acc = packet.accessibility[job.serverName];
                     if (!acc) dataReasons.push(`server not in Network Map: ${job.serverName}`);
                     else {
                         if (acc.onCooldown) dataReasons.push('server on K/D cooldown');
-                        if (!acc.accessible) dataReasons.push('server not accessible');
+                        if (!acc.accessible) {
+                            hackState = acc.hackState || null;
+                            if (hackState === 'active') dataWarnReason = 'server not accessible but can be hacked';
+                            else if (hackState === 'available') dataWarnReason = 'server not accessible but can be hacked (install HACK software)';
+                            else dataReasons.push('server not accessible');
+                        }
                     }
                 }
                 const dataSkipReason = dataReasons.length ? dataReasons.join('; ') : null;
@@ -612,6 +636,8 @@
                 job.eligible = ok;
                 job.skipReason = skipReason;
                 job.dataSkipReason = dataSkipReason;  // bugged + config re-derived live in the popup
+                job.dataWarnReason = dataWarnReason;  // non-blocking: not-accessible-but-hackable
+                job.hackState = hackState;            // 'active' | 'available' | null (colours the WARN)
                 if (ok) eligible.push(job.id);
             }
             packet.evaluations = evaluations;

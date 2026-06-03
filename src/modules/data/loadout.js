@@ -25,8 +25,24 @@
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
     const { Module, Bus, Store, Registry, constants: C } = root.COR3;
 
+    // Union of HACK spec.serverTypes (lowercased) across `list`. Mirrors the
+    // loadout-panel capability breakdown: a server type is "hackable" when some
+    // software's HACK spec covers it.
+    function hackTypesOf(list) {
+        const out = new Set();
+        for (const sw of (Array.isArray(list) ? list : [])) {
+            for (const sp of (Array.isArray(sw && sw.specs) ? sw.specs : [])) {
+                if (sp && sp.type === 'HACK' && Array.isArray(sp.serverTypes)) {
+                    for (const st of sp.serverTypes) if (typeof st === 'string' && st) out.add(st.toLowerCase());
+                }
+            }
+        }
+        return out;
+    }
+
     function deriveCaps(snap) {
         const equipped = Array.isArray(snap && snap.equippedSoftware) ? snap.equippedSoftware : [];
+        const owned = Array.isArray(snap && snap.ownedSoftware) ? snap.ownedSoftware : [];
         const exts = new Set();
         const caps = new Set();
         for (const sw of equipped) {
@@ -40,9 +56,17 @@
                 }
             }
         }
+        // HACK targets, split like the loadout panel's capability list:
+        //   active  — server types an EQUIPPED HACK tool covers (ready now → green)
+        //   owned   — server types ANY owned/equipped HACK tool covers; ensureHack
+        //             can install an owned-not-equipped one on the fly (→ grey).
+        // owned ⊇ active by construction (equipped folded into owned).
+        const hackActive = hackTypesOf(equipped);
+        const hackOwned = hackTypesOf(equipped.concat(owned));
         return {
             decryptExtensions: [...exts],
             capabilities: [...caps],
+            hackServerTypes: { owned: [...hackOwned], active: [...hackActive] },
             canBoot: !!(snap && snap.resources && snap.resources.canBoot),
         };
     }
@@ -75,6 +99,7 @@
                     equippedSw: Array.isArray(snap.equippedSoftware) ? snap.equippedSoftware.length : 0,
                     caps: derived.capabilities,
                     exts: derived.decryptExtensions,
+                    hackTypes: derived.hackServerTypes,
                     canBoot: derived.canBoot,
                 });
             }));

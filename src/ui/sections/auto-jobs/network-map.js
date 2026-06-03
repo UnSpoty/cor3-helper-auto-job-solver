@@ -1,9 +1,10 @@
 // Auto Jobs — Local Network Map renderer.
 //
 //   - Exposes the attach API on `COR3.uiComponents.networkMap`.
-//   - No reads of AUTOJOBS_SETTINGS — Auto Jobs has no UI to drive market
-//     toggles or server-skip flags from here, so dimming for those states is
-//     dead weight. Map shows home / K/D / job counts only.
+//   - Shows home / K/D / job counts, plus per-server state from the Auto Jobs
+//     keys: dims market-off (AJ_MASTER_SWITCHES) + user-skipped/disabled
+//     (AJ_SERVER_OVERRIDES) tiles, and highlights not-accessible-but-hackable
+//     servers green/grey from the loadout's HACK capability (LOADOUT._derived).
 //   - Refresh button dispatches the `rescanNetworkMap` runtime message; the
 //     in-game NM is shared, so the rescan also refreshes the live game panel.
 
@@ -385,6 +386,27 @@
             const marketOff = !!(mslot && ctx.switches && ctx.switches.markets && ctx.switches.markets[mslot] === false);
             if (marketOff) g.classList.add('nm-market-off');
 
+            // Hack reachability highlight for NOT-accessible servers: green when
+            // an equipped HACK tool already covers the type (hack now), grey when
+            // only owned (the flow installs it on the fly via ensureHack), dim
+            // when we own no HACK software for it. Accessible servers untouched.
+            let nodeHackState = null;
+            if (!isHome && !s.isAccessible) {
+                nodeHackState = (root.COR3.ajEligibility && root.COR3.ajEligibility.hackState)
+                    ? root.COR3.ajEligibility.hackState(s.serverTypeName, ctx.hackDerived) : null;
+                if (nodeHackState === 'active' || nodeHackState === 'available') {
+                    g.classList.add(nodeHackState === 'active' ? 'nm-hack-active' : 'nm-hack-available');
+                    const bg = svgEl('g', { class: 'nm-hack-badge', transform: `translate(-4, ${NODE_H / 2 - 6})` });
+                    bg.appendChild(svgEl('circle', { cx: 6, cy: 6, r: 6, class: 'nm-hack-bg' }));
+                    const htx = svgEl('text', { x: 6, y: 8.6, 'text-anchor': 'middle', class: 'nm-hack-text' });
+                    htx.textContent = '⚡';
+                    bg.appendChild(htx);
+                    g.appendChild(bg);
+                } else {
+                    g.classList.add('nm-not-access');
+                }
+            }
+
             const title = svgEl('title');
             const parts = [s.name];
             if (marketOff)               parts.push(t('autojobs.tipMarketDisabled', { slot: mslot }));
@@ -394,6 +416,9 @@
             if (s.parentName)            parts.push(t('autojobs.tipFrom', { parent: s.parentName }));
             if (isActiveEndpoint)        parts.push(t('autojobs.tipCurrentEndpoint'));
             if (cls === 'kd')            parts.push(t('autojobs.tipKd'));
+            if (nodeHackState === 'active')         parts.push(t('autojobs.tipHackActive'));
+            else if (nodeHackState === 'available') parts.push(t('autojobs.tipHackAvailable'));
+            else if (nodeHackState === null && !isHome && !s.isAccessible) parts.push(t('autojobs.tipNotAccessible'));
             if (jobs > 0)                parts.push(t('autojobs.tipJobsAvail', { n: jobs }));
             if (ov && ov.skip)           parts.push(t('autojobs.tipSkipped'));
             else if (disabledCount > 0)  parts.push(t('autojobs.tipTypesDisabled', { n: disabledCount }));
@@ -725,7 +750,7 @@
         let firstRender = true;
 
         async function refresh() {
-            const [graph, home, dark, srm, usol, overrides, switches, queue] = await Promise.all([
+            const [graph, home, dark, srm, usol, overrides, switches, queue, loadout] = await Promise.all([
                 Store.local.getOne(SL.NM_GRAPH, null),
                 Store.local.getOne(SL.MARKET, null),
                 Store.local.getOne(SL.DARK_MARKET, null),
@@ -734,6 +759,7 @@
                 Store.local.getOne(SL.AJ_SERVER_OVERRIDES, {}),
                 Store.local.getOne(SL.AJ_MASTER_SWITCHES, {}),
                 Store.local.getOne(SL.AJ_JOB_QUEUE, null),
+                Store.local.getOne(SL.LOADOUT, null),
             ]);
 
             // Map each market server to its slot so we can dim it when its
@@ -766,6 +792,9 @@
                 overrides: overrides || {},
                 switches: switches || {},
                 marketSlotByName,
+                // HACK capability per server type (from the loadout snapshot) —
+                // lets us highlight a not-accessible-but-hackable server.
+                hackDerived: (loadout && loadout._derived && loadout._derived.hackServerTypes) || null,
             };
 
             // Index servers for the context menu (name → server object, so the
@@ -801,7 +830,7 @@
 
         const localUnsub = Store.local.onChanged((c) => {
             if (c[SL.NM_GRAPH] || c[SL.MARKET] || c[SL.DARK_MARKET] || c[SL.SRM_MARKET] || c[SL.USOL_MARKET]
-                || c[SL.AJ_SERVER_OVERRIDES] || c[SL.AJ_MASTER_SWITCHES] || c[SL.AJ_JOB_QUEUE]) refresh();
+                || c[SL.AJ_SERVER_OVERRIDES] || c[SL.AJ_MASTER_SWITCHES] || c[SL.AJ_JOB_QUEUE] || c[SL.LOADOUT]) refresh();
         });
 
         // Track whether Auto Jobs is running — Open SAI / Open Market are

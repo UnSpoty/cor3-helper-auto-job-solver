@@ -702,6 +702,17 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
 .aj-skip { background: rgba(254, 73, 73, 0.15); color: var(--os-color-danger); }
 .aj-skip-reason { color: var(--os-color-danger); margin-top: 3px; }
 
+/* Not-accessible-but-hackable WARN — the job is still eligible (the flow hacks
+   for access). Green when an EQUIPPED HACK tool covers the server type (hack
+   now), grey when only OWNED (ensureHack installs it on the fly). */
+.aj-job.is-warn-active    { border-color: rgba(74, 222, 128, 0.4); }
+.aj-job.is-warn-available { border-color: rgba(181, 184, 187, 0.35); }
+.aj-warn.aj-warn-active    { background: rgba(74, 222, 128, 0.15); color: var(--os-color-success); }
+.aj-warn.aj-warn-available { background: rgba(181, 184, 187, 0.15); color: var(--os-color-text-grey); }
+.aj-warn-reason { margin-top: 3px; }
+.aj-warn-reason.is-active    { color: var(--os-color-success); }
+.aj-warn-reason.is-available { color: var(--os-color-text-grey); }
+
 /* Live JOB_FLOW batch — banner + row highlight (AJ_PIPELINE_STATE.batch).
    The orchestrator runs every job of one server in a single batch; this shows
    it live: a pulsing banner, a soft outline on the batch rows, and a strong
@@ -1054,6 +1065,28 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
 .nm-state-skip .nm-name { text-decoration: line-through; opacity: 0.7; }
 .nm-state-off  .nm-card { stroke-dasharray: 3 3; }
 .nm-state-off  .nm-name { opacity: 0.55; }
+
+/* Hack reachability highlight — a NOT-accessible server we can still work by
+   hacking for access. Green when an EQUIPPED HACK tool covers the server type
+   (hack now), grey (dashed) when only OWNED (the flow installs it on the fly).
+   Non-hackable not-accessible servers are dimmed (informational only). */
+.nm-node.nm-hack-active .nm-card {
+    stroke: var(--os-color-success) !important;
+    stroke-width: 1.8 !important;
+    stroke-dasharray: none;
+}
+.nm-node.nm-hack-available .nm-card {
+    stroke: var(--os-color-text-grey) !important;
+    stroke-width: 1.6 !important;
+    stroke-dasharray: 4 3;
+}
+.nm-node.nm-not-access { opacity: 0.5; }
+.nm-hack-badge { pointer-events: none; }
+.nm-hack-text  { font-size: 7px; font-weight: 700; pointer-events: none; }
+.nm-node.nm-hack-active .nm-hack-bg      { fill: var(--os-color-success); stroke: rgba(0, 0, 0, 0.4); stroke-width: 0.5; }
+.nm-node.nm-hack-active .nm-hack-text    { fill: var(--os-color-text-black); }
+.nm-node.nm-hack-available .nm-hack-bg   { fill: rgba(181, 184, 187, 0.95); stroke: rgba(0, 0, 0, 0.4); stroke-width: 0.5; }
+.nm-node.nm-hack-available .nm-hack-text { fill: #1a1a1a; }
 
 /* ─── State-history timeline ─────────────────────────────────────────── */
 .aj-timeline-list {

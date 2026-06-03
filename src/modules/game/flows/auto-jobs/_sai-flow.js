@@ -9,12 +9,14 @@
 //
 //   • ensureAccess(serverId, serverType, serverName, say) — set.endpoint, then
 //     log in with a task_access grant (HEADLESS, no SAI window). If the server
-//     has no grant it HACKS: open the SAI terminal window, install HACK
-//     software (COR3.game.loadout.ensureHack), click the hack-tool row, let the
-//     standalone solver win, then log in with the freshly-minted grant. (The
-//     hack path is the ONLY part that needs the on-screen SAI window — it
-//     mirrors the bridge's saiAccess; the bridge IIFE itself is left
-//     untouched.)
+//     has no grant it HACKS — fully over WS: install HACK software
+//     (COR3.game.loadout.ensureHack), (re)connect with set.endpoint, then fire
+//     `sai.hack.start` (__cor3SaiHackStart). The server launches the minigame
+//     (minigames.start.minigame), the React app mounts it, the standalone solver
+//     wins, and we log in with the freshly-minted grant. No SAI terminal window
+//     / Login button / tile click — same server-driven minigame start that
+//     file_decryption uses with WS open.file. The minigame DOM is the only live
+//     surface (the solver plays it).
 //   • getTransit / getFiles / getLogs(serverId) — fire the __cor3SaiGet* WS
 //     helper, resolve its reply data off MSG.WS.SAI_* (no DOM scrape).
 //   • awaitAction(trigger) — fire a mutation (__cor3SaiTransitAdd/Remove,
@@ -102,9 +104,12 @@
     const SOLVER_STOP = [MSG.SOLVER.STOP_DECRYPT, MSG.SOLVER.STOP_ICE_WALL, MSG.SOLVER.STOP_SIMPLE_DECRYPT];
     const startSolvers = () => { for (const m of SOLVER_START) Bus.window.post(m, { owner: 'flow' }); };
     const stopSolvers = () => { for (const m of SOLVER_STOP) Bus.window.post(m, { owner: 'flow' }); };
-    function findHackToolRow(D, moduleName) {
-        const sect = document.querySelector('[data-onboarding-300-id="SaiHackTools"]') || document.querySelector('[data-sentry-source-file*="hack-tools"]');
-        return D.findClickableByText(sect, moduleName);
+    // Poll a predicate until true or the deadline (no desktop dependency — the
+    // WS hack path opens no window).
+    async function waitForCond(pred, timeoutMs) {
+        const dl = Date.now() + timeoutMs;
+        while (Date.now() < dl && !root.__cor3Abort) { if (pred()) return true; await sleep(150); }
+        return !!pred();
     }
     async function pollForGrant(serverId, timeoutMs) {
         const dl = Date.now() + timeoutMs;
@@ -125,16 +130,12 @@
     const RETRY = (reason) => ({ retryable: true, reason });
     const BUG = (reason) => ({ retryable: false, reason });
     async function hackForAccess(serverName, serverId, serverType, status, say) {
-        const D = (root.COR3.game || {}).desktop;
-        if (!D) { say('error', 'hack: COR3.game.desktop missing'); return RETRY('desktop-helper-missing'); }
-        if (!serverName) { say('warn', 'hack: no serverName — cannot locate the SAI tile'); return RETRY('no-serverName'); }
-        if (!(await D.openAppAndWait('NETWORK_MAP', 8000))) { say('warn', 'hack: Network Map did not open'); return RETRY('nm-did-not-open'); }
-        const tile = await D.waitFor(() => D.findServerTile(serverName), 8000);
-        if (!tile || !D.selectServerTile(serverName)) { say('warn', `hack: server tile "${serverName}" not found`); return RETRY('tile-not-found'); }
-        await sleep(500);
-        const loginBtn = await D.waitFor(() => D.findPanelButton({ onb: 'ServerInfoPanelLoginButton' }), 12000);
-        if (!loginBtn || !D.invokeReactClick(loginBtn)) { say('warn', 'hack: SAI/Login control not found'); return RETRY('login-control-not-found'); }
-        await sleep(700);
+        if (!serverId) { say('warn', 'hack: no serverId'); return RETRY('no-serverId'); }
+        if (typeof root.__cor3SaiHackStart !== 'function' || typeof root.__cor3SetEndpoint !== 'function') {
+            say('error', 'hack: SAI hack WS helpers missing'); return RETRY('hack-ws-helpers-missing');
+        }
+        // 1. Ensure a covering HACK tool is equipped — install owned software
+        //    (ensureHack swaps everything out to fit if needed) when none is.
         if (!(status.hackTools && status.hackTools.length)) {
             const LO = (root.COR3.game || {}).loadout;
             if (!LO || typeof LO.ensureHack !== 'function') { say('warn', 'hack: loadout API missing'); return RETRY('loadout-api-missing'); }
@@ -150,21 +151,28 @@
             status = await root.__cor3SaiGetLoginStatus(serverId);
             if (!status || !(status.hackTools && status.hackTools.length)) { say('warn', 'hack: tool still absent after install'); return RETRY('hacktool-absent-after-install'); }
         }
-        const tool = status.hackTools[0];
-        const toolEl = await D.waitFor(() => findHackToolRow(D, tool.moduleName), 8000);
-        if (!toolEl) { say('warn', `hack: tool "${tool.moduleName}" row not found`); return RETRY('hacktool-row-not-found'); }
+        // 2. CONNECT over WS (set.endpoint IS the Connect action). establishAccess
+        //    set it earlier, but ensureHack's equip churn may have taken seconds —
+        //    re-assert so hack.start lands while we're actually on the server.
+        if (root.__cor3Abort) return RETRY('aborted');
+        root.__cor3SetEndpoint(serverId);
+        await sleep(1200);
+        // 3. Launch the hack over WS — the server starts the minigame
+        //    (minigames.start.minigame), the React app mounts it, the standalone
+        //    solver wins. No SAI window / Login button / hack-tool click needed
+        //    (mirrors file_decryption's WS open.file).
         startSolvers();
         try {
-            const clickAt = Date.now();
-            if (!D.invokeReactClick(toolEl)) { say('error', 'hack: tool row has no onClick'); return RETRY('hacktool-no-onclick'); }
-            if (!(await D.waitFor(() => findMinigame(), 30000))) { say('warn', 'hack: minigame did not appear'); return RETRY('hack-minigame-no-show'); }
+            const startAt = Date.now();
+            if (!root.__cor3SaiHackStart(serverId)) { say('error', 'hack: hack.start send failed'); return RETRY('hack-start-send-failed'); }
+            if (!(await waitForCond(() => findMinigame(), 30000))) { say('warn', 'hack: minigame did not appear after hack.start'); return RETRY('hack-minigame-no-show'); }
             // Size the grant-poll to THIS minigame's own timer — but only if the
-            // interceptor captured it FRESH (after our click). __cor3LastMinigame
+            // interceptor captured it FRESH (after our hack.start). __cor3LastMinigame
             // is a shared global a prior minigame (e.g. the file_decryption that
             // _selectBatch runs first) may have left set, so an unguarded read
-            // could use a stale, too-short timer. Mirror the bridge's guard.
+            // could use a stale, too-short timer.
             const mg = root.__cor3LastMinigame;
-            const fresh = mg && mg.at >= clickAt - 1500 && mg.timerDurationMs;
+            const fresh = mg && mg.at >= startAt - 1500 && mg.timerDurationMs;
             if (!fresh) say('warn', 'hack: no fresh minigame timer — using 300s');
             // Cap below the orchestrator's FLOW_TIMEOUT_MS so it never aborts us
             // mid-poll (which would discard a still-winnable hack); a failed hack

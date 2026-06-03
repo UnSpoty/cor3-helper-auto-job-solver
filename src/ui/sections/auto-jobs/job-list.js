@@ -72,6 +72,11 @@
         const inProgress = !isBugged && !isFailed && job.status === 'TAKEN';
         const skipped = !isBugged && !isFailed && !inProgress && job.eligible === false;
         const pending = !isBugged && !isFailed && !inProgress && job.eligible == null;
+        // Not-accessible-but-hackable: eligible, but the flow must hack for access.
+        // Surfaced as a non-blocking WARN (green when an equipped HACK tool covers
+        // it, grey when only owned). Hidden when the job is hard-skipped.
+        const warned = !isBugged && !isFailed && !inProgress && !skipped && !!job.dataWarnReason;
+        const warnKind = job.hackState === 'active' ? 'active' : 'available';
         // Live-batch membership (from AJ_PIPELINE_STATE.batch): these TAKEN
         // jobs are being run together this cycle; one is dispatching right now.
         const inBatch = !!(batch && Array.isArray(batch.jobIds) && batch.jobIds.indexOf(job.id) !== -1);
@@ -79,6 +84,7 @@
 
         const row = el('div', 'aj-job'
             + (skipped ? ' is-skip' : '')
+            + (warned ? ' is-warn is-warn-' + warnKind : '')
             + (inProgress ? ' is-active' : '')
             + (inBatch ? ' is-batch' : '')
             + (isRunning ? ' is-running' : '')
@@ -149,6 +155,13 @@
         } else {
             head.appendChild(el('span', 'pill ok', t('autojobs.pillEligible')));
         }
+        // WARN badge (in ADDITION to the eligible/pending pill) — amber-green for
+        // an equipped tool, grey for an owned-only one.
+        if (warned) {
+            const w = el('span', 'pill aj-warn aj-warn-' + warnKind, t('autojobs.jobWarn'));
+            w.title = job.dataWarnReason;
+            head.appendChild(w);
+        }
         row.appendChild(head);
 
         // Server · CR + market now live in the head / section header, and the
@@ -158,6 +171,8 @@
             row.appendChild(el('div', 'aj-skip-reason xs', t('autojobs.buggedPrefix', { reason: bugInfo.reason })));
         } else if (skipped && job.skipReason) {
             row.appendChild(el('div', 'aj-skip-reason xs', t('autojobs.skipPrefix', { reason: job.skipReason })));
+        } else if (warned && job.dataWarnReason) {
+            row.appendChild(el('div', 'aj-warn-reason xs is-' + warnKind, t('autojobs.warnPrefix', { reason: job.dataWarnReason })));
         }
 
         // ⋯ Details panel — every field the job carries (type localised, the
