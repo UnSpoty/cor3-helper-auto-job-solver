@@ -56,8 +56,6 @@
             // ── filled by CHECK_SERVERS_ACCESABILITY ──
             // { [serverName]: { accessible, hasSaiAccess, onCooldown } }
             accessibility: null,
-            // { home:{reachable}, dark:{reachable}, srm:{reachable} }
-            marketReachability: null,
 
             // ── filled by UPDATE_MARKETS ──
             // [{ slot, reachable, refreshed, jobCount, takenCount, failedCount, marketId, reason }]
@@ -335,8 +333,8 @@
     };
 
     // MODULE:CHECK_SERVERS_ACCESABILITY — for each server, do we have access,
-    // SAI access, and is it on K/D cooldown. Also resolves which markets are
-    // reachable (a market is a server too).
+    // SAI access, and is it on K/D cooldown. Market reachability is NOT decided
+    // here: it is the OUTPUT of UPDATE_MARKETS' refresh probe (see below).
     const checkAccess = {
         id: AJ.NODE.CHECK_ACCESS,
         async run(packet, ctx) {
@@ -357,30 +355,21 @@
             }
             packet.accessibility = accessibility;
 
-            // Market reachability — single source for UPDATE_MARKETS. home is
-            // always reachable; dark/srm reachable unless the game flagged the
-            // path as unavailable (false). undefined === "not yet probed" =>
-            // still attempt (UPDATE_MARKETS' refresh will resolve it).
-            const reach = {};
-            for (const m of MARKET_SLOTS) {
-                if (!m.availableKey) { reach[m.slot] = { reachable: true }; continue; }
-                const avail = await ctx.store.local.getOne(m.availableKey, undefined);
-                reach[m.slot] = { reachable: avail !== false };
-            }
-            packet.marketReachability = reach;
-
             ctx.log.debug(`CHECK_ACCESS → ${accessible}/${packet.servers.length} accessible, ${onCooldown} on K/D`, {
                 accessible, onCooldown,
-                markets: reach,
             });
             return stamp(packet, this.id, { accessible, onCooldown });
         },
     };
 
-    // MODULE:UPDATE_MARKETS — refresh every reachable market, then collect the
-    // jobs the game returned. Unreachable markets are recorded with a reason
-    // and skipped (not refreshed) — that is the "don't update a market we
-    // can't reach" rule, made explicit on the packet.
+    // MODULE:UPDATE_MARKETS — refresh EVERY market, then collect the jobs the
+    // game returned. Reachability is the OUTPUT of the refresh probe, not a
+    // pre-gate: the remote markets' set.endpoint→get.jobs dance flips their
+    // AVAILABLE flag (true on a job frame, false on market-not-reachable /
+    // no-path). Gating the refresh on a previously-stored AVAILABLE flag made a
+    // single transient market-not-reachable stick forever — the flag only
+    // clears on a successful get.jobs, which we then never sent. Refresh every
+    // cycle and re-read the flag, so a transient failure self-heals next cycle.
     //
     // The market envelope is { marketId, jobs, recentJobs, … }: `jobs` is the
     // AVAILABLE board (acceptance candidates — they carry no status, being on
@@ -396,28 +385,33 @@
     const updateMarkets = {
         id: AJ.NODE.UPDATE_MARKETS,
         async run(packet, ctx) {
-            if (!packet.marketReachability) throw new Error('UPDATE_MARKETS: packet.marketReachability missing (CHECK_ACCESS must run first)');
-
             const timeout = AJ.LOOP.MARKET_REFRESH_TIMEOUT_MS;
             const markets = [];
             const rawJobs = [];
 
             for (const m of MARKET_SLOTS) {
-                const reachable = !!(packet.marketReachability[m.slot] && packet.marketReachability[m.slot].reachable);
-                if (!reachable) {
-                    markets.push({ slot: m.slot, reachable: false, refreshed: false, jobCount: 0, takenCount: 0, marketId: null, reason: 'market-not-reachable' });
-                    ctx.log.debug(`UPDATE_MARKETS · ${m.label}: unreachable — not updated`);
-                    continue;
-                }
-
                 const prevAt = await ctx.store.local.getOne(m.atKey, 0);
                 // Subscribe-then-post (inside awaitMarketUpdate) closes the race
                 // where a fast refresh reply landed before the listener attached.
+                // The atKey is bumped on BOTH a job frame and an unreachable
+                // error, so this resolves true either way; we read the AVAILABLE
+                // flag afterwards to learn which it was.
                 const refreshed = await awaitMarketUpdate(ctx.store, m.atKey, prevAt, timeout, () => ctx.bus.window.post(m.refresh, null));
                 if (!refreshed) {
-                    // Loud, not silent: the market was reachable but the
-                    // refreshed frame never arrived in time.
+                    // Loud, not silent: the refresh frame never arrived in time.
                     ctx.log.warn(`UPDATE_MARKETS · ${m.label}: refresh timed out after ${timeout}ms — using last-known board`);
+                }
+
+                // Reachability is the probe's OUTPUT. home has no availableKey
+                // (always reachable); remote markets flip AVAILABLE false on a
+                // market-not-reachable / no-path get.jobs error.
+                const reachable = m.availableKey
+                    ? (await ctx.store.local.getOne(m.availableKey, undefined)) !== false
+                    : true;
+                if (!reachable) {
+                    markets.push({ slot: m.slot, reachable: false, refreshed: false, jobCount: 0, takenCount: 0, marketId: null, reason: 'market-not-reachable' });
+                    ctx.log.debug(`UPDATE_MARKETS · ${m.label}: probed — no path (market-not-reachable)`);
+                    continue;
                 }
 
                 const envelope = await ctx.store.local.getOne(m.storageKey, null);
