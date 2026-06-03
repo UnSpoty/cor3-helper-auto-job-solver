@@ -251,13 +251,14 @@
         container.appendChild(el('div', 'section-title', t('overview.appearance')));
 
         const themeCard = el('div', 'card');
-        const currentTheme = (selectedTheme === 'amber-console') ? 'amber-console' : 'cor3';
+        const currentTheme = (selectedTheme === 'amber-console' || selectedTheme === 'neon') ? selectedTheme : 'cor3';
         themeCard.innerHTML = `
             <div class="card-row">
                 <span class="card-label">${escape(t('overview.theme'))}</span>
                 <select id="theme-select">
                     <option value="cor3" ${currentTheme === 'cor3' ? 'selected' : ''}>${escape(t('overview.themeCor3'))}</option>
                     <option value="amber-console" ${currentTheme === 'amber-console' ? 'selected' : ''}>${escape(t('overview.themeAmber'))}</option>
+                    <option value="neon" ${currentTheme === 'neon' ? 'selected' : ''}>${escape(t('overview.themeNeon'))}</option>
                 </select>
             </div>
         `;
@@ -535,10 +536,11 @@
                 Object.assign(item.style, { padding: '6px', width: '132px', textAlign: 'center' });
                 if (entry.pinned) item.style.outline = '2px solid #FF3333';
                 item.appendChild(renderIceWallShape(entry, (cell) => pickCell(key, cell)));
-                const meta = el('div', 'card-row');
-                Object.assign(meta.style, { justifyContent: 'space-between', alignItems: 'center', marginTop: '4px' });
+                const meta = el('div');
+                Object.assign(meta.style, { display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: '4px', marginTop: '4px' });
                 meta.appendChild(el('span', 'muted xs', t('overview.iceWallHits', { n: entry.hits || 0 })));
                 const pinBtn = el('button', 'btn small' + (entry.pinned ? ' btn-success' : ''), entry.pinned ? t('overview.iceWallPinned') : t('overview.iceWallPin'));
+                pinBtn.style.width = '100%';
                 pinBtn.title = entry.pinned
                     ? t('overview.iceWallPinTipOn')
                     : t('overview.iceWallPinTipOff');

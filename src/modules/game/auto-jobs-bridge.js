@@ -42,6 +42,14 @@
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
     if (!root.COR3 || !root.COR3.constants || !root.COR3.Bus) return;
+    // Idempotency guard — this is a plain MAIN-world IIFE (not a Registry
+    // Module with stop()/cleanup). A re-injection of the content script (ext
+    // reload without a tab refresh, etc.) would re-run the IIFE and stack a
+    // SECOND OPEN_SAI/OPEN_MARKET listener on top of the first — every action
+    // would then log + execute N times. Same pattern as the WS interceptor's
+    // __cor3WsInterceptorActive flag.
+    if (root.__cor3AjBridgeInstalled) return;
+    root.__cor3AjBridgeInstalled = true;
     const { Bus, dom, constants: C } = root.COR3;
     const AJ = C.MSG.AUTOJOBS;
     const MSG = C.MSG;

@@ -40,10 +40,12 @@
     // cor3-auto-Mission competitor. selectedTheme is one of:
     //   'cor3' (or undefined/null) — default; no class applied
     //   'amber-console'           — body.theme-amber-console
-    const THEME_CLASSES = ['theme-amber-console'];
+    //   'neon'                    — body.theme-neon
+    const THEME_CLASSES = ['theme-amber-console', 'theme-neon'];
     function applyTheme(name) {
         for (const cls of THEME_CLASSES) document.body.classList.remove(cls);
         if (name === 'amber-console') document.body.classList.add('theme-amber-console');
+        else if (name === 'neon') document.body.classList.add('theme-neon');
     }
     // Sync apply happens before tabs render — read storage and toggle the
     // class. We don't await this (boot proceeds in parallel); the worst

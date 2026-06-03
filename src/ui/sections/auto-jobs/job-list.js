@@ -88,6 +88,32 @@
         const head = el('div', 'aj-job-head');
         head.appendChild(el('span', 'job-name', job.name || t('autojobs.jobUnknown')));
 
+        // Server · CR moved up here as thin secondary text (was the duplicated
+        // second meta line). Built from whatever the job carries — file_decryption
+        // jobs have no server, so the server bit is simply omitted.
+        const locBits = [];
+        if (job.serverName) locBits.push(job.serverName);
+        if (Number.isFinite(job.rewardCredits)) locBits.push(t('autojobs.rewardCr', { n: job.rewardCredits }));
+        if (locBits.length) head.appendChild(el('span', 'aj-job-loc muted xs', locBits.join(' · ')));
+
+        // 🔍 Locate — highlight + centre this job's server on the Network Map.
+        // Only meaningful when the job is wired to a server.
+        if (job.serverName) {
+            const locate = el('button', 'aj-job-icon aj-locate', '🔍');
+            locate.title = t('autojobs.locateTip');
+            locate.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const nm = root.COR3.uiComponents && root.COR3.uiComponents.networkMap;
+                if (nm && typeof nm.focusServer === 'function') nm.focusServer(job.serverName);
+            });
+            head.appendChild(locate);
+        }
+
+        // ⋯ Details — toggle a panel listing every field the job carries.
+        const detailsBtn = el('button', 'aj-job-icon aj-details', '⋯');
+        detailsBtn.title = t('autojobs.detailsTip');
+        head.appendChild(detailsBtn);
+
         if (isBugged) {
             head.appendChild(el('span', 'pill aj-bugged', t('autojobs.pillBugged')));
             const unbug = el('button', 'aj-unbug', '✕');
@@ -125,19 +151,52 @@
         }
         row.appendChild(head);
 
-        // Market is now the section header, so it's omitted from the row meta.
-        const metaBits = [];
-        if (job.type) metaBits.push(jobTypeLabel(job.type));
-        metaBits.push(job.serverName || t('autojobs.noServer'));
-        if (Number.isFinite(job.rewardCredits)) metaBits.push(t('autojobs.rewardCr', { n: job.rewardCredits }));
-        row.appendChild(el('div', 'job-meta', metaBits.join(' · ')));
+        // Server · CR + market now live in the head / section header, and the
+        // job-type label duplicated the name, so the second meta line is gone.
 
         if (isBugged && bugInfo.reason) {
             row.appendChild(el('div', 'aj-skip-reason xs', t('autojobs.buggedPrefix', { reason: bugInfo.reason })));
         } else if (skipped && job.skipReason) {
             row.appendChild(el('div', 'aj-skip-reason xs', t('autojobs.skipPrefix', { reason: job.skipReason })));
         }
+
+        // ⋯ Details panel — every field the job carries (type localised, the
+        // rest raw), built lazily on first toggle. Skip-reason / node-name style
+        // values intentionally stay raw English (matches the debug bundle).
+        const details = el('div', 'aj-job-details collapsed');
+        details.appendChild(detailRow(t('autojobs.detailsTitle'), '', true));
+        details.appendChild(detailRow('type', jobTypeLabel(job.type) || '—'));
+        for (const key of Object.keys(job)) {
+            if (key === 'type') continue;
+            details.appendChild(detailRow(key, fmtVal(job[key])));
+        }
+        if (bugInfo && bugInfo.reason) details.appendChild(detailRow('buggedReason', String(bugInfo.reason)));
+        row.appendChild(details);
+        detailsBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const open = details.classList.toggle('collapsed') === false;
+            detailsBtn.classList.toggle('is-open', open);
+            detailsBtn.title = open ? t('autojobs.detailsHideTip') : t('autojobs.detailsTip');
+        });
+
         return row;
+    }
+
+    // Render one key/value line for the details panel. `heading` makes it a bold
+    // title row (no value column).
+    function detailRow(key, value, heading) {
+        const r = el('div', 'aj-detail' + (heading ? ' aj-detail-title' : ''));
+        r.appendChild(el('span', 'aj-detail-k', key));
+        if (!heading) r.appendChild(el('span', 'aj-detail-v', value));
+        return r;
+    }
+
+    // Stringify a job field for display: null/undefined → em-dash, objects →
+    // compact JSON, everything else → its String form.
+    function fmtVal(v) {
+        if (v === null || v === undefined) return '—';
+        if (typeof v === 'object') { try { return JSON.stringify(v); } catch (_) { return String(v); } }
+        return String(v);
     }
 
     // One market block: a clickable header (caret + name + status + count) and a

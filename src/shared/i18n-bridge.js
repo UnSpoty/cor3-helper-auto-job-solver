@@ -18,6 +18,13 @@
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
     if (!root.COR3 || !root.COR3.i18n) return;
+    // Idempotency guard — re-injecting this content script would stack a
+    // second LANG_MSG / storage.onChanged listener on top of the first
+    // (the handlers are no-ops on a same-language event, so it never spammed,
+    // but it still leaks listeners). Same pattern as the WS interceptor and
+    // the Auto Jobs bridge.
+    if (root.__cor3I18nBridgeInstalled) return;
+    root.__cor3I18nBridgeInstalled = true;
     const i18n = root.COR3.i18n;
     const Bus = root.COR3.Bus;
     const LANG_MSG = 'COR3_UI_LANGUAGE';

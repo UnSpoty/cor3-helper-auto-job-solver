@@ -587,6 +587,31 @@
             applySelection();
         }
 
+        // Centre the camera on a node and flash it — driven from the Job List's
+        // 🔍 locate button (via the module-level `focusServer` delegate below).
+        // The node group carries `transform: translate(tx, ty)` with the node's
+        // top-left in world coords; its centre is (tx + NODE_W/2, ty + NODE_H/2).
+        function focusServer(name) {
+            if (!name) return;
+            const node = camera.querySelector(`.nm-node[data-name="${(root.CSS && CSS.escape) ? CSS.escape(name) : name}"]`);
+            if (!node) return;
+            selectNode(name);
+            container.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            const m = /translate\(([-\d.]+),\s*([-\d.]+)\)/.exec(node.getAttribute('transform') || '');
+            if (m) {
+                const cx = parseFloat(m[1]) + NODE_W / 2;
+                const cy = parseFloat(m[2]) + NODE_H / 2;
+                const rect = svg.getBoundingClientRect();
+                panZoom.cam.x = rect.width / 2 - cx * panZoom.cam.zoom;
+                panZoom.cam.y = rect.height / 2 - cy * panZoom.cam.zoom;
+                panZoom.applyCamera();
+            }
+            // Restart the flash animation (remove → reflow → add).
+            node.classList.remove('nm-flash');
+            void node.getBoundingClientRect();
+            node.classList.add('nm-flash');
+        }
+
         async function openMenu(serverName, clientX, clientY) {
             closeMenu();
             menuX = clientX; menuY = clientY;
@@ -793,8 +818,13 @@
 
         refresh();
 
+        // Register as the live instance so sibling components (the Job List's
+        // 🔍 locate button) can drive focusServer without holding a reference.
+        activeInstance = { focusServer };
+
         return {
             destroy() {
+                if (activeInstance && activeInstance.focusServer === focusServer) activeInstance = null;
                 closeMenu();
                 if (typeof localUnsub === 'function') localUnsub();
                 if (typeof syncUnsub === 'function') syncUnsub();
@@ -803,10 +833,18 @@
             },
             refresh,
             fit,
+            focusServer,
         };
     }
 
+    // The currently-attached Network Map (one per popup). Sibling components
+    // reach it through the static focusServer delegate below.
+    let activeInstance = null;
+
     root.COR3 = root.COR3 || {};
     root.COR3.uiComponents = root.COR3.uiComponents || {};
-    root.COR3.uiComponents.networkMap = { attach };
+    root.COR3.uiComponents.networkMap = {
+        attach,
+        focusServer(name) { if (activeInstance) activeInstance.focusServer(name); },
+    };
 })();

@@ -657,8 +657,33 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
 }
 .aj-job.is-skip { opacity: 0.6; border-color: rgba(254, 73, 73, 0.4); }
 .aj-job-head { display: flex; align-items: center; gap: 6px; }
-.aj-job .job-name { font-weight: 600; color: var(--os-color-text); flex: 1; }
+.aj-job .job-name { font-weight: 600; color: var(--os-color-text); flex: 1; min-width: 0; }
 .aj-job .job-meta { color: var(--os-color-text-tertiary); font-size: 11px; margin-top: 2px; }
+/* Server · CR — thin secondary text on the head line. */
+.aj-job-loc { color: var(--os-color-text-tertiary); font-weight: 400; white-space: nowrap; }
+/* 🔍 locate + ⋯ details — small icon buttons on the head line. */
+.aj-job-icon {
+    flex: none; padding: 0 5px; line-height: 16px;
+    font: inherit; font-size: 11px; color: var(--os-color-text-tertiary);
+    background: transparent; border: 1px solid var(--os-color-border);
+    border-radius: 4px; cursor: pointer;
+}
+.aj-job-icon:hover { color: var(--os-color-text); border-color: var(--os-color-primary-hex); }
+.aj-job-icon.is-open { color: var(--os-color-primary-hex); border-color: var(--os-color-primary-hex); }
+/* ⋯ details panel — a key/value dump of the job, collapsed by default. */
+.aj-job-details {
+    margin-top: 6px; padding-top: 6px;
+    border-top: 1px solid var(--os-color-border-secondary);
+    display: flex; flex-direction: column; gap: 2px;
+}
+.aj-job-details.collapsed { display: none; }
+.aj-detail { display: flex; gap: 8px; font-size: 11px; line-height: 1.4; }
+.aj-detail-k { flex: none; min-width: 96px; color: var(--os-color-text-tertiary); }
+.aj-detail-v { color: var(--os-color-text-secondary); word-break: break-word; }
+.aj-detail-title .aj-detail-k {
+    color: var(--os-color-text); font-weight: 600; min-width: 0;
+    text-transform: uppercase; letter-spacing: 0.4px; font-size: 10px;
+}
 .aj-skip { background: rgba(254, 73, 73, 0.15); color: var(--os-color-danger); }
 .aj-skip-reason { color: var(--os-color-danger); margin-top: 3px; }
 
@@ -975,6 +1000,14 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
 .nm-node.is-selected .nm-corner-bl { transform: translate(-4px, 4px); }
 .nm-node.is-selected .nm-corner-br { transform: translate(4px, 4px); }
 
+/* Locate flash — the Job List's 🔍 button centres + selects the node and adds
+   this class for one pulse so the eye lands on it. */
+.nm-node.nm-flash .nm-card { animation: nm-locate-flash 1.1s ease-out 2; }
+@keyframes nm-locate-flash {
+    0%   { stroke: var(--os-color-primary-hex); stroke-width: 3.5; stroke-opacity: 1; }
+    100% { stroke-width: 2; }
+}
+
 /* K/D corner badge */
 .nm-kd-bg       { fill: var(--os-color-danger); }
 .nm-kd-text     { font-size: 6.5px; fill: #fff; font-weight: 700; text-anchor: middle; letter-spacing: 0.4px; pointer-events: none; }
@@ -1136,6 +1169,158 @@ body.theme-amber-console .pill {
 body.theme-amber-console .aj-state {
     background: transparent !important;
     border: 1px solid currentColor;
+}
+
+/* ─── Neon theme (opt-in) ─────────────────────────────────────────────
+   Cyberpunk synthwave palette: near-black indigo backgrounds with vivid
+   cyan / magenta neon accents. Toggled by
+   chrome.storage.sync.selectedTheme === 'neon' — shell.js sets
+   <body class="theme-neon">. Like amber, it just redefines the --os-*
+   variables, then layers glow accents (text-shadow / box-shadow) so the
+   accents read as lit tubes. Reverts by removing the body class. */
+body.theme-neon {
+    /* Backgrounds — deep indigo, almost black. */
+    --os-color-bg:           #07060f;
+    --os-color-bg-secondary: #0a0816;
+    --os-color-bg-tertiary:  #1a1535;
+    --os-color-bg-card:      #100c22;
+    --os-color-bg-footer:    #0a0816;
+    --os-color-input-bg:     #0d0a1c;
+    --os-color-surface:      #14102b;
+
+    /* Text — cool white with cyan tint. */
+    --os-color-text:                 #e8f6ff;
+    --os-color-text-secondary:       #8a86c7;
+    --os-color-text-tertiary:        #6661a0;
+    --os-color-text-grey:            #9b97d6;
+    --os-color-text-grey-tertiary:   #6661a0;
+    --os-color-text-primary-light:   #7df9ff;
+    --os-color-text-primary-muted:   #5a8fb0;
+    --os-color-text-dim:             rgba(138, 134, 199, 0.6);
+    --os-color-text-black:           #07060f;
+
+    /* Borders & dividers — muted violet. */
+    --os-color-border:           #3a2f6e;
+    --os-color-border-secondary: #2a2350;
+    --os-color-divider:          #221c44;
+
+    /* Accents — primary = neon cyan, magenta as the secondary pop. */
+    --os-color-primary:         rgba(0, 240, 255, 1);
+    --os-color-primary-hex:     #00f0ff;
+    --os-color-primary-rgb:     0, 240, 255;
+    --os-color-primary-hover:   rgba(255, 45, 212, 1);
+    --os-color-primary-surface: #14102b;
+    --os-color-hover-bg:        rgba(0, 240, 255, 0.10);
+
+    --os-color-secondary:    rgba(255, 45, 212, 1);   /* neon magenta */
+    --os-color-success:      rgba(57, 255, 120, 1);   /* neon green */
+    --os-color-warning:      rgba(255, 230, 0, 1);    /* neon yellow */
+    --os-color-danger:       rgba(255, 30, 111, 1);   /* hot pink */
+    --os-color-accent-green: rgba(57, 255, 120, 1);
+
+    background: var(--os-color-bg);
+    color: var(--os-color-text);
+}
+
+/* Neon glow on lit elements — title, primary buttons, primary-tinted pills. */
+body.theme-neon .app-title { text-shadow: 0 0 8px rgba(0, 240, 255, 0.55); }
+body.theme-neon .btn-primary,
+body.theme-neon .aj-state {
+    box-shadow: 0 0 8px rgba(0, 240, 255, 0.35);
+}
+body.theme-neon .btn-primary:hover {
+    box-shadow: 0 0 12px rgba(255, 45, 212, 0.5);
+}
+/* Cards get a faint violet edge-glow so panels separate on the dark bg. */
+body.theme-neon .card,
+body.theme-neon .job-card,
+body.theme-neon .merc-card,
+body.theme-neon .module-card {
+    box-shadow: 0 0 0 1px rgba(58, 47, 110, 0.4), 0 0 14px rgba(0, 240, 255, 0.04);
+}
+
+/* ── Neon effects (pure CSS — no markup / JS) ─────────────────────────
+   Two full-popup overlay layers + a few keyframe accents. Both overlays
+   are position:fixed, pointer-events:none, so clicks fall straight
+   through and they never reflow the layout. */
+
+/* ::before — ambient corner glow (cyan top-left, magenta bottom-right),
+   a soft synthwave haze. z-index:-1 paints it above the body's canvas
+   background but below every in-flow element, so it needs no cooperation
+   from the content's own stacking — purely theme-local. */
+body.theme-neon::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: -1;
+    background:
+        radial-gradient(120% 90% at 0% 0%,   rgba(0, 240, 255, 0.10), transparent 55%),
+        radial-gradient(120% 90% at 100% 100%, rgba(255, 45, 212, 0.10), transparent 55%);
+}
+
+/* ::after — CRT scanlines. screen blend lightens only the lit pixels so
+   the lines read as a phosphor sweep, plus a very slow vertical drift. */
+body.theme-neon::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 9999;
+    background-image: repeating-linear-gradient(
+        to bottom,
+        rgba(0, 240, 255, 0.035) 0,
+        rgba(0, 240, 255, 0.035) 1px,
+        transparent 1px,
+        transparent 3px
+    );
+    mix-blend-mode: screen;
+    animation: neon-scan 8s linear infinite;
+}
+@keyframes neon-scan {
+    from { background-position: 0 0; }
+    to   { background-position: 0 3px; }
+}
+
+/* Title flicker — a faint, irregular pulse like an unstable neon tube. */
+body.theme-neon .app-title { animation: neon-flicker 4.5s infinite; }
+@keyframes neon-flicker {
+    0%, 100%   { text-shadow: 0 0 8px rgba(0, 240, 255, 0.55); opacity: 1; }
+    47%        { text-shadow: 0 0 8px rgba(0, 240, 255, 0.55); opacity: 1; }
+    48%        { text-shadow: 0 0 2px rgba(0, 240, 255, 0.25); opacity: 0.82; }
+    49%        { text-shadow: 0 0 8px rgba(0, 240, 255, 0.55); opacity: 1; }
+    72%        { text-shadow: 0 0 8px rgba(0, 240, 255, 0.55); opacity: 1; }
+    73%        { text-shadow: 0 0 3px rgba(0, 240, 255, 0.3);  opacity: 0.88; }
+    74%        { text-shadow: 0 0 12px rgba(0, 240, 255, 0.7); opacity: 1; }
+}
+
+/* Primary button breathes its glow so the main CTA draws the eye. */
+body.theme-neon .btn-primary { animation: neon-pulse 2.6s ease-in-out infinite; }
+@keyframes neon-pulse {
+    0%, 100% { box-shadow: 0 0 6px  rgba(0, 240, 255, 0.30); }
+    50%      { box-shadow: 0 0 14px rgba(0, 240, 255, 0.55); }
+}
+
+/* Links and focused inputs light up in cyan. */
+body.theme-neon a { text-shadow: 0 0 6px rgba(0, 240, 255, 0.45); }
+body.theme-neon input:focus,
+body.theme-neon select:focus,
+body.theme-neon textarea:focus {
+    outline: none;
+    box-shadow: 0 0 0 1px var(--os-color-primary), 0 0 10px rgba(0, 240, 255, 0.4);
+}
+
+/* Active tab gets a glow. */
+body.theme-neon .tab.active {
+    text-shadow: 0 0 8px rgba(0, 240, 255, 0.5);
+}
+
+/* Respect users who ask for less motion — keep the static glow, drop the
+   animation (overlays stay; they don't move). */
+@media (prefers-reduced-motion: reduce) {
+    body.theme-neon::after,
+    body.theme-neon .app-title,
+    body.theme-neon .btn-primary { animation: none; }
 }
 
 /* ── Auto Jobs — Master Switches ─────────────────────────────────── */
