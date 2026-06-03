@@ -660,19 +660,22 @@
     //   noise     — dim every revealed board cell whose glyph isn't in
     //               the target sequence. Pure UX: shows the user which
     //               cells the matcher has ruled out as irrelevant.
-    //   rejected  — red marker on anchors that were committed-and-clicked
-    //               but didn't advance the counter (false positives).
-    //               Persists for the rest of the round so the user can
-    //               see what the solver tried and discarded.
+    //   rejected  — DESATURATED GREY (never red) marker on the cells the
+    //               solver clicked that did NOT advance the counter (the
+    //               per-target `badClicks` set). Persists for the rest of the
+    //               round so the user sees what was tried and discarded; grey
+    //               keeps it visually distinct from the red click target.
     //   candidate — the currently-leading match (yellow dashed when
     //               tentative, orange when confident-and-about-to-click)
     //               plus the red click target cell.
     //
     // Each layer keeps a `dataset.cor3Key` of its current contents and
-    // skips redraws when the key is unchanged. That matters because we
-    // attach this overlay inside the wall subtree the MutationObserver
-    // is watching: an unconditional clear+redraw would retrigger the
-    // observer in an 80ms loop.
+    // skips the diff entirely when the key is unchanged; when it DOES change,
+    // syncLayer touches ONLY the cells that differ (no clear-all). Both matter
+    // because the overlay lives in the wall subtree the MutationObserver
+    // watches: an unconditional clear+redraw — or a full redraw on every ~1s
+    // reveal — would retrigger the observer in an 80ms loop and (on the
+    // dozens-of-cell noise layer) flash the whole board.
 
     const OVERLAY_ID = 'cor3-icewall-overlay';
     const HUD_ID = 'cor3-icewall-hud';
@@ -682,9 +685,17 @@
     function ensureOverlayLayers() {
         const wall = document.querySelector(SEL.WALL);
         if (!wall) return null;
+        // Attach the overlay as a DIRECT child of the WallBoard <svg> (a trailing
+        // sibling of the render <g>), NOT inside `wall > g` among the per-cell
+        // <g>s. React re-renders that cell group on every ~1s reveal / hover /
+        // timer tick and inserts cell nodes there; an injected sibling sitting in
+        // that churn is what made the board flicker. `wall`'s own child list is
+        // just [renderG] and stays stable, and our node has no React fiber, so a
+        // trailing overlay here is left untouched by the reconciler.
+        const renderG = wall.querySelector(':scope > g');
+        if (!renderG) return null;
         let overlay = wall.querySelector('#' + OVERLAY_ID);
         if (!overlay) {
-            const renderG = wall.querySelector(':scope > g') || wall;
             const ns = 'http://www.w3.org/2000/svg';
             overlay = document.createElementNS(ns, 'g');
             overlay.setAttribute('id', OVERLAY_ID);
@@ -694,8 +705,14 @@
                 g.setAttribute('data-cor3-layer', subId);
                 overlay.appendChild(g);
             }
-            renderG.appendChild(overlay);
+            wall.appendChild(overlay);
         }
+        // Keep the overlay in renderG's coordinate space so our col*COL_PX /
+        // row*ROW_PX paths still land exactly on the board cells even though we're
+        // attached one level up. Idempotent: only writes when the transform drifts.
+        const t = renderG.getAttribute('transform');
+        if (t == null) overlay.removeAttribute('transform');
+        else if (overlay.getAttribute('transform') !== t) overlay.setAttribute('transform', t);
         return overlay;
     }
 
@@ -721,21 +738,44 @@
         if (hud) hud.remove();
     }
 
-    function drawCellPath(layer, col, row, mirror, attrs) {
+    /**
+     * Diff-update a layer's <path> children to EXACTLY `cells`, reusing the
+     * existing path for a cell (keyed by col,row,mirror via data-cor3-cell) and
+     * writing only the attributes that actually changed. Replaces the old
+     * clear-all + redraw-all, which on the noise layer (dozens of cells) rebuilt
+     * the whole layer on every ~1s reveal — a full-board un-dim/re-dim flash that
+     * read as "the UI flickers". `makeAttrs(cell)` returns the attribute bag; a
+     * null/undefined value removes that attribute.
+     */
+    function syncLayer(layer, cells, makeAttrs) {
+        if (!layer) return;
         const ns = 'http://www.w3.org/2000/svg';
-        const px = col * COL_PX;
-        const py = row * ROW_PX;
-        const path = document.createElementNS(ns, 'path');
-        const transform = mirror
-            ? `translate(${px}, ${py}) scale(1, -1)`
-            : `translate(${px}, ${py})`;
-        path.setAttribute('transform', transform);
-        path.setAttribute('d', TRI_PATH);
-        for (const k in attrs) {
-            const v = attrs[k];
-            if (v !== null && v !== undefined) path.setAttribute(k, v);
+        const want = new Map();
+        for (const c of cells) want.set(`${c.col},${c.row},${c.mirror ? 1 : 0}`, c);
+        for (const el of [...layer.children]) {
+            if (!want.has(el.getAttribute('data-cor3-cell'))) layer.removeChild(el);
         }
-        layer.appendChild(path);
+        const have = new Map();
+        for (const el of layer.children) have.set(el.getAttribute('data-cor3-cell'), el);
+        for (const [key, cell] of want) {
+            let path = have.get(key);
+            if (!path) {
+                path = document.createElementNS(ns, 'path');
+                path.setAttribute('data-cor3-cell', key);
+                path.setAttribute('d', TRI_PATH);
+                const px = cell.col * COL_PX, py = cell.row * ROW_PX;
+                path.setAttribute('transform', cell.mirror ? `translate(${px}, ${py}) scale(1, -1)` : `translate(${px}, ${py})`);
+                layer.appendChild(path);
+            }
+            const attrs = makeAttrs(cell);
+            for (const a in attrs) {
+                const v = attrs[a];
+                const nv = (v === null || v === undefined) ? null : String(v);
+                if (path.getAttribute(a) === nv) continue;
+                if (nv === null) path.removeAttribute(a);
+                else path.setAttribute(a, nv);
+            }
+        }
     }
 
     /**
@@ -751,7 +791,6 @@
             .join('|');
         const key = `${confident ? 1 : 0}::${cellsKey}`;
         if (layer.dataset.cor3Key === key) return;
-        clearLayerContent(layer);
         layer.dataset.cor3Key = key;
 
         const contourColor = confident ? '#FFB857' : '#FFE066';
@@ -760,16 +799,14 @@
         const clickColor = '#FF3333';
         const clickFill = confident ? '0.70' : '0.55';
 
-        for (const c of candidate.cells) {
-            drawCellPath(layer, c.col, c.row, c.mirror, {
-                fill: c.isClick ? clickColor : contourColor,
-                'fill-opacity': c.isClick ? clickFill : contourFill,
-                stroke: c.isClick ? '#FFFFFF' : contourColor,
-                'stroke-width': '3',
-                'stroke-linejoin': 'round',
-                'stroke-dasharray': (dash && !c.isClick) ? dash : null,
-            });
-        }
+        syncLayer(layer, candidate.cells, (c) => ({
+            fill: c.isClick ? clickColor : contourColor,
+            'fill-opacity': c.isClick ? clickFill : contourFill,
+            stroke: c.isClick ? '#FFFFFF' : contourColor,
+            'stroke-width': '3',
+            'stroke-linejoin': 'round',
+            'stroke-dasharray': (dash && !c.isClick) ? dash : null,
+        }));
     }
 
     /**
@@ -806,48 +843,47 @@
         }
         const key = noiseCells.map((b) => `${b.col},${b.row}`).sort().join('|');
         if (layer.dataset.cor3Key === key) return;
-        clearLayerContent(layer);
         layer.dataset.cor3Key = key;
 
-        for (const b of noiseCells) {
-            drawCellPath(layer, b.col, b.row, b.mirror, {
-                fill: '#000000',
-                'fill-opacity': '0.45',
-                stroke: '#404040',
-                'stroke-width': '1',
-            });
-        }
+        syncLayer(layer, noiseCells, () => ({
+            fill: '#000000',
+            'fill-opacity': '0.45',
+            stroke: '#404040',
+            'stroke-width': '1',
+        }));
     }
 
     /**
-     * Mark anchors that were committed but failed to advance the counter
-     * — i.e. positions the solver tried and ruled out. Persists for the
-     * remainder of the round; cleared at round end via clearOverlay().
+     * Mark the board cells the solver actually CLICKED-and-failed for the current
+     * target (the per-target `badClicks` set) — positions it tried and ruled out.
+     *
+     * Styled DESATURATED GREY (never red) and dashed: red is reserved exclusively
+     * for the click target in drawCandidateOverlay, so a "tried & discarded" mark
+     * can never be misread as "where we click" (the user-reported confusion). And
+     * `badClicks` persists for the whole target (reset only when the counter
+     * advances), unlike the volatile `excludeKeys` which clears on every reveal —
+     * driving this off badClicks stops the marker blinking on/off each second.
      */
-    function drawRejectedOverlay(excludeKeys) {
+    function drawRejectedOverlay(badClicks) {
         const layer = getLayer('rejected');
         if (!layer) return;
-        const key = [...excludeKeys].sort().join('|');
+        const key = [...badClicks].sort().join('|');
         if (layer.dataset.cor3Key === key) return;
-        clearLayerContent(layer);
         layer.dataset.cor3Key = key;
-        if (excludeKeys.size === 0) return;
 
         const byKey = new Map();
-        for (const b of readBoardCells()) byKey.set(`${b.col},${b.row}`, b);
+        for (const b of readBoardCells()) byKey.set(`${b.col},${b.row},${b.mirror ? 1 : 0}`, b);
+        const cells = [];
+        for (const ek of badClicks) { const c = byKey.get(ek); if (c) cells.push(c); }
 
-        for (const ek of excludeKeys) {
-            const cell = byKey.get(ek);
-            if (!cell) continue;
-            drawCellPath(layer, cell.col, cell.row, cell.mirror, {
-                fill: '#FF1A1A',
-                'fill-opacity': '0.45',
-                stroke: '#FF1A1A',
-                'stroke-width': '3',
-                'stroke-dasharray': '4,3',
-                'stroke-linejoin': 'round',
-            });
-        }
+        syncLayer(layer, cells, () => ({
+            fill: '#5A6470',
+            'fill-opacity': '0.40',
+            stroke: '#9AA7B4',
+            'stroke-width': '2.5',
+            'stroke-dasharray': '4,3',
+            'stroke-linejoin': 'round',
+        }));
     }
 
     /**
@@ -968,7 +1004,7 @@
      *   • positive: 0 candidates BUT elimination narrows to 1 → commit
      *   • otherwise wait
      */
-    function waitForCandidate(excludeKeys, timeoutMs, onTentative) {
+    function waitForCandidate(excludeKeys, badClicks, timeoutMs, onTentative) {
         return new Promise((resolve) => {
             let done = false;
             let observer = null;
@@ -1000,7 +1036,7 @@
                 // Always-on UX overlays — both memoize internally so they
                 // don't retrigger the MutationObserver when state is stable.
                 drawNoiseOverlay();
-                drawRejectedOverlay(excludeKeys);
+                drawRejectedOverlay(badClicks);
 
                 let { candidates, total, revealedTotal, anchorHits } = findShapeCandidates(excludeKeys);
                 if (candidates.length === 0 && excludeKeys.size > 0) {
@@ -1196,7 +1232,7 @@
 
             const remaining = Math.max(2000, ROUND_MAX_MS - (Date.now() - roundStart));
             const result = await waitForCandidate(
-                excludeKeys, remaining,
+                excludeKeys, badClicks, remaining,
                 (tentative) => drawCandidateOverlay(tentative, false),
             );
 
@@ -1316,7 +1352,7 @@
             mod.warn(`no cell of shape at (${best.col},${best.row}) advanced (${clickCells.length} tried) — excluding & re-searching (${attempt + 1}/${MAX_RETRIES})`);
             drawHud(`NO ADVANCE @(${best.col},${best.row}) · tried ${clickCells.length} cell(s) · target ${best.total}c rm ${best.realMatch} — excluding (${attempt + 1}/${MAX_RETRIES})`);
             excludeKeys.add(`${best.col},${best.row}`);
-            drawRejectedOverlay(excludeKeys);
+            drawRejectedOverlay(badClicks);
         }
         mod.warn(`exhausted ${MAX_RETRIES} retries on this round`);
         clearOverlay();
