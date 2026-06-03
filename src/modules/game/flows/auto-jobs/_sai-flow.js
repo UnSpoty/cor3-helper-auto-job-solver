@@ -11,12 +11,13 @@
 //     log in with a task_access grant (HEADLESS, no SAI window). If the server
 //     has no grant it HACKS — fully over WS: install HACK software
 //     (COR3.game.loadout.ensureHack), (re)connect with set.endpoint, then fire
-//     `sai.hack.start` (__cor3SaiHackStart). The server launches the minigame
-//     (minigames.start.minigame), the React app mounts it, the standalone solver
-//     wins, and we log in with the freshly-minted grant. No SAI terminal window
-//     / Login button / tile click — same server-driven minigame start that
-//     file_decryption uses with WS open.file. The minigame DOM is the only live
-//     surface (the solver plays it).
+//     `sai.hack.start` (__cor3SaiHackStart). The server resolves it EITHER by
+//     auto-hacking instantly (reply {autoHacked:true}, NO minigame) OR by
+//     launching a minigame (minigames.start.minigame) the React app mounts and
+//     the standalone solver wins. Both mint a sourceType:"hack" grant; we then
+//     log in with it. No SAI terminal window / Login button / tile click — same
+//     server-driven start that file_decryption uses with WS open.file. When a
+//     minigame mounts its DOM is the only live surface (the solver plays it).
 //   • getTransit / getFiles / getLogs(serverId) — fire the __cor3SaiGet* WS
 //     helper, resolve its reply data off MSG.WS.SAI_* (no DOM scrape).
 //   • awaitAction(trigger) — fire a mutation (__cor3SaiTransitAdd/Remove,
@@ -157,27 +158,43 @@
         if (root.__cor3Abort) return RETRY('aborted');
         root.__cor3SetEndpoint(serverId);
         await sleep(1200);
-        // 3. Launch the hack over WS — the server starts the minigame
-        //    (minigames.start.minigame), the React app mounts it, the standalone
-        //    solver wins. No SAI window / Login button / hack-tool click needed
-        //    (mirrors file_decryption's WS open.file).
+        // 3. Launch the hack over WS. It resolves one of TWO ways, and BOTH end
+        //    in a fresh activeAccess grant (sourceType:"hack") that establishAccess
+        //    then logs in with via login.with-access:
+        //      • AUTO-HACK — the server completes the hack instantly with NO
+        //        minigame (sai.hack.start replies {autoHacked:true}); the grant
+        //        lands within a second or two. Verified live on a low-defence
+        //        server (CEDRT public).
+        //      • MINIGAME — the server starts a minigame (minigames.start.minigame),
+        //        the React app mounts it, the standalone solver wins, THEN the
+        //        grant lands. (Mirrors file_decryption's WS open.file.)
+        //    So we must NOT gate purely on the minigame appearing: give it a short
+        //    window to mount, and if it doesn't, poll for the grant (which catches
+        //    the auto-hack). No SAI window / Login button / hack-tool click needed.
         startSolvers();
         try {
             const startAt = Date.now();
             if (!root.__cor3SaiHackStart(serverId)) { say('error', 'hack: hack.start send failed'); return RETRY('hack-start-send-failed'); }
-            if (!(await waitForCond(() => findMinigame(), 30000))) { say('warn', 'hack: minigame did not appear after hack.start'); return RETRY('hack-minigame-no-show'); }
-            // Size the grant-poll to THIS minigame's own timer — but only if the
-            // interceptor captured it FRESH (after our hack.start). __cor3LastMinigame
-            // is a shared global a prior minigame (e.g. the file_decryption that
-            // _selectBatch runs first) may have left set, so an unguarded read
-            // could use a stale, too-short timer.
+            // Cap any grant-poll below the orchestrator's FLOW_TIMEOUT_MS so it never
+            // aborts us mid-poll (which would discard a still-winnable hack).
+            const cap = Math.max(60000, C.AJ.LOOP.FLOW_TIMEOUT_MS - 60000);
+            const sawMinigame = await waitForCond(() => findMinigame(), 10000);
+            if (!sawMinigame) {
+                // No minigame mounted → auto-hack (grant already issued) or a no-op
+                // send. A short grant poll tells them apart without a dead 30s wait.
+                const grant = await pollForGrant(serverId, Math.min(15000, cap));
+                if (grant) { say('info', 'hack: auto-hacked (no minigame) — access granted'); return { grant }; }
+                say('warn', 'hack: no minigame and no grant after hack.start');
+                return RETRY('hack-no-minigame-no-grant');
+            }
+            // Minigame mounted → size the grant-poll to THIS minigame's own timer,
+            // but only if the interceptor captured it FRESH (after our hack.start).
+            // __cor3LastMinigame is a shared global a prior minigame (e.g. the
+            // file_decryption that _selectBatch runs first) may have left set, so an
+            // unguarded read could use a stale, too-short timer.
             const mg = root.__cor3LastMinigame;
             const fresh = mg && mg.at >= startAt - 1500 && mg.timerDurationMs;
             if (!fresh) say('warn', 'hack: no fresh minigame timer — using 300s');
-            // Cap below the orchestrator's FLOW_TIMEOUT_MS so it never aborts us
-            // mid-poll (which would discard a still-winnable hack); a failed hack
-            // just fails ~a minute sooner and retries next cycle.
-            const cap = Math.max(60000, C.AJ.LOOP.FLOW_TIMEOUT_MS - 60000);
             const pollMs = Math.min((fresh ? mg.timerDurationMs : 300000) + 15000, cap);
             const grant = await pollForGrant(serverId, pollMs);
             return grant ? { grant } : RETRY('hack-no-grant-after-solve');

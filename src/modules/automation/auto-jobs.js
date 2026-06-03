@@ -179,10 +179,27 @@
             // Initial pull so the pipeline + popup have a graph without the
             // user opening the in-game Network Map panel first.
             Bus.window.post(C.MSG.GAME.REQUEST_NM_MAP, null);
+
+            // ── Loadout snapshot plumbing ─────────────────────────────────────
+            // CHECK_ACCESS / CHECK_CONDITION read LOADOUT._derived.hackServerTypes
+            // (the not-accessible-but-hackable eligibility) and the popup draws the
+            // ⚡ badges from it. The `loadout` data module persists + derives that
+            // on MSG.WS.LOADOUT, but that only fires when something REQUESTS
+            // loadout/get.options. Mid-run it stays fresh on its own (a flow's
+            // ensureHack/ensureDecrypt equip pushes a new snapshot), so the only
+            // gap is the COLD START: a fresh session would keep a stale snapshot
+            // (no hackServerTypes) and hard-skip every not-accessible job until the
+            // user opened a Loadout panel. Pull it ourselves over WS — headless,
+            // mirrors the NM_GRAPH pull above, no UI.
+            Bus.window.post(C.MSG.GAME.REQUEST_LOADOUT, null);
+
             // Long-timer refresh — only while the loop is idle, so we never
             // race a connect() the running pipeline is driving on the WS.
             this._nmRefreshTimer = setInterval(() => {
-                if (!this._running) Bus.window.post(C.MSG.GAME.REQUEST_NM_MAP, null);
+                if (!this._running) {
+                    Bus.window.post(C.MSG.GAME.REQUEST_NM_MAP, null);
+                    Bus.window.post(C.MSG.GAME.REQUEST_LOADOUT, null);
+                }
             }, NM_GRAPH_REFRESH_INTERVAL_MS);
 
             const settings = await Store.sync.getOne(SS.AUTOJOBS_SETTINGS, { enabled: false });
