@@ -219,6 +219,19 @@
         if (!wall) return [];
         const cells = [];
         for (const g of wall.querySelectorAll(':scope > g > g')) {
+            // Our own overlay (drawn INSIDE the WallBoard, appended as a trailing
+            // sibling of the render <g>) ALSO matches `wall > g > g` — its layer
+            // groups (noise / rejected / candidate) would otherwise be read as
+            // phantom board cells: parseGridPos picks up the layer's first overlay
+            // <path>'s translate, cellState falls through to 'revealed', and
+            // glyphSignature returns '' (no #76C1D1 glyph path). Since the overlay
+            // is appended LAST, that empty-sig phantom OVERWRITES the real cell at
+            // the same coord in makeBoardMap — so a target cell sitting under a
+            // greyed (rejected) / noise / candidate overlay path reads as empty-sig
+            // → sig mismatch → the correct shape can no longer be matched (the
+            // user-reported "a greyed sequence cell breaks pattern finding"). Skip
+            // anything inside the overlay so the board read stays pure.
+            if (g.closest('#' + OVERLAY_ID)) continue;
             const pos = parseGridPos(g.children[0]?.getAttribute('transform'));
             if (!pos) continue;
             cells.push({
@@ -620,7 +633,7 @@
         const target = document.querySelector(SEL.TARGET);
         const wall = document.querySelector(SEL.WALL);
         const tCells = target ? [...target.querySelectorAll(':scope > g')].map((g) => Object.assign(parse(g, g.getAttribute('transform')), { raw: g.getAttribute('transform') })) : [];
-        const bCells = wall ? [...wall.querySelectorAll(':scope > g > g')].map((g) => parse(g, g.children[0] && g.children[0].getAttribute('transform'))) : [];
+        const bCells = wall ? [...wall.querySelectorAll(':scope > g > g')].filter((g) => !g.closest('#' + OVERLAY_ID)).map((g) => parse(g, g.children[0] && g.children[0].getAttribute('transform'))) : [];
         console.log(`[ICE WALL GEOM] COL_PX=${COL_PX} ROW_PX=${ROW_PX} · TARGET ${tCells.length} cells:`);
         for (let i = 0; i < tCells.length; i++) {
             const c = tCells[i];
