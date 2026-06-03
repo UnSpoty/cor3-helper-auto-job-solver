@@ -390,8 +390,12 @@
             // an equipped HACK tool already covers the type (hack now), grey when
             // only owned (the flow installs it on the fly via ensureHack), dim
             // when we own no HACK software for it. Accessible servers untouched.
+            // K/D servers are ALSO untouched: a server in maintenance can't be
+            // connected to at all this cycle, so it CAN'T be hacked now — K/D
+            // dominates (mirrors the pipeline's jobServerReachable, which returns
+            // false on cooldown). Its K/D badge already marks the block.
             let nodeHackState = null;
-            if (!isHome && !s.isAccessible) {
+            if (!isHome && !s.isAccessible && cls !== 'kd') {
                 nodeHackState = (root.COR3.ajEligibility && root.COR3.ajEligibility.hackState)
                     ? root.COR3.ajEligibility.hackState(s.serverTypeName, ctx.hackDerived) : null;
                 if (nodeHackState === 'active' || nodeHackState === 'available') {
@@ -418,7 +422,7 @@
             if (cls === 'kd')            parts.push(t('autojobs.tipKd'));
             if (nodeHackState === 'active')         parts.push(t('autojobs.tipHackActive'));
             else if (nodeHackState === 'available') parts.push(t('autojobs.tipHackAvailable'));
-            else if (nodeHackState === null && !isHome && !s.isAccessible) parts.push(t('autojobs.tipNotAccessible'));
+            else if (nodeHackState === null && !isHome && !s.isAccessible && cls !== 'kd') parts.push(t('autojobs.tipNotAccessible'));
             if (jobs > 0)                parts.push(t('autojobs.tipJobsAvail', { n: jobs }));
             if (ov && ov.skip)           parts.push(t('autojobs.tipSkipped'));
             else if (disabledCount > 0)  parts.push(t('autojobs.tipTypesDisabled', { n: disabledCount }));
@@ -655,16 +659,22 @@
             // serverTypeName (e.g. "CEDRT private").
             const serverId = (server && server.id) || null;
             const serverType = (server && server.serverTypeName) || null;
-            const gameBtn = (label, action, arg, argId, argType) => {
+            const gameBtn = (label, action, arg, argId, argType, blockedTitle) => {
                 const b = htmlEl('button', 'nm-ctx-item', label);
-                b.disabled = v2Enabled;
+                const blocked = v2Enabled || !!blockedTitle;
+                b.disabled = blocked;
                 if (v2Enabled) b.title = t('autojobs.ctxDisabledRunning');
-                b.addEventListener('click', () => { if (v2Enabled) return; sendGameAction(action, arg, argId, argType); closeMenu(); });
+                else if (blockedTitle) b.title = blockedTitle;
+                b.addEventListener('click', () => { if (blocked) return; sendGameAction(action, arg, argId, argType); closeMenu(); });
                 menu.appendChild(b);
             };
-            // HOME has no SAI terminal — only offer Open Market there.
-            if (!isHome) gameBtn(t('autojobs.openSai'), C.MSG.AUTOJOBS.OPEN_SAI_ACTION, serverName, serverId, serverType);
-            if (isMarket) gameBtn(t('autojobs.openMarket'), C.MSG.AUTOJOBS.OPEN_MARKET_ACTION, isHome ? null : serverName, isHome ? null : serverId, null);
+            // HOME has no SAI terminal — only offer Open Market there. A server on
+            // K/D can't be connected to (set.endpoint won't land while it's in
+            // maintenance), so Open SAI is BLOCKED there — only the connect-less
+            // Open Market stays available. Mirrors the pipeline's K/D gate.
+            const onCooldown = !!(server && server.isInMaintenance);
+            if (!isHome) gameBtn(t('autojobs.openSai'), C.MSG.AUTOJOBS.OPEN_SAI_ACTION, serverName, serverId, serverType, onCooldown ? t('autojobs.ctxKdBlocked') : null);
+            if (isMarket) gameBtn(t('autojobs.openMarket'), C.MSG.AUTOJOBS.OPEN_MARKET_ACTION, isHome ? null : serverName, isHome ? null : serverId, null, null);
 
             menu.appendChild(htmlEl('div', 'nm-ctx-divider'));
 
