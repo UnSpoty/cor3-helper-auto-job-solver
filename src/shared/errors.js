@@ -6,8 +6,10 @@
     root.COR3 = root.COR3 || {};
     if (root.COR3.errors) return;
 
-    const KEY = 'cor3_errors';
-    const MAX = 200;
+    // constants always loads before errors.js (manifest + popup.html order).
+    const C = root.COR3.constants;
+    const KEY = C.STORAGE_LOCAL.ERRORS;
+    const MAX = C.LIMITS.ERRORS_RING;
 
     function describe(error) {
         if (!error) return { message: 'unknown', stack: undefined };

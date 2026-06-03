@@ -175,15 +175,6 @@
         logUi(msg);
     }
 
-    function findEnabledButtonByText(textRegex, scope = document) {
-        const buttons = scope.querySelectorAll('button');
-        for (const b of buttons) {
-            if (b.disabled) continue;
-            if (textRegex.test((b.textContent || '').trim())) return b;
-        }
-        return null;
-    }
-
     async function ensureGameCenterOpen(mod) {
         if (document.querySelector('[data-sentry-component="GameCenterApplication"]')) return true;
         const tab = findGameCenterTab();

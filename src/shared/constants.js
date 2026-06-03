@@ -336,13 +336,6 @@
         DAILY_HACK_LOG: 'dailyHackLog',
         DAILY_HACK_LOG_AT: 'dailyHackLogUpdatedAt',
 
-        // Popup UI: persistent collapsed/expanded state for collapsible
-        // sections. Shape: { [sectionKey]: boolean } where true=open. Keys
-        // are short stable strings (e.g. 'aj.sources', 'aj.jobTypes',
-        // 'aj.timeline'). Anything not present falls back to the section's
-        // hard-coded default in the renderer.
-        UI_COLLAPSE: 'uiCollapse',
-
         // Centralized logger ring buffer.
         // Shape: { [moduleId]: [{ ts, level, msg, ctx }, ...] }
         LOGS: 'cor3_logs',
@@ -389,9 +382,6 @@
         DISABLE_SYSTEM_MESSAGES: 'disableSystemMessages',
         DISABLE_BACKGROUND: 'disableBackground',
         DISABLE_NETWORK_FOG: 'disableNetworkFog',
-
-        // Pinned timers
-        PINNED_TIMERS: 'pinnedTimers',
 
         // Per-module enable/log state.
         // Shape: { [moduleId]: { enabled: boolean, logsEnabled: boolean } }

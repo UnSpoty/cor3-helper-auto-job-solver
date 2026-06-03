@@ -410,7 +410,6 @@
             }
             // Main pill anchors at rightOffset; panel above it.
             const PILL_W = 220;
-            const AUTO_W = (auto ? auto.getBoundingClientRect().width : 60) || 60;
             if (pill)  { pill.style.right  = rightOffset + 'px';  pill.style.bottom  = bottomOffset + 'px'; }
             if (panel) { panel.style.right = rightOffset + 'px';  panel.style.bottom = (bottomOffset + 34) + 'px'; }
             // Auto-pill sits just to the LEFT of the main pill, sharing the same bottom.
@@ -953,7 +952,6 @@
             if (!wrap) return;
             const t = document.createElement('div');
             t.className = 'cor3-lp-toast ' + (severity || 'ok');
-            const sev = severity || 'ok';
             const id = ++this._toastSeq;
             t.dataset.id = String(id);
             const titleEsc = escapeHtml(title);

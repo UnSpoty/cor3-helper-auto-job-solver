@@ -9,7 +9,7 @@
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
     if (!root.COR3 || !root.COR3.constants) return;
-    const { Store, Logger, constants: C } = root.COR3;
+    const { Store, constants: C } = root.COR3;
 
     const RELEVANT_MODULE_PATTERN = /^(auto-jobs|flow-.+)$/;
 

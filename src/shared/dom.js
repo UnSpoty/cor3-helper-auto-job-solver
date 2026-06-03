@@ -65,15 +65,6 @@
         return true;
     }
 
-    function dblClickEl(el) {
-        if (!el) return false;
-        clickEl(el);
-        clickEl(el);
-        const opts = { bubbles: true, cancelable: true, view: window };
-        el.dispatchEvent(new MouseEvent('dblclick', opts));
-        return true;
-    }
-
     /**
      * Set the value of a React-controlled input/textarea so the React state
      * updates correctly. Plain `el.value = x` does NOT trigger React's onChange.
@@ -92,73 +83,11 @@
         return true;
     }
 
-    /**
-     * Find an element whose textContent contains `text` (trimmed, case-insensitive).
-     * Optionally constrained to a CSS selector.
-     */
-    function findByText(text, selector = '*', root = document) {
-        const needle = String(text).trim().toLowerCase();
-        const candidates = root.querySelectorAll(selector);
-        for (const el of candidates) {
-            const t = (el.textContent || '').trim().toLowerCase();
-            if (t === needle) return el;
-        }
-        return null;
-    }
-
-    function findContainsText(text, selector = '*', root = document) {
-        const needle = String(text).trim().toLowerCase();
-        const candidates = root.querySelectorAll(selector);
-        for (const el of candidates) {
-            const t = (el.textContent || '').trim().toLowerCase();
-            if (t.includes(needle)) return el;
-        }
-        return null;
-    }
-
-    /**
-     * Re-query helper for React virtual scroll containers that may be
-     * replaced after each interaction. Returns latest container or null.
-     */
-    function requery(selector, root = document) {
-        return root.querySelector(selector);
-    }
-
-    /**
-     * Scroll element into view if needed (smooth=false to keep it instant).
-     */
-    function scrollIntoView(el) {
-        if (!el || typeof el.scrollIntoView !== 'function') return;
-        try { el.scrollIntoView({ block: 'center', inline: 'nearest' }); }
-        catch (_) { /* old browsers */ }
-    }
-
-    /**
-     * Run `fn`, retrying up to `attempts` times with `delay` ms between, until
-     * it returns a truthy value or all attempts fail. Useful for flaky React DOM.
-     */
-    async function retry(fn, { attempts = 3, delay = 250 } = {}) {
-        for (let i = 0; i < attempts; i++) {
-            try {
-                const v = await fn();
-                if (v) return v;
-            } catch (_) { /* swallow, retry */ }
-            if (i < attempts - 1) await sleep(delay);
-        }
-        return null;
-    }
-
     root.COR3.dom = {
         sleep,
         waitForEl,
         waitFor,
         clickEl,
-        dblClickEl,
         setReactInputValue,
-        findByText,
-        findContainsText,
-        requery,
-        scrollIntoView,
-        retry,
     };
 })();
