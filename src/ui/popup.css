@@ -1266,45 +1266,58 @@ body.theme-neon {
     --os-color-danger:       rgba(255, 30, 111, 1);   /* hot pink */
     --os-color-accent-green: rgba(57, 255, 120, 1);
 
-    background: var(--os-color-bg);
-    color: var(--os-color-text);
-}
+    /* Primary neon tube — reused by the focus ring / switch / icon glow. */
+    --neon-cyan: #00f0ff;
 
-/* Neon glow on lit elements — title, primary buttons, primary-tinted pills. */
-body.theme-neon .app-title { text-shadow: 0 0 8px rgba(0, 240, 255, 0.55); }
-body.theme-neon .btn-primary,
-body.theme-neon .aj-state {
-    box-shadow: 0 0 8px rgba(0, 240, 255, 0.35);
-}
-body.theme-neon .btn-primary:hover {
-    box-shadow: 0 0 12px rgba(255, 45, 212, 0.5);
-}
-/* Cards get a faint violet edge-glow so panels separate on the dark bg. */
-body.theme-neon .card,
-body.theme-neon .job-card,
-body.theme-neon .merc-card,
-body.theme-neon .module-card {
-    box-shadow: 0 0 0 1px rgba(58, 47, 110, 0.4), 0 0 14px rgba(0, 240, 255, 0.04);
+    /* Firefox scrollbar — cyan thumb on a near-black track. */
+    scrollbar-color: rgba(0, 240, 255, 0.55) rgba(7, 6, 15, 0.6);
+
+    color: var(--os-color-text);
+
+    /* Layered, viewport-fixed canvas: a centre-weighted vignette over
+       three corner auroras (cyan / violet / magenta) over a deep indigo
+       base. background-attachment: fixed pins it to the popup viewport so
+       it stays put while the content scrolls. */
+    background:
+        radial-gradient(135% 130% at 50% 42%, transparent 48%, rgba(0, 0, 0, 0.55) 100%),
+        radial-gradient(120% 100% at 0% 0%,     rgba(0, 240, 255, 0.13), transparent 55%),
+        radial-gradient(120% 100% at 100% 0%,   rgba(177, 77, 255, 0.11), transparent 55%),
+        radial-gradient(130% 100% at 100% 100%, rgba(255, 45, 212, 0.13), transparent 55%),
+        linear-gradient(180deg, #0a0816 0%, #07060f 55%, #050409 100%);
+    background-attachment: fixed;
 }
 
 /* ── Neon effects (pure CSS — no markup / JS) ─────────────────────────
-   Two full-popup overlay layers + a few keyframe accents. Both overlays
-   are position:fixed, pointer-events:none, so clicks fall straight
-   through and they never reflow the layout. */
+   Everything below is scoped under body.theme-neon, so the whole look
+   reverts the instant the body class is removed. Three painted layers —
+   the viewport-fixed canvas (the variable block above), a receding grid
+   floor on ::before, and CRT scanlines on ::after — plus per-element glow
+   and a handful of keyframe accents. Both overlays are position:fixed,
+   pointer-events:none, so clicks fall straight through and nothing ever
+   reflows. */
 
-/* ::before — ambient corner glow (cyan top-left, magenta bottom-right),
-   a soft synthwave haze. z-index:-1 paints it above the body's canvas
-   background but below every in-flow element, so it needs no cooperation
-   from the content's own stacking — purely theme-local. */
+/* ::before — cyber grid. A faint cyan graph-paper that peeks through the
+   gaps between panels, radially masked so it's strongest up top and melts
+   into the corner auroras, and slowly drifting downward like data on a
+   wire. z-index:-1 keeps it above the canvas but below every in-flow
+   element, so it needs no cooperation from the content's own stacking. */
 body.theme-neon::before {
     content: "";
     position: fixed;
     inset: 0;
     pointer-events: none;
     z-index: -1;
-    background:
-        radial-gradient(120% 90% at 0% 0%,   rgba(0, 240, 255, 0.10), transparent 55%),
-        radial-gradient(120% 90% at 100% 100%, rgba(255, 45, 212, 0.10), transparent 55%);
+    background-image:
+        repeating-linear-gradient(to right,  rgba(0, 240, 255, 0.10) 0 1px, transparent 1px 38px),
+        repeating-linear-gradient(to bottom, rgba(0, 240, 255, 0.10) 0 1px, transparent 1px 38px);
+    background-size: 38px 38px;
+    -webkit-mask-image: radial-gradient(135% 115% at 50% 18%, #000 28%, transparent 92%);
+            mask-image: radial-gradient(135% 115% at 50% 18%, #000 28%, transparent 92%);
+    animation: neon-grid 7s linear infinite;
+}
+@keyframes neon-grid {
+    from { background-position: 0 0; }
+    to   { background-position: 0 38px; }
 }
 
 /* ::after — CRT scanlines. screen blend lightens only the lit pixels so
@@ -1317,8 +1330,8 @@ body.theme-neon::after {
     z-index: 9999;
     background-image: repeating-linear-gradient(
         to bottom,
-        rgba(0, 240, 255, 0.035) 0,
-        rgba(0, 240, 255, 0.035) 1px,
+        rgba(0, 240, 255, 0.04) 0,
+        rgba(0, 240, 255, 0.04) 1px,
         transparent 1px,
         transparent 3px
     );
@@ -1330,45 +1343,228 @@ body.theme-neon::after {
     to   { background-position: 0 3px; }
 }
 
-/* Title flicker — a faint, irregular pulse like an unstable neon tube. */
-body.theme-neon .app-title { animation: neon-flicker 4.5s infinite; }
-@keyframes neon-flicker {
-    0%, 100%   { text-shadow: 0 0 8px rgba(0, 240, 255, 0.55); opacity: 1; }
-    47%        { text-shadow: 0 0 8px rgba(0, 240, 255, 0.55); opacity: 1; }
-    48%        { text-shadow: 0 0 2px rgba(0, 240, 255, 0.25); opacity: 0.82; }
-    49%        { text-shadow: 0 0 8px rgba(0, 240, 255, 0.55); opacity: 1; }
-    72%        { text-shadow: 0 0 8px rgba(0, 240, 255, 0.55); opacity: 1; }
-    73%        { text-shadow: 0 0 3px rgba(0, 240, 255, 0.3);  opacity: 0.88; }
-    74%        { text-shadow: 0 0 12px rgba(0, 240, 255, 0.7); opacity: 1; }
+/* ── Header — frosted bar with a cyan underglow. ─────────────────── */
+body.theme-neon .app-header {
+    background: linear-gradient(180deg, rgba(13, 10, 28, 0.92), rgba(7, 6, 15, 0.82));
+    border-bottom-color: rgba(0, 240, 255, 0.18);
+    box-shadow: 0 1px 0 rgba(0, 240, 255, 0.14), 0 6px 22px rgba(0, 0, 0, 0.55);
+    -webkit-backdrop-filter: blur(5px);
+            backdrop-filter: blur(5px);
 }
 
-/* Primary button breathes its glow so the main CTA draws the eye. */
+/* App title — an animated cyan→magenta gradient clipped to the glyphs,
+   wrapped in a drop-shadow halo, with the classic unstable-tube flicker.
+   The build/commit children opt out of the clip so they stay readable. */
+body.theme-neon .app-title {
+    background: linear-gradient(90deg, #00f0ff, #ff2dd4, #7df9ff, #00f0ff);
+    background-size: 300% 100%;
+    -webkit-background-clip: text;
+            background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+    filter: drop-shadow(0 0 7px rgba(0, 240, 255, 0.55));
+    animation: neon-title 6s linear infinite, neon-flicker 5.5s infinite;
+}
+body.theme-neon .app-title small,
+body.theme-neon .app-build,
+body.theme-neon .app-build-sep {
+    -webkit-text-fill-color: var(--os-color-text-secondary);
+    color: var(--os-color-text-secondary);
+}
+@keyframes neon-title {
+    from { background-position:   0% 0; }
+    to   { background-position: 300% 0; }
+}
+@keyframes neon-flicker {
+    0%, 46%, 49%, 72%, 100% { opacity: 1;    filter: drop-shadow(0 0 7px  rgba(0, 240, 255, 0.55)); }
+    48%                     { opacity: 0.78; filter: drop-shadow(0 0 2px  rgba(0, 240, 255, 0.25)); }
+    73%                     { opacity: 0.88; filter: drop-shadow(0 0 3px  rgba(0, 240, 255, 0.30)); }
+    74%                     { opacity: 1;    filter: drop-shadow(0 0 13px rgba(0, 240, 255, 0.75)); }
+}
+
+/* ── Tabs — glow on hover, lit underline when active. ────────────── */
+body.theme-neon .tabs { box-shadow: inset 0 -1px 0 rgba(0, 240, 255, 0.12); }
+body.theme-neon .tab { transition: color 0.15s, text-shadow 0.15s; }
+body.theme-neon .tab:hover { text-shadow: 0 0 8px rgba(0, 240, 255, 0.4); }
+body.theme-neon .tab.active {
+    text-shadow: 0 0 10px rgba(0, 240, 255, 0.6);
+    box-shadow: 0 3px 10px -4px rgba(0, 240, 255, 0.85);
+}
+
+/* ── Cards & panels — violet edge + soft drop, lit cyan on hover. ── */
+body.theme-neon .card,
+body.theme-neon .job-card,
+body.theme-neon .merc-card,
+body.theme-neon .module-card,
+body.theme-neon .alarm-row,
+body.theme-neon .network-map-wrap,
+body.theme-neon .nm-ctx-menu,
+body.theme-neon .log-stream {
+    background: linear-gradient(155deg, rgba(20, 16, 43, 0.90), rgba(13, 10, 28, 0.94));
+    border-color: rgba(0, 240, 255, 0.12);
+    box-shadow:
+        0 0 0 1px rgba(58, 47, 110, 0.35),
+        0 6px 22px rgba(0, 0, 0, 0.50),
+        inset 0 1px 0 rgba(123, 249, 255, 0.05);
+    transition: box-shadow 0.2s, border-color 0.2s, transform 0.2s;
+}
+body.theme-neon .job-card:hover,
+body.theme-neon .merc-card:hover,
+body.theme-neon .module-card:hover,
+body.theme-neon .aj-job:hover {
+    border-color: rgba(0, 240, 255, 0.40);
+    box-shadow:
+        0 0 0 1px rgba(0, 240, 255, 0.30),
+        0 10px 28px rgba(0, 240, 255, 0.10),
+        0 0 26px rgba(255, 45, 212, 0.07);
+    transform: translateY(-1px);
+}
+
+/* ── Buttons — gradient fill, glow, lift on hover, press inset. ───── */
+body.theme-neon .btn {
+    background: linear-gradient(180deg, rgba(0, 240, 255, 0.16), rgba(0, 240, 255, 0.05));
+    border-color: rgba(0, 240, 255, 0.55);
+    box-shadow: 0 0 0 1px rgba(0, 240, 255, 0.10), 0 0 10px rgba(0, 240, 255, 0.12);
+    transition: background 0.18s, box-shadow 0.18s, transform 0.12s, color 0.18s, border-color 0.18s;
+}
+body.theme-neon .btn:hover {
+    background: linear-gradient(180deg, rgba(0, 240, 255, 0.26), rgba(0, 240, 255, 0.08));
+    box-shadow: 0 0 0 1px rgba(0, 240, 255, 0.30), 0 0 18px rgba(0, 240, 255, 0.40);
+    transform: translateY(-1px);
+}
+body.theme-neon .btn:active {
+    transform: translateY(0);
+    box-shadow: inset 0 0 12px rgba(0, 240, 255, 0.35);
+}
+body.theme-neon .btn:disabled {
+    box-shadow: none;
+    transform: none;
+}
+
+/* START (success) is the main CTA — green tube that breathes. */
+body.theme-neon .btn.btn-success {
+    color: #c6ffe0;
+    border-color: rgba(57, 255, 120, 0.65);
+    background: linear-gradient(180deg, rgba(57, 255, 120, 0.18), rgba(57, 255, 120, 0.05));
+    box-shadow: 0 0 0 1px rgba(57, 255, 120, 0.14), 0 0 16px rgba(57, 255, 120, 0.32);
+    animation: neon-pulse-green 2.4s ease-in-out infinite;
+}
+body.theme-neon .btn.btn-success:hover {
+    box-shadow: 0 0 0 1px rgba(57, 255, 120, 0.45), 0 0 24px rgba(57, 255, 120, 0.55);
+}
+@keyframes neon-pulse-green {
+    0%, 100% { box-shadow: 0 0 0 1px rgba(57, 255, 120, 0.14), 0 0 12px rgba(57, 255, 120, 0.28); }
+    50%      { box-shadow: 0 0 0 1px rgba(57, 255, 120, 0.30), 0 0 22px rgba(57, 255, 120, 0.55); }
+}
+
+/* STOP (danger) — hot-pink tube, steady glow. */
+body.theme-neon .btn.btn-danger {
+    color: #ffd0e2;
+    border-color: rgba(255, 45, 140, 0.65);
+    background: linear-gradient(180deg, rgba(255, 45, 140, 0.18), rgba(255, 45, 140, 0.05));
+    box-shadow: 0 0 0 1px rgba(255, 45, 140, 0.14), 0 0 16px rgba(255, 45, 140, 0.32);
+}
+body.theme-neon .btn.btn-danger:hover {
+    box-shadow: 0 0 0 1px rgba(255, 45, 140, 0.45), 0 0 24px rgba(255, 45, 140, 0.55);
+}
+
+/* Legacy primary CTA (if present) — cyan tube that breathes. */
 body.theme-neon .btn-primary { animation: neon-pulse 2.6s ease-in-out infinite; }
 @keyframes neon-pulse {
     0%, 100% { box-shadow: 0 0 6px  rgba(0, 240, 255, 0.30); }
-    50%      { box-shadow: 0 0 14px rgba(0, 240, 255, 0.55); }
+    50%      { box-shadow: 0 0 16px rgba(0, 240, 255, 0.55); }
 }
 
-/* Links and focused inputs light up in cyan. */
-body.theme-neon a { text-shadow: 0 0 6px rgba(0, 240, 255, 0.45); }
+/* Header icon buttons + map HUD buttons. */
+body.theme-neon .icon-btn:hover {
+    color: var(--neon-cyan);
+    text-shadow: 0 0 8px rgba(0, 240, 255, 0.5);
+    border-color: rgba(0, 240, 255, 0.40);
+}
+body.theme-neon .nm-hud-btn { box-shadow: 0 0 8px rgba(0, 240, 255, 0.12); }
+body.theme-neon .nm-hud-btn:hover { box-shadow: 0 0 14px rgba(0, 240, 255, 0.40); }
+
+/* ── Toggle switch — lit cyan knob when on. ──────────────────────── */
+body.theme-neon .switch input:checked + .switch-slider {
+    background: linear-gradient(90deg, rgba(0, 240, 255, 0.30), rgba(255, 45, 212, 0.30));
+    box-shadow: inset 0 0 8px rgba(0, 240, 255, 0.30), 0 0 8px rgba(0, 240, 255, 0.25);
+}
+body.theme-neon .switch input:checked + .switch-slider::before {
+    background: var(--neon-cyan);
+    box-shadow: 0 0 8px rgba(0, 240, 255, 0.85), 0 0 14px rgba(0, 240, 255, 0.5);
+}
+
+/* ── Inputs — deeper field, focus lights a cyan ring. ────────────── */
+body.theme-neon input[type="text"],
+body.theme-neon input[type="number"],
+body.theme-neon select,
+body.theme-neon textarea {
+    background: linear-gradient(180deg, rgba(13, 10, 28, 0.9), rgba(10, 8, 22, 0.9));
+    border-color: rgba(0, 240, 255, 0.18);
+    transition: box-shadow 0.15s, border-color 0.15s;
+}
 body.theme-neon input:focus,
 body.theme-neon select:focus,
 body.theme-neon textarea:focus {
     outline: none;
-    box-shadow: 0 0 0 1px var(--os-color-primary), 0 0 10px rgba(0, 240, 255, 0.4);
+    border-color: var(--neon-cyan);
+    box-shadow: 0 0 0 1px var(--neon-cyan), 0 0 12px rgba(0, 240, 255, 0.45);
+}
+body.theme-neon input[type="range"] { accent-color: var(--neon-cyan); }
+
+/* ── Pills & state chips — each glows in its own colour. ─────────── */
+body.theme-neon .pill,
+body.theme-neon .aj-state { text-shadow: 0 0 6px currentColor; }
+body.theme-neon .pill.ok     { box-shadow: 0 0 10px rgba(57, 255, 120, 0.25); }
+body.theme-neon .pill.active { box-shadow: 0 0 10px rgba(0, 240, 255, 0.28); }
+body.theme-neon .pill.warn   { box-shadow: 0 0 10px rgba(255, 230, 0, 0.22); }
+body.theme-neon .pill.err    { box-shadow: 0 0 10px rgba(255, 45, 140, 0.28); }
+body.theme-neon .aj-state    { box-shadow: 0 0 10px rgba(0, 240, 255, 0.18); }
+
+/* ── Scrollbar (WebKit) — cyan→magenta thumb. ────────────────────── */
+body.theme-neon ::-webkit-scrollbar-track {
+    background: rgba(7, 6, 15, 0.6);
+}
+body.theme-neon ::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, rgba(0, 240, 255, 0.55), rgba(255, 45, 212, 0.55));
+    border-radius: 4px;
+    box-shadow: 0 0 6px rgba(0, 240, 255, 0.30);
+}
+body.theme-neon ::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg, rgba(0, 240, 255, 0.85), rgba(255, 45, 212, 0.85));
 }
 
-/* Active tab gets a glow. */
-body.theme-neon .tab.active {
-    text-shadow: 0 0 8px rgba(0, 240, 255, 0.5);
+/* ── Network map — lit nodes / edges + faint inner glow. ─────────── */
+body.theme-neon .network-map-canvas {
+    border-color: rgba(0, 240, 255, 0.15);
+    box-shadow: inset 0 0 30px rgba(0, 240, 255, 0.05);
+}
+body.theme-neon .nm-node.is-selected .nm-card,
+body.theme-neon .nm-node.nm-active .nm-card {
+    filter: drop-shadow(0 0 4px rgba(0, 240, 255, 0.70));
+}
+body.theme-neon .nm-edge-active {
+    filter: drop-shadow(0 0 3px rgba(0, 240, 255, 0.55));
 }
 
-/* Respect users who ask for less motion — keep the static glow, drop the
-   animation (overlays stay; they don't move). */
+/* ── Log stream — phosphor terminal. ─────────────────────────────── */
+body.theme-neon .log-line .modid     { text-shadow: 0 0 6px rgba(0, 240, 255, 0.50); }
+body.theme-neon .log-line.error      { text-shadow: 0 0 6px rgba(255, 45, 140, 0.40); }
+body.theme-neon .log-line.warn       { text-shadow: 0 0 6px rgba(255, 230, 0, 0.35); }
+body.theme-neon .log-line.ok         { text-shadow: 0 0 6px rgba(57, 255, 120, 0.40); }
+body.theme-neon .log-line.separator  { text-shadow: 0 0 8px rgba(0, 240, 255, 0.50); }
+
+/* ── Section labels + links. ─────────────────────────────────────── */
+body.theme-neon .section-title { text-shadow: 0 0 8px rgba(0, 240, 255, 0.15); }
+body.theme-neon a { text-shadow: 0 0 6px rgba(0, 240, 255, 0.45); }
+
+/* Respect reduced-motion: keep every static glow, stop all movement. */
 @media (prefers-reduced-motion: reduce) {
+    body.theme-neon::before,
     body.theme-neon::after,
     body.theme-neon .app-title,
-    body.theme-neon .btn-primary { animation: none; }
+    body.theme-neon .btn-primary,
+    body.theme-neon .btn.btn-success { animation: none; }
 }
 
 /* ── Auto Jobs — Master Switches ─────────────────────────────────── */
