@@ -182,10 +182,15 @@
         details.appendChild(detailRow(t('autojobs.detailsTitle'), '', true));
         details.appendChild(detailRow('type', jobTypeLabel(job.type) || '—'));
         for (const key of Object.keys(job)) {
-            if (key === 'type') continue;
+            // `type` is shown above; `ws` is the WS payload, rendered as its own
+            // readable section below (not dumped as compact JSON).
+            if (key === 'type' || key === 'ws') continue;
             details.appendChild(detailRow(key, fmtVal(job[key])));
         }
         if (bugInfo && bugInfo.reason) details.appendChild(detailRow('buggedReason', String(bugInfo.reason)));
+        // The curated WS payload (description, rewards, condition steps, resolved
+        // targets the game sent) — present once JOB_QUEUE built the entry.
+        if (job.ws) appendWsDetails(details, job.ws);
         row.appendChild(details);
         detailsBtn.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -212,6 +217,68 @@
         if (v === null || v === undefined) return '—';
         if (typeof v === 'object') { try { return JSON.stringify(v); } catch (_) { return String(v); } }
         return String(v);
+    }
+
+    // Append the WS-payload section to a details panel: a heading + curated rows
+    // built from the game's job object (the `ws` DTO the pipeline lifted off the
+    // raw job — see buildJobWsInfo). Only fields the game actually sent are
+    // shown — an absent field is OMITTED rather than rendered as a "—" row, so
+    // the section stays a faithful view of what arrived over WS (vs. the generic
+    // dump above, which lists every queue field including nulls). Field labels
+    // stay raw English, matching the rest of this debug-style panel.
+    function appendWsDetails(details, ws) {
+        const rows = [];
+        // Push a row only for a value that's actually present. `0`/`false` are
+        // meaningful (a 0 deposit, canComplete:false), so test against null/''.
+        const add = (k, v) => { if (v !== null && v !== undefined && v !== '') rows.push([k, String(v)]); };
+
+        add('jobType', ws.jobType);
+        add('category', ws.category);
+        add('reward', Number.isFinite(ws.rewardCredits) ? t('autojobs.rewardCr', { n: ws.rewardCredits }) : null);
+        add('reputation', ws.rewardReputation);
+        add('deposit', ws.deposit);
+        add('rep penalty', ws.reputationPenalty);
+        add('time to complete', ws.timeToComplete);
+        add('required rep level', ws.requiredReputationLevel);
+        add('corporation', ws.corporation);
+        if (ws.isGenerated !== null && ws.isGenerated !== undefined) add('generated', String(ws.isGenerated));
+        // lifecycle — only present once the job is TAKEN
+        add('status', ws.status);
+        if (ws.canComplete !== null && ws.canComplete !== undefined) add('can complete', String(ws.canComplete));
+        add('ends', ws.endTime);
+        // server wiring
+        if (Array.isArray(ws.relatedServers) && ws.relatedServers.length) {
+            add('server', ws.relatedServers
+                .map((s) => (s.serverIp ? `${s.serverName || '?'} (${s.serverIp})` : (s.serverName || '?')))
+                .join(', '));
+        }
+        add('serverConfigId', ws.serverConfigId);
+        // resolved primary targets (populate once TAKEN)
+        const tg = ws.targets || {};
+        if (Array.isArray(tg.ips) && tg.ips.length) add('target IPs', tg.ips.join(', '));
+        if (Array.isArray(tg.fileNames) && tg.fileNames.length) add('target files', tg.fileNames.join(', '));
+        if (Array.isArray(tg.logSeqs) && tg.logSeqs.length) add('target logs (seq)', tg.logSeqs.join(', '));
+        if (Array.isArray(tg.logNames) && tg.logNames.length) add('target logs', tg.logNames.join(', '));
+
+        const steps = Array.isArray(ws.conditions) ? ws.conditions.filter((c) => c && (c.label || c.type)) : [];
+        // Nothing usable in the payload — don't render an empty section.
+        if (!rows.length && !ws.description && !steps.length) return;
+
+        details.appendChild(detailRow(t('autojobs.detailsWs'), '', true));
+        // Description gets its own full-width row (no key column) above the grid.
+        if (ws.description) {
+            const d = el('div', 'aj-detail aj-detail-desc');
+            d.appendChild(el('span', 'aj-detail-v', ws.description));
+            details.appendChild(d);
+        }
+        for (const [k, v] of rows) details.appendChild(detailRow(k, v));
+        // Condition steps — the ordered actions the job entails (e.g.
+        // Get Server Access → Delete IPs). The primary action is starred.
+        for (const c of steps) {
+            const label = (c.isPrimary ? '★ ' : '') + (c.label || c.type || '?');
+            const meta = [(c.type && c.type !== c.label) ? c.type : null, c.subsystem].filter(Boolean).join(' · ');
+            details.appendChild(detailRow('step', meta ? `${label} — ${meta}` : label));
+        }
     }
 
     // One market block: a clickable header (caret + name + status + count) and a

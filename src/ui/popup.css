@@ -699,6 +699,14 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
     color: var(--os-color-text); font-weight: 600; min-width: 0;
     text-transform: uppercase; letter-spacing: 0.4px; font-size: 10px;
 }
+/* A second section heading (the WS "Game data" group) gets breathing room
+   above it; the first heading sits flush against the panel's own padding. */
+.aj-job-details .aj-detail-title { margin-top: 6px; }
+.aj-job-details .aj-detail-title:first-child { margin-top: 0; }
+/* Full-width job description row — no key column, wraps + keeps line breaks. */
+.aj-detail-desc .aj-detail-v {
+    flex: 1; white-space: pre-wrap; color: var(--os-color-text);
+}
 .aj-skip { background: rgba(254, 73, 73, 0.15); color: var(--os-color-danger); }
 .aj-skip-reason { color: var(--os-color-danger); margin-top: 3px; }
 

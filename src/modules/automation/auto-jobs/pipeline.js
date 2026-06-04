@@ -67,7 +67,9 @@
 
             // ── filled by JOB_QUEUE ──
             // [{ id, name, type, serverName, marketSlot, marketId,
-            //    rewardCredits, raw, eligible:null, skipReason:null }]
+            //    rewardCredits, ws, raw, eligible:null, skipReason:null }]
+            // `ws` is the curated WS info DTO (buildJobWsInfo) shown in the
+            // popup's Job details panel; `raw` is stripped before persisting.
             queue: null,
 
             // ── filled by BUGGED_JOBS ──
@@ -262,6 +264,74 @@
             if (typeof d.logName === 'string' && d.logName) out.push(d.logName);
         }
         return [...new Set(out)];
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // WS info DTO — a curated, storage-safe snapshot of the raw game job for
+    // the popup's "Job details" panel. The raw job is heavy + circular-ish, so
+    // it is stripped before the queue is persisted (see stripRaw); this lifts
+    // just the informational fields the game sent over WS into a flat,
+    // JSON-cloneable object that survives the strip and reaches the UI.
+    //
+    // Every field here is OPTIONAL by nature — this is display data, not a
+    // pipeline precondition. AVAILABLE board jobs carry null condition `details`
+    // (targets populate only once TAKEN), and a field the envelope omits is
+    // normalised to null rather than fabricated. The popup omits null fields, so
+    // absence reads as "this didn't arrive yet", never a faked value.
+    // ──────────────────────────────────────────────────────────────────────
+    function corpName(corp) {
+        if (!corp) return null;
+        if (typeof corp === 'string') return corp;
+        return corp.name || corp.title || null;
+    }
+    function buildJobWsInfo(rawJob) {
+        if (!rawJob || typeof rawJob !== 'object') return null;
+        const conds = (rawJob.conditions && typeof rawJob.conditions === 'object') ? rawJob.conditions : {};
+        const items = Array.isArray(conds.items) ? conds.items : [];
+        const num = (v) => (Number.isFinite(v) ? v : null);
+        const bool = (v) => (typeof v === 'boolean' ? v : null);
+        return {
+            // identity / briefing
+            jobType: rawJob.jobType || null,            // canonical PascalCase (DeleteIps, …)
+            category: rawJob.category || null,
+            description: rawJob.description || null,
+            isGenerated: bool(rawJob.isGenerated),
+            corporation: corpName(rawJob.corporation),
+            // rewards + cost
+            rewardCredits: num(rawJob.rewardCredits),
+            rewardReputation: num(rawJob.rewardReputation),
+            deposit: num(rawJob.deposit),
+            reputationPenalty: num(rawJob.reputationPenalty),
+            timeToComplete: num(rawJob.timeToComplete),
+            requiredReputationLevel: num(rawJob.requiredReputationLevel),
+            // lifecycle — only meaningful once TAKEN (recentJobs entry)
+            status: rawJob.status || null,
+            canComplete: bool(rawJob.canComplete),
+            endTime: rawJob.endTime || null,
+            // server wiring
+            relatedServers: Array.isArray(rawJob.relatedServers)
+                ? rawJob.relatedServers.map((s) => ({
+                    serverName: (s && (s.serverName || s.name)) || null,
+                    serverIp: (s && s.serverIp) || null,
+                })) : [],
+            serverConfigId: conds.serverConfigId || null,
+            hasDeposit: bool(conds.hasDeposit),
+            hasRepFine: bool(conds.hasRepFine),
+            // condition steps — what the job entails (Get access → primary action)
+            conditions: items.map((it) => ({
+                type: (it && it.type) || null,
+                label: (it && it.label) || null,
+                isPrimary: !!(it && it.isPrimary),
+                subsystem: (it && it.subsystem) || null,
+            })),
+            // resolved primary targets (the meat) — present once TAKEN
+            targets: {
+                ips: ipsForJob(rawJob),
+                fileNames: fileNamesForJob(rawJob),
+                logSeqs: logSeqsForJob(rawJob),
+                logNames: logNamesForJob(rawJob),
+            },
+        };
     }
 
     // Plain cancellable pause used to pace ACCEPT_JOB posts. Resolves early
@@ -498,6 +568,10 @@
                 marketSlot: slot,
                 marketId,
                 rewardCredits: Number.isFinite(job.rewardCredits) ? job.rewardCredits : null,
+                // Curated WS payload for the popup's "Job details" panel — a
+                // flat, storage-safe snapshot of the fields the game sent. Set
+                // here (not in `raw`) so it survives stripRaw and reaches the UI.
+                ws: buildJobWsInfo(job),
                 raw: job,
                 eligible: null,
                 skipReason: null,
@@ -791,6 +865,7 @@
         WIRED_FLOW_TYPES,
         detectJobType,
         jobServer,
+        buildJobWsInfo,
         fileConditionForDecrypt,
         // SAI-flow target resolvers (read from the TAKEN job's condition details).
         serverConfigId,
