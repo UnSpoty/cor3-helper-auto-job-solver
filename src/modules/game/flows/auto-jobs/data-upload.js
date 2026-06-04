@@ -1,7 +1,7 @@
-// Auto Jobs — File/Data Upload flow (MAIN world). jobType: file_upload
-// (handles both "file upload" and "data upload" — one type, see pipeline
-// JOB_TYPE_KEYWORDS). Push the job's target file(s) from the player's Downloads
-// to the server over WS.
+// Auto Jobs — Data Upload flow (MAIN world). jobType: data_upload
+// (matches both "data upload" and the legacy "file upload" job name — one type,
+// see pipeline JOB_TYPE_KEYWORDS). Push the job's target file(s) from the
+// player's Downloads to the server over WS.
 //
 // ⚠️ UNVERIFIED WIRE: file.upload was not captured live (the SAI Files tab needs
 // a LOAD/upload tool equipped). __cor3SaiFileUpload sends the best-guess
@@ -15,17 +15,17 @@
     const SF = root.COR3.autoJobs.saiFlow;
 
     SF.defineFlow({
-        id: 'flow-file-upload',
-        name: 'Flow: File/Data Upload',
-        jobType: C.FLOW.FILE_UPLOAD,
+        id: 'flow-data-upload',
+        name: 'Flow: Data Upload',
+        jobType: C.FLOW.DATA_UPLOAD,
         // job: { jobId, marketId, jobType, serverId, serverType, serverName, fileNames:[…] }
         async run(job, h) {
-            h.step(NODE.FU_ACCESS);
+            h.step(NODE.DU_ACCESS);
             const acc = await h.ensureAccess(job.serverId, job.serverType, job.serverName);
             if (!acc.ok) return { success: false, retryable: acc.retryable !== false, reason: acc.reason };
             if (h.abort()) return { success: false, retryable: true, reason: 'aborted' };
 
-            h.step(NODE.FU_UPLOAD);
+            h.step(NODE.DU_UPLOAD);
             let uploaded = 0, notFound = 0;
             for (const name of job.fileNames) {
                 if (h.abort()) return { success: false, retryable: true, reason: 'aborted' };
@@ -39,9 +39,9 @@
 
             if (uploaded === 0) return { success: true, didWork: false, reason: `no file uploaded (${notFound} not in Downloads)` };
 
-            h.step(NODE.FU_COMPLETE);
+            h.step(NODE.DU_COMPLETE);
             h.complete();
-            h.say('info', `File Upload: uploaded ${uploaded}/${job.fileNames.length} to "${job.serverName}"`);
+            h.say('info', `Data Upload: uploaded ${uploaded}/${job.fileNames.length} to "${job.serverName}"`);
             return { success: true, didWork: true };
         },
     });

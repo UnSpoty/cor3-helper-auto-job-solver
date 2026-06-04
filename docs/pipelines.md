@@ -149,8 +149,7 @@ SAI batch — see above). By job type:
 
 - **ip_injection / ip_cleanup** — Transit Access: add / remove IPs.
 - **file_elimination** — delete files.
-- **data_download / file_upload** — download / upload files (file_upload is the
-  game's data_upload).
+- **data_download / data_upload** — download / upload files.
 - **log_download / log_deletion** — download / delete logs (rejected up-front for
   the `NO_LOGS_SERVERS` D4RK servers that have no Logs section).
 - **decrypt_extract** — SAI download + decrypt-SW install/swap + the decrypt

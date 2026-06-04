@@ -74,7 +74,7 @@
         "src/modules/game/flows/auto-jobs/ip-cleanup.js",
         "src/modules/game/flows/auto-jobs/file-elimination.js",
         "src/modules/game/flows/auto-jobs/data-download.js",
-        "src/modules/game/flows/auto-jobs/file-upload.js",
+        "src/modules/game/flows/auto-jobs/data-upload.js",
         "src/modules/game/flows/auto-jobs/log-download.js",
         "src/modules/game/flows/auto-jobs/log-deletion.js",
         "src/modules/game/flows/auto-jobs/decrypt-extract.js",

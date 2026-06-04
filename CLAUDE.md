@@ -72,7 +72,7 @@ once then bugged; completion uses `MSG.GAME.COMPLETE_JOB`. Flow modules live in
     the minigame; WS `open.file` starts the minigame directly. The standalone
     solvers then win and `job.complete` is sent.
   - **SAI job types** (ip_injection/ip_cleanup, file_elimination,
-    log_deletion/log_download, data_download/file_upload, decrypt_extract) share
+    log_deletion/log_download, data_download/data_upload, decrypt_extract) share
     a base factory in `flows/auto-jobs/_sai-flow.js`: connect +
     Active-Access/hack login, then the get.*/mutate.* WS loop, then
     `job.complete`.
@@ -239,7 +239,7 @@ find src -name '*.js' -exec node --check {} \;
   stuck on a K/D / inaccessible server is postponed (never bugged) **and** never
   blocks acceptance of other servers.
 - 9 job flow types (in `src/modules/game/flows/auto-jobs/`): file_decryption,
-  ip_injection, ip_cleanup, file_upload, log_deletion, log_download,
+  ip_injection, ip_cleanup, data_upload, log_deletion, log_download,
   file_elimination, data_download, decrypt_extract.
 - Decrypt solver: minimax algorithm against `ParameterCells` (arrow-key
   driven). Submit layer is click-on-cell + ArrowUp + click-SendButton
@@ -284,7 +284,7 @@ Quick list of every registered module ID and its world:
   snapshot-diff watchdog + in-panel toast notifications surface
   resource conflicts and silent server rejections.
 - `flow-file-decryption`, `flow-ip-injection`, `flow-ip-cleanup`,
-  `flow-file-upload`, `flow-log-deletion`, `flow-log-download`,
+  `flow-data-upload`, `flow-log-deletion`, `flow-log-download`,
   `flow-file-elimination`, `flow-data-download`, `flow-decrypt-extract` —
   the Auto Jobs MAIN flow modules (in `src/modules/game/flows/auto-jobs/`).
   Each listens on `MSG.AUTOJOBS.FLOW_START` for its job type and replies

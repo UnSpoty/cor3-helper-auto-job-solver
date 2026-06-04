@@ -28,7 +28,7 @@ wire format.
   accepts and works them **sequentially, one server at a time** (connect +
   log into a server once, run its whole batch, then move on), all over WS:
   - 9 job types: `file_decryption`, `ip_injection`, `ip_cleanup`,
-    `file_upload`, `log_deletion`, `log_download`, `file_elimination`,
+    `data_upload`, `log_deletion`, `log_download`, `file_elimination`,
     `data_download`, `decrypt_extract`
   - K/D / on-cooldown and unreachable servers are read from the Network Map
     graph and **postponed** (never failed); FAILED jobs are surfaced in the

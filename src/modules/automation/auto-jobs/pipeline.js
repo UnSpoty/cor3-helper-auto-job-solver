@@ -125,7 +125,7 @@
         [C.FLOW.FILE_DECRYPTION]:  ['file decryption'],
         [C.FLOW.IP_INJECTION]:     ['ip injection'],
         [C.FLOW.IP_CLEANUP]:       ['ip cleanup'],
-        [C.FLOW.FILE_UPLOAD]:      ['file upload', 'data upload'],
+        [C.FLOW.DATA_UPLOAD]:      ['data upload', 'file upload'],
         [C.FLOW.LOG_DELETION]:     ['log deletion'],
         [C.FLOW.LOG_DOWNLOAD]:     ['log download'],
         [C.FLOW.FILE_ELIMINATION]: ['file elimination'],
@@ -145,19 +145,16 @@
     // accepted off the board: accepting a type with no flow — including a
     // null/unrecognised type — would consume a market slot that then sits
     // TAKEN forever (the orchestrator can neither complete nor recover it).
-    // file_upload is DELIBERATELY excluded: its file.upload wire is a best-guess
-    // never captured live (tmp_research/sai-wire-capture.md), and a wrong wire
-    // that the server silently no-ops would let the flow "complete" a job the
-    // game never marks finishable → an unbounded re-dispatch loop. Keep
-    // file_upload jobs unaccepted (visible on the board) until the wire is
-    // verified live; the flow-file-upload module stays registered, just not
-    // dispatched. Re-add C.FLOW.FILE_UPLOAD here once verified.
+    // All 9 mapped types have a flow module, so this Set == the values of
+    // C.FLOW; it stays as an explicit allow-list so a job whose name matched
+    // no keyword (type === null) is never accepted.
     const WIRED_FLOW_TYPES = new Set([
         C.FLOW.FILE_DECRYPTION,
         C.FLOW.IP_INJECTION,
         C.FLOW.IP_CLEANUP,
         C.FLOW.FILE_ELIMINATION,
         C.FLOW.DATA_DOWNLOAD,
+        C.FLOW.DATA_UPLOAD,
         C.FLOW.LOG_DOWNLOAD,
         C.FLOW.LOG_DELETION,
         C.FLOW.DECRYPT_EXTRACT,

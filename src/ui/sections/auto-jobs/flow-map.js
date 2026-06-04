@@ -66,7 +66,7 @@
     sai(NODE.IC_ACCESS, NODE.IC_CLEANUP, NODE.IC_COMPLETE, 'IP cleanup', 'remove IPs');
     sai(NODE.FE_ACCESS, NODE.FE_DELETE, NODE.FE_COMPLETE, 'Delete file', 'delete');
     sai(NODE.DD_ACCESS, NODE.DD_DOWNLOAD, NODE.DD_COMPLETE, 'Download', 'download');
-    sai(NODE.FU_ACCESS, NODE.FU_UPLOAD, NODE.FU_COMPLETE, 'Upload', 'upload');
+    sai(NODE.DU_ACCESS, NODE.DU_UPLOAD, NODE.DU_COMPLETE, 'Upload', 'upload');
     sai(NODE.LG_ACCESS, NODE.LG_DOWNLOAD, NODE.LG_COMPLETE, 'Download log', 'download');
     sai(NODE.LD_ACCESS, NODE.LD_DELETE, NODE.LD_COMPLETE, 'Delete log', 'delete');
 

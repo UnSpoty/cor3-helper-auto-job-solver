@@ -395,7 +395,7 @@
         FILE_DECRYPTION: 'file_decryption',
         IP_INJECTION: 'ip_injection',
         IP_CLEANUP: 'ip_cleanup',
-        FILE_UPLOAD: 'file_upload',
+        DATA_UPLOAD: 'data_upload',
         LOG_DELETION: 'log_deletion',
         LOG_DOWNLOAD: 'log_download',
         FILE_ELIMINATION: 'file_elimination',
@@ -496,8 +496,8 @@
             FE_ACCESS: 'fe-access', FE_DELETE: 'fe-delete', FE_COMPLETE: 'fe-complete',
             // data_download
             DD_ACCESS: 'dd-access', DD_DOWNLOAD: 'dd-download', DD_COMPLETE: 'dd-complete',
-            // file_upload (= data_upload)
-            FU_ACCESS: 'fu-access', FU_UPLOAD: 'fu-upload', FU_COMPLETE: 'fu-complete',
+            // data_upload
+            DU_ACCESS: 'du-access', DU_UPLOAD: 'du-upload', DU_COMPLETE: 'du-complete',
             // log_download
             LG_ACCESS: 'lg-access', LG_DOWNLOAD: 'lg-download', LG_COMPLETE: 'lg-complete',
             // log_deletion

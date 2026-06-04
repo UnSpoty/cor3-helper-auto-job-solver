@@ -1274,7 +1274,7 @@
         if (!serverId || seq == null) { console.warn('[COR3] __cor3SaiLogDelete: missing serverId/seq'); return false; }
         return wsSendRpc('sai', 'log.delete', { serverId, seq });
     };
-    // data_upload / file_upload — push a Downloads file to the server. The
+    // data_upload — push a Downloads file to the server. The
     // payload shape is the best-guess {serverId, fileId} (fileId = the player's
     // Downloads file id) — NOT yet captured live (the SAI Files tab needs a
     // LOAD/upload tool equipped). Verify live before relying on it.

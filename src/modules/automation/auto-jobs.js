@@ -792,7 +792,7 @@
                 }
                 case C.FLOW.FILE_ELIMINATION:
                 case C.FLOW.DATA_DOWNLOAD:
-                case C.FLOW.FILE_UPLOAD:
+                case C.FLOW.DATA_UPLOAD:
                 case C.FLOW.DECRYPT_EXTRACT: {
                     const fileNames = p.fileNamesForJob(job.raw);
                     return fileNames.length ? Object.assign(base, sai, { fileNames }) : null;

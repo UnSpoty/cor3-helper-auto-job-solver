@@ -1,7 +1,7 @@
 // Auto Jobs — shared SAI-flow helper (MAIN world).
 //
 // The 7 SAI job flows (ip_injection, ip_cleanup, file_elimination,
-// data_download, file_upload, log_download, log_deletion) — and the front half
+// data_download, data_upload, log_download, log_deletion) — and the front half
 // of decrypt_extract — all share the SAME shape, verified live over pure WS
 // (no DOM window): connect → log in (Active Access grant, headless) → read a
 // list / mutate over WS → job.complete. This module factors out that shared
@@ -67,7 +67,7 @@
 
     // Resolve a Downloads fileId by exact name (or by bare ".ext") purely over
     // WS (desktop.open.folder → match files[]), same recipe as file-decryption.
-    // Used by file_upload (source file to push) and decrypt_extract (the
+    // Used by data_upload (source file to push) and decrypt_extract (the
     // SAI-downloaded file to open). Returns the fileId or null.
     async function findDownloadsFileId(match, ms) {
         let folderId = root.__cor3DownloadFolderId;

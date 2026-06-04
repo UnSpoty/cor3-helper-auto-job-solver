@@ -288,7 +288,7 @@ when the orchestrator dispatches a TAKEN job to its MAIN `flow-*` module.
 | `FLOW.FILE_DECRYPTION` | `file_decryption` | `file-decryption.js` (local file open — no server) |
 | `FLOW.IP_INJECTION` | `ip_injection` | `ip-injection.js` |
 | `FLOW.IP_CLEANUP` | `ip_cleanup` | `ip-cleanup.js` |
-| `FLOW.FILE_UPLOAD` | `file_upload` | `file-upload.js` (= data_upload) |
+| `FLOW.DATA_UPLOAD` | `data_upload` | `data-upload.js` |
 | `FLOW.LOG_DELETION` | `log_deletion` | `log-deletion.js` |
 | `FLOW.LOG_DOWNLOAD` | `log_download` | `log-download.js` |
 | `FLOW.FILE_ELIMINATION` | `file_elimination` | `file-elimination.js` |
