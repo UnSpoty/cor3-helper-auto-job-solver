@@ -81,11 +81,17 @@
         // jobs are being run together this cycle; one is dispatching right now.
         const inBatch = !!(batch && Array.isArray(batch.jobIds) && batch.jobIds.indexOf(job.id) !== -1);
         const isRunning = !!(batch && batch.currentJobId === job.id);
+        // Ready to complete: a TAKEN job the game now reports finishable
+        // (ws.canComplete === true) — solved but not yet claimed. The
+        // orchestrator's READY_TO_COMPLETE step claims these next cycle; surface
+        // them distinctly so the user sees a job is done bar the claim.
+        const readyToComplete = inProgress && !!(job.ws && job.ws.canComplete === true);
 
         const row = el('div', 'aj-job'
             + (skipped ? ' is-skip' : '')
             + (warned ? ' is-warn is-warn-' + warnKind : '')
             + (inProgress ? ' is-active' : '')
+            + (readyToComplete ? ' is-ready' : '')
             + (inBatch ? ' is-batch' : '')
             + (isRunning ? ' is-running' : '')
             + (isFailed ? ' is-failed' : '')
@@ -142,6 +148,20 @@
         } else if (inProgress) {
             if (isRunning) {
                 head.appendChild(el('span', 'pill aj-batch-run', t('autojobs.pillRunning', { index: batch.index, total: batch.total })));
+            } else if (readyToComplete) {
+                head.appendChild(el('span', 'pill aj-ready', t('autojobs.pillReady')));
+                // ✓ Claim now — sends market.job.complete for this one job.
+                // Disabled while the loop runs (the orchestrator's
+                // READY_TO_COMPLETE step claims it automatically then).
+                const running = !!(opts && opts.running);
+                const complete = el('button', 'aj-unbug aj-complete', '✓');
+                complete.disabled = running;
+                complete.title = running ? t('autojobs.completeBlockedTip') : t('autojobs.completeTip');
+                complete.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    if (!running && opts && typeof opts.onComplete === 'function') opts.onComplete(job);
+                });
+                head.appendChild(complete);
             } else {
                 head.appendChild(el('span', 'pill ok', t('autojobs.pillInProgress')));
                 if (inBatch) head.appendChild(el('span', 'pill aj-batch', t('autojobs.pillBatch')));
@@ -342,6 +362,16 @@
         if (tab) { try { await chrome.tabs.sendMessage(tab.id, { action: C.MSG.AUTOJOBS.DISMISS_FAILED, jobId, marketId }); } catch (_) { /* tab not ready */ } }
     }
 
+    // Ask the orchestrator to complete one READY-to-complete job now
+    // (market.job.complete). Refused orchestrator-side while the loop runs.
+    // No-op when no game tab is open.
+    async function sendCompleteJob(jobId, marketId) {
+        if (!(typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.query)) return;
+        const tabs = await chrome.tabs.query({ url: ['https://cor3.gg/*', 'https://os.cor3.gg/*'] });
+        const tab = tabs && tabs[0];
+        if (tab) { try { await chrome.tabs.sendMessage(tab.id, { action: C.MSG.AUTOJOBS.COMPLETE_JOB, jobId, marketId }); } catch (_) { /* tab not ready */ } }
+    }
+
     function attach(container) {
         container.classList.add('aj-jobs-host');
         container.innerHTML = '';
@@ -358,15 +388,22 @@
         // re-renders (lives in this closure; resets when the popup reopens).
         const collapsed = new Set();
 
-        // Optimistically-dismissed FAILED job ids: hide the row the instant the
-        // user clicks ✕ (the dismiss WS round-trip + board rebuild lag a beat).
-        // Cleared whenever a fresh board arrives, so a dismiss that didn't take
-        // re-shows on the next rebuild rather than vanishing forever.
-        const dismissedIds = new Set();
+        // Optimistically-actioned job ids: hide the row the instant the user
+        // clicks ✕ (dismiss a FAILED job) or ✓ (complete a READY job) — the WS
+        // round-trip + board rebuild lag a beat. Cleared whenever a fresh board
+        // arrives, so an action that didn't take re-shows on the next rebuild
+        // rather than vanishing forever.
+        const removedIds = new Set();
         function onDismiss(job) {
             if (!job || !job.marketId) return;
-            dismissedIds.add(job.id);
+            removedIds.add(job.id);
             sendDismissFailed(job.id, job.marketId);
+            render();
+        }
+        function onComplete(job) {
+            if (!job || !job.marketId) return;
+            removedIds.add(job.id);
+            sendCompleteJob(job.id, job.marketId);
             render();
         }
 
@@ -404,8 +441,8 @@
                 return;
             }
 
-            // Hide rows the user just dismissed with ✕ (optimistic removal).
-            const jobs = (Array.isArray(queue.jobs) ? queue.jobs : []).filter((j) => !dismissedIds.has(j.id));
+            // Hide rows the user just dismissed (✕) or completed (✓) — optimistic removal.
+            const jobs = (Array.isArray(queue.jobs) ? queue.jobs : []).filter((j) => !removedIds.has(j.id));
 
             // Live eligibility: derive display rows from the pipeline's DATA
             // verdict (job.dataSkipReason) + the CONFIG verdict re-derived NOW
@@ -444,20 +481,25 @@
             // tallied under two buckets at once.
             const avail = rows.filter((j) => j.status === 'AVAILABLE');
             const inProgress = rows.filter((j) => j.status === 'TAKEN').length;
+            // Ready-to-complete: a subset of the TAKEN total the game flags
+            // canComplete (solved, awaiting the claim) — counted separately so
+            // the user sees how many are done bar the orchestrator's claim step.
+            const readyN = rows.filter((j) => j.status === 'TAKEN' && j.ws && j.ws.canComplete === true).length;
             const failedN = rows.filter((j) => j.status === 'FAILED' && !bugged[j.id]).length;
             const evaluated = avail.filter((j) => j.eligible != null).length;
             const eligible = avail.filter((j) => j.eligible === true).length;
             const skipped = avail.filter((j) => j.eligible === false && !bugged[j.id]).length;
             const buggedN = rows.filter((j) => bugged[j.id]).length;
             const active = inProgress ? ' · ' + t('autojobs.sumInProgress', { n: inProgress }) : '';
+            const ready = readyN ? ' · ' + t('autojobs.sumReadyN', { n: readyN }) : '';
             const failedSuffix = failedN ? ' · ' + t('autojobs.sumFailedN', { n: failedN }) : '';
             const buggedSuffix = buggedN ? ' · ' + t('autojobs.sumBuggedN', { n: buggedN }) : '';
             const cyc = t('autojobs.cycleN', { n: queue.cycle || '—' });
             summary.textContent = !jobs.length
                 ? `${t('autojobs.sumZeroJobs')} · ${cyc}`
                 : evaluated
-                    ? `${t('autojobs.sumAvailable', { n: avail.length })} · ${t('autojobs.sumEligible', { n: eligible })} · ${t('autojobs.sumSkip', { n: skipped })}${active}${failedSuffix}${buggedSuffix} · ${cyc}`
-                    : `${t('autojobs.sumAvailable', { n: avail.length })}${active}${failedSuffix}${buggedSuffix} · ${t('autojobs.sumPending')} · ${cyc}`;
+                    ? `${t('autojobs.sumAvailable', { n: avail.length })} · ${t('autojobs.sumEligible', { n: eligible })} · ${t('autojobs.sumSkip', { n: skipped })}${active}${ready}${failedSuffix}${buggedSuffix} · ${cyc}`
+                    : `${t('autojobs.sumAvailable', { n: avail.length })}${active}${ready}${failedSuffix}${buggedSuffix} · ${t('autojobs.sumPending')} · ${cyc}`;
 
             // Live-batch banner — only while JOB_FLOW is actively running a
             // batch (the orchestrator clears AJ_PIPELINE_STATE.batch at cycle
@@ -490,7 +532,7 @@
                 ? queue.markets
                 : Object.keys(bySlot).map((slot) => ({ slot, reachable: true, refreshed: true, jobCount: bySlot[slot].length }));
 
-            const opts = { running, onDismiss };
+            const opts = { running, onDismiss, onComplete };
             for (const m of markets) list.appendChild(marketSection(m, bySlot[m.slot] || [], bugged, collapsed, batch, opts));
         }
 
@@ -501,9 +543,9 @@
             let dirty = false;
             if (changes[SL.AJ_JOB_QUEUE]) {
                 lastQueue = changes[SL.AJ_JOB_QUEUE].newValue;
-                // A fresh board reflects reality — drop the optimistic-dismiss
-                // veil so any FAILED job that wasn't actually cleared re-appears.
-                dismissedIds.clear();
+                // A fresh board reflects reality — drop the optimistic-removal
+                // veil so any job that wasn't actually cleared/claimed re-appears.
+                removedIds.clear();
                 dirty = true;
             }
             if (changes[SL.AJ_MASTER_SWITCHES]) { switches = changes[SL.AJ_MASTER_SWITCHES].newValue || {}; dirty = true; }

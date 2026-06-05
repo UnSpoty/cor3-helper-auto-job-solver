@@ -201,6 +201,13 @@
             // while running instead.
             DISMISS_FAILED: 'ajDismissFailed',
 
+            // popup Jobs list "✓" on a READY-to-complete row → orchestrator:
+            // claim that one finished job now (market.job.complete). Payload:
+            // { jobId, marketId }. Refused while the loop runs (same endpoint-flip
+            // hazard as DISMISS_FAILED) — the READY_TO_COMPLETE step claims it
+            // while running instead.
+            COMPLETE_JOB: 'ajCompleteJob',
+
             // isolated → MAIN window messages. Handled by the MAIN-world bridge.
             OPEN_SAI: 'COR3_AJ_OPEN_SAI',
             OPEN_MARKET: 'COR3_AJ_OPEN_MARKET',

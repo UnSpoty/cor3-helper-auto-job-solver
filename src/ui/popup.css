@@ -757,6 +757,13 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
 }
 .pill.aj-batch { background: rgba(118, 193, 209, 0.15); color: var(--os-color-primary-hex); }
 .pill.aj-batch-run { background: var(--os-color-primary-hex); color: var(--os-color-surface); }
+/* Ready-to-complete: TAKEN job the game flags canComplete — solved, awaiting claim. */
+.pill.aj-ready { background: rgba(74, 222, 128, 0.22); color: var(--os-color-success); font-weight: 600; }
+.aj-job.is-ready {
+    border-color: rgba(74, 222, 128, 0.5);
+    box-shadow: 0 0 0 1px rgba(74, 222, 128, 0.35), 0 0 8px rgba(74, 222, 128, 0.22);
+    background: rgba(74, 222, 128, 0.06);
+}
 .aj-job.is-batch { border-color: rgba(118, 193, 209, 0.45); }
 .aj-job.is-running {
     border-color: var(--os-color-primary-hex);
@@ -1636,3 +1643,6 @@ body.theme-neon a { text-shadow: 0 0 6px rgba(0, 240, 255, 0.45); }
 }
 .aj-unbug:not(:disabled):hover { color: var(--os-color-danger); border-color: var(--os-color-danger); }
 .aj-unbug:disabled { opacity: 0.4; cursor: not-allowed; }
+/* ✓ complete — green sibling of the ✕ dismiss button, on READY-to-complete rows. */
+.aj-complete { color: var(--os-color-success); }
+.aj-complete:not(:disabled):hover { color: var(--os-color-success); border-color: var(--os-color-success); background: rgba(74, 222, 128, 0.12); }

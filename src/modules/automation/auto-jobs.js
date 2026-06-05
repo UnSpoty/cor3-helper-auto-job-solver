@@ -93,6 +93,7 @@
                         C.MSG.AUTOJOBS.REFRESH_BOARD,
                         C.MSG.AUTOJOBS.CLEAR_LOG,
                         C.MSG.AUTOJOBS.DISMISS_FAILED,
+                        C.MSG.AUTOJOBS.COMPLETE_JOB,
                         C.MSG.AUTOJOBS.OPEN_SAI,
                         C.MSG.AUTOJOBS.OPEN_MARKET,
                         C.MSG.GAME.REFRESH_MARKET,
@@ -162,6 +163,12 @@
             // flip would flap the pipeline's SAI session mid-cycle) — the
             // auto-dismiss step handles failed jobs while running instead.
             this.track(Bus.runtime.on(C.MSG.AUTOJOBS.DISMISS_FAILED, (payload) => this._dismissOne(payload)));
+
+            // Jobs panel "✓" on a READY-to-complete row → claim that one job now
+            // (market.job.complete). Refused while the loop runs (same endpoint-flip
+            // hazard as the manual dismiss) — the READY_TO_COMPLETE step claims
+            // finished jobs while running instead.
+            this.track(Bus.runtime.on(C.MSG.AUTOJOBS.COMPLETE_JOB, (payload) => this._completeOne(payload)));
 
             // ── Network Map graph plumbing ────────────────────────────────────
             // NM_GRAPH (the canonical topology from network-map.get.map) is
@@ -506,6 +513,29 @@
             }
             this.info(`DISMISS_FAILED (manual) → dismiss ${jobId}`);
             Bus.window.post(C.MSG.GAME.DISMISS_JOB, { jobId, marketId });
+            return { success: true };
+        }
+
+        // Manual claim of ONE ready-to-complete job from the popup Jobs list (the
+        // ✓ button). Refused while the loop runs — __cor3CompleteJob does a per-
+        // market endpoint flip+revert that is NOT serialised against the SAI
+        // flows' __cor3SetEndpoint, so a manual complete could flap a running
+        // batch's session (same hazard as the manual dismiss). While running, the
+        // READY_TO_COMPLETE step claims finished jobs instead. The interceptor's
+        // __cor3CompleteJob self-reverts to the saved endpoint, so no REVERT here.
+        _completeOne(payload) {
+            if (this._running) {
+                this.warn('Complete ignored — pipeline is running (it auto-completes ready jobs each cycle)');
+                return { success: false, reason: 'running' };
+            }
+            const jobId = payload && payload.jobId;
+            const marketId = payload && payload.marketId;
+            if (!jobId || !marketId) {
+                this.warn('Complete ignored — missing jobId/marketId', { jobId, marketId });
+                return { success: false, reason: 'missing-id' };
+            }
+            this.info(`READY_TO_COMPLETE (manual) → complete ${jobId}`);
+            Bus.window.post(C.MSG.GAME.COMPLETE_JOB, { jobId, marketId });
             return { success: true };
         }
 
