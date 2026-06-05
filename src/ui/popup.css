@@ -355,6 +355,11 @@ input[type="text"], input[type="number"], select, textarea {
 input[type="text"]:focus, input[type="number"]:focus, select:focus, textarea:focus {
     outline: none; border-color: var(--os-color-primary-hex);
 }
+/* Native <option> popups can't render the gradient / transparent backgrounds
+   the themes give <select>, so they fall back to an unreadable default (e.g.
+   dark-on-dark in the Neon theme). Pin them to solid themed colours — the
+   --os-* vars are redefined per theme, so this stays readable everywhere. */
+select option { background: var(--os-color-bg); color: var(--os-color-text); }
 input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
 
 /* ─── Status pill ────────────────────────────────────────────────────── */
