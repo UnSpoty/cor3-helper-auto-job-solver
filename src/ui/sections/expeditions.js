@@ -400,14 +400,23 @@
             if (exp.totalCost != null) meta.push(`${num(exp.totalCost)} CR`);
             if (meta.length) card.appendChild(el('div', 'muted xs mt-sm', meta.join(' · ')));
 
-            const endMs = expEndMs(exp);
-            if (exp.status !== 'COMPLETED' && endMs) {
-                const tRow = el('div', 'card-row mt-sm');
-                tRow.appendChild(el('span', 'sm muted', 'ETA'));
-                const inst = uiComponents.timer.create(endMs);
-                adoptTimer(panel.active, inst);
-                tRow.appendChild(inst.el);
-                card.appendChild(tRow);
+            if (exp.status !== 'COMPLETED') {
+                // _timerFrozenMs/_timerEndMs are stamped by the expeditions data
+                // module (accrues EVENT-pause time so it matches the in-game timer).
+                const frozen = (typeof exp._timerFrozenMs === 'number') ? exp._timerFrozenMs : null;
+                const endMs = (typeof exp._timerEndMs === 'number') ? exp._timerEndMs : expEndMs(exp);
+                if (frozen != null || endMs) {
+                    const tRow = el('div', 'card-row mt-sm');
+                    tRow.appendChild(el('span', 'sm muted', frozen != null ? 'Paused (decision)' : 'ETA'));
+                    if (frozen != null) {
+                        tRow.appendChild(el('span', 'timer warn', uiComponents.timer.fmt(Math.floor(frozen / 1000))));
+                    } else {
+                        const inst = uiComponents.timer.create(endMs);
+                        adoptTimer(panel.active, inst);
+                        tRow.appendChild(inst.el);
+                    }
+                    card.appendChild(tRow);
+                }
             }
 
             // COMPLETED → loot actions
