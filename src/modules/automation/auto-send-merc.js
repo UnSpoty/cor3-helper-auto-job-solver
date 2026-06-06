@@ -12,8 +12,12 @@
 //
 // The engine NEVER turns itself off: when no merc is free (all RESTING /
 // CONTRACTED) it just waits and a periodic poll re-checks as mercs return.
-// It also auto-collects every COMPLETED run (open container → collect) so the
-// single expedition slot keeps cycling and loot is banked.
+//
+// Completed-run handling is gated by the MASTER switch (not auto-send):
+//   • a FULL_SUCCESS raid auto-OPENS its container (reveals the loot) even with
+//     auto-send off — opening only, no auto-collect.
+//   • when auto-send is on, the loop additionally opens any completed run and
+//     COLLECTS it (pays the postpayment) to bank loot + free the single slot.
 //
 // Runtime status is published to STORAGE_LOCAL.EXP_AUTOSEND_STATE for the UI.
 // A soft pause (disabledReason='stash_full') stops launching without killing
@@ -113,27 +117,45 @@
     async function evaluate(mod) {
         const s = await getSettings();
         if (!s.masterEnabled) { await setState({ armed: false, status: 'master off' }); return; }
+
+        const exps = (await Store.local.getOne(C.STORAGE_LOCAL.EXPEDITIONS, [])) || [];
+
+        // 1) Handle a COMPLETED run (master-gated). Auto-OPEN the container on a
+        //    FULL_SUCCESS raid even when auto-send is off (just reveals the loot).
+        //    The auto-send loop additionally opens any completed run and then
+        //    collects to free the slot — collecting pays the postpayment, so it
+        //    only runs while auto-send is driving the loop.
+        const completed = exps.find((e) => e.status === 'COMPLETED');
+        if (completed) {
+            const opened = Array.isArray(completed.containerData);
+            const hasUncollected = opened && completed.containerData.some((i) => !i.isCollected);
+            if (!opened) {
+                if (completed.outcome === 'FULL_SUCCESS' || s.autoSend.enabled) {
+                    openContainer(completed.id, mod);
+                    await setState({ status: `opening container (${completed.outcome || 'done'})` });
+                } else {
+                    await setState({ status: `raid ${completed.outcome || 'done'} — open manually` });
+                }
+                return;
+            }
+            if (hasUncollected && s.autoSend.enabled) {
+                collectAll(completed.id, mod);
+                await setState({ status: 'collecting loot' });
+                return;
+            }
+            if (opened && !s.autoSend.enabled) {
+                await setState({ status: 'container opened — collect manually' });
+                return;
+            }
+        }
+
+        // 2) auto-send launch logic (requires auto-send enabled + a valid band).
         if (!s.autoSend.enabled) { await setState({ armed: false, status: 'auto-send off' }); return; }
         if (s.disabledReason) { await setState({ status: `paused: ${s.disabledReason}` }); return; }
 
         const min = Number(s.autoSend.moneyMin) || 0;
         const max = Number(s.autoSend.moneyMax) || 0;
         const validBand = max > 0 && max > min && min >= 0;
-
-        // 1) bank any COMPLETED run first (frees the slot, gets the loot).
-        const exps = (await Store.local.getOne(C.STORAGE_LOCAL.EXPEDITIONS, [])) || [];
-        const completed = exps.find((e) => e.status === 'COMPLETED');
-        if (completed) {
-            // open if not opened yet (container reveals on open), else collect.
-            const opened = Array.isArray(completed.containerData);
-            const hasUncollected = opened && completed.containerData.some((i) => !i.isCollected);
-            if (!opened) openContainer(completed.id, mod);
-            else if (hasUncollected) collectAll(completed.id, mod);
-            // fully collected → it will leave the active list shortly.
-            await setState({ status: `banking loot (${completed.outcome || 'done'})` });
-            return;
-        }
-
         if (!validBand) { await setState({ armed: false, status: 'set Money Min/Max' }); return; }
 
         const profile = await Store.local.getOne(C.STORAGE_LOCAL.PROFILE, null);
@@ -217,10 +239,13 @@
             this.track(Bus.window.on(C.MSG.WS.MERCENARIES, ev));
             this.track(Bus.window.on(C.MSG.WS.PROFILE, ev));
 
-            // Container/collect chain (open → collect → re-evaluate).
-            this.track(Bus.window.on(C.MSG.WS.CONTAINER_OPENED, () => {
+            // Container/collect chain. After an auto-open, only the auto-send loop
+            // auto-collects (collecting pays the postpayment). A master-only
+            // FULL_SUCCESS auto-open just reveals the loot — the user collects it.
+            this.track(Bus.window.on(C.MSG.WS.CONTAINER_OPENED, async () => {
                 unlock();
-                // find which exp we were opening
+                const s = await getSettings();
+                if (!s.masterEnabled || !s.autoSend.enabled) { collecting.clear(); return; }
                 for (const [id, phase] of collecting) {
                     if (phase === 'opening') { collectAll(id, this); break; }
                 }
@@ -271,10 +296,15 @@
             // missed push. Refreshes profile + mercs while armed/needed.
             const poll = setInterval(async () => {
                 const s = await getSettings();
-                if (!s.masterEnabled || !s.autoSend.enabled) return;
-                Bus.window.post(MSG.GAME.REQUEST_PROFILE, null);
-                Bus.window.post('COR3_REQUEST_MERCENARIES', null);
+                if (!s.masterEnabled) return;
+                // Always refresh expeditions while master is on so a completed run
+                // is caught for auto-open even if auto-send is off / the in-game
+                // Expeditions widget is closed (no game-driven get.active then).
                 Bus.window.post(MSG.GAME.REQUEST_EXPEDITIONS, null);
+                if (s.autoSend.enabled) {
+                    Bus.window.post(MSG.GAME.REQUEST_PROFILE, null);
+                    Bus.window.post('COR3_REQUEST_MERCENARIES', null);
+                }
                 setTimeout(ev, 1500);
             }, POLL_MS);
             this.track(() => clearInterval(poll));
