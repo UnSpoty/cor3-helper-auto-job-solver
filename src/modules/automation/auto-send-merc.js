@@ -33,14 +33,14 @@
     const BUSY_MS = 25000;            // max time a launch/collect RPC holds the lock
 
     // A single in-flight WS action (launch or collect) at a time.
+    // Single in-flight RPC guard — TIME-BOUNDED so a dropped reply (e.g. WS not
+    // ready right after a reload) self-heals: busy auto-expires and the next
+    // evaluate retries from the live data state (no permanent per-exp guard,
+    // which previously stuck "opening" forever when an open got dropped).
     let busyUntil = 0;
     const isBusy = () => Date.now() < busyUntil;
     const lock = () => { busyUntil = Date.now() + BUSY_MS; };
     const unlock = () => { busyUntil = 0; };
-
-    // Per-expedition collect-phase guard so we don't re-open/re-collect the
-    // same run while its WS round-trip is in flight. expId -> 'opening'|'collecting'.
-    const collecting = new Map();
 
     // ── settings (with one-time migration from legacy AUTO_SEND_MERC) ──
     async function getSettings() {
@@ -100,15 +100,18 @@
     }
 
     // ── auto-collect: open container → collect, banking loot + freeing slot ──
+    // Both are guarded only by the time-bounded `busy` lock and driven by the
+    // live data state (containerData null → open; opened+uncollected → collect),
+    // so a dropped RPC self-heals on the next evaluate.
     function openContainer(expId, mod) {
-        if (isBusy() || collecting.get(expId) === 'opening') return;
-        lock(); collecting.set(expId, 'opening');
+        if (isBusy()) return;
+        lock();
         mod.info(`expedition ${expId} COMPLETED — opening container`);
         Bus.window.post(MSG.GAME.OPEN_CONTAINER, { expeditionId: expId });
     }
     function collectAll(expId, mod) {
-        if (collecting.get(expId) === 'collecting') return;
-        lock(); collecting.set(expId, 'collecting');
+        if (isBusy()) return;
+        lock();
         mod.info(`collecting loot from ${expId}`);
         Bus.window.post(MSG.GAME.COLLECT_ALL, { expeditionId: expId });
     }
@@ -239,20 +242,13 @@
             this.track(Bus.window.on(C.MSG.WS.MERCENARIES, ev));
             this.track(Bus.window.on(C.MSG.WS.PROFILE, ev));
 
-            // Container/collect chain. After an auto-open, only the auto-send loop
-            // auto-collects (collecting pays the postpayment). A master-only
-            // FULL_SUCCESS auto-open just reveals the loot — the user collects it.
-            this.track(Bus.window.on(C.MSG.WS.CONTAINER_OPENED, async () => {
-                unlock();
-                const s = await getSettings();
-                if (!s.masterEnabled || !s.autoSend.enabled) { collecting.clear(); return; }
-                for (const [id, phase] of collecting) {
-                    if (phase === 'opening') { collectAll(id, this); break; }
-                }
-            }));
+            // Container/collect chain is data-driven: open.container now pushes the
+            // opened expedition into storage, so re-evaluating after each step sees
+            // the true state (opened+uncollected → collect if auto-send; master-only
+            // FULL_SUCCESS auto-open just reveals the loot, no auto-collect).
+            this.track(Bus.window.on(C.MSG.WS.CONTAINER_OPENED, () => { unlock(); ev(); }));
             this.track(Bus.window.on(C.MSG.WS.COLLECTED_ALL, () => {
                 unlock();
-                collecting.clear();
                 this.info('loot collected — refreshing + evaluating next send');
                 Bus.window.post(MSG.GAME.REQUEST_EXPEDITIONS, null);
                 Bus.window.post('COR3_REQUEST_STASH', null);
@@ -264,7 +260,7 @@
             this.track(Bus.window.on('COR3_WS_STASH_FULL', async () => {
                 this.warn('stash full — pausing auto-send until space frees up');
                 await patchSettings({ disabledReason: 'stash_full' });
-                unlock(); collecting.clear();
+                unlock();
             }));
             this.track(Bus.window.on(C.MSG.WS.INSUFFICIENT_CREDITS, async () => {
                 this.warn('insufficient credits — pausing auto-send');

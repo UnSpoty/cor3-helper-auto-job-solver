@@ -324,6 +324,11 @@
 
             if (action === 'open.container') {
                 post(MSG.WS.CONTAINER_OPENED, { data: payload.data });
+                // The reply IS the full expedition with containerData now
+                // populated — also push it as EXPEDITIONS so the stored snapshot
+                // reflects the opened state (UI shows "Collect all"; the auto
+                // engine sees opened instead of re-opening in a loop).
+                if (payload.data && payload.data.id) post(MSG.WS.EXPEDITIONS, { expeditions: [payload.data] });
                 return;
             }
 
