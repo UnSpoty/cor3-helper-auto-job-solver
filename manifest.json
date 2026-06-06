@@ -121,6 +121,7 @@
         "src/modules/data/mercenaries.js",
         "src/modules/data/merc-config.js",
         "src/modules/data/expedition-config.js",
+        "src/modules/data/profile.js",
         "src/modules/automation/timers.js",
         "src/modules/automation/auto-refresh.js",
         "src/modules/automation/auto-send-merc.js",

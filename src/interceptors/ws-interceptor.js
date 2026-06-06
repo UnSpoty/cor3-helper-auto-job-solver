@@ -224,6 +224,36 @@
             return;
         }
 
+        // profile → COR3_WS_PROFILE. The `profile` room carries the player's
+        // credit balance + account RENOWN. Live-captured actions:
+        //   receive.credits  { type:"CREDITS",  amount, newBalance }
+        //   receive.progress { type:"PROGRESS", amount, newProgress, newLevel, nextLevelRequiredXp }
+        //   get.credits / get.levels — boot-fetch replies (shapes vary; parsed
+        //   defensively). Surfaced for the Expeditions min/max auto-send.
+        if (eventName === 'profile' && payload) {
+            const pAction = payload.event && payload.event.action;
+            const d = payload.data;
+            const out = { source: pAction || 'profile' };
+            if (d && typeof d === 'object') {
+                if (typeof d.newBalance === 'number') out.balance = d.newBalance;
+                else if (typeof d.balance === 'number') out.balance = d.balance;
+                else if (typeof d.credits === 'number') out.balance = d.credits;
+                if (typeof d.amount === 'number' && /credit/i.test(pAction || '')) out.creditsDelta = d.amount;
+                if (typeof d.newLevel === 'number') out.renownLevel = d.newLevel;
+                else if (typeof d.level === 'number') out.renownLevel = d.level;
+                if (typeof d.newProgress === 'number') out.renownProgress = d.newProgress;
+                else if (typeof d.progress === 'number') out.renownProgress = d.progress;
+                if (typeof d.nextLevelRequiredXp === 'number') out.renownNext = d.nextLevelRequiredXp;
+            } else if (typeof d === 'number') {
+                out.balance = d;
+            }
+            // Only forward frames that carried at least one useful field.
+            if ('balance' in out || 'creditsDelta' in out || 'renownLevel' in out) {
+                post(MSG.WS.PROFILE, out);
+            }
+            return;
+        }
+
         // desktop — OS-shell events. Three actions matter to us:
         //   • get.options — full snapshot of folders/files; used to cache
         //     the Downloads folder id once per session.
@@ -448,9 +478,16 @@
             }
             // get.options still arrives (cor3.gg sends it alongside get.jobs
             // when the user opens the market UI manually) — it carries
-            // marketName, reputation, userCredits. We don't currently use
-            // those, so swallow without forwarding to keep storage clean.
-            if (action === 'get.options') return;
+            // marketName, reputation, userCredits. We seed the player's CR
+            // balance from userCredits (a reliable source that fires whenever
+            // a market opens / auto-refresh runs) so the Expeditions min/max
+            // auto-send has a balance even before any profile.receive.credits.
+            if (action === 'get.options') {
+                if (payload.data && typeof payload.data.userCredits === 'number') {
+                    post(MSG.WS.PROFILE, { balance: payload.data.userCredits, source: 'market.get.options' });
+                }
+                return;
+            }
             return;
         }
 
@@ -1290,6 +1327,27 @@
         return true;
     };
 
+    // "Throw Away" in the in-game Stash item-info panel. Wire captured live:
+    // stash.delete.item { itemId, quantity }. The server pushes a fresh
+    // stash.get.state on success; we also re-request to be safe.
+    root.__cor3DeleteItem = function (itemId, quantity) {
+        const qty = quantity || 1;
+        wsSendRpc('stash', 'delete.item', { itemId, quantity: qty });
+        setTimeout(() => root.__cor3RequestStash(), 1500);
+        return true;
+    };
+
+    // Player-profile snapshot: join the `profile` room then ask for the credit
+    // balance. Live deltas arrive via profile.receive.credits afterwards. Seeds
+    // STORAGE_LOCAL.PROFILE.balance for the Expeditions min/max auto-send.
+    root.__cor3RequestProfile = function () {
+        enterRooms(['profile']).then(() => {
+            wsSendRpc('profile', 'get.credits', {});
+            wsSendRpc('profile', 'get.levels', {});
+        });
+        return true;
+    };
+
     // Market UUIDs are static per cor3.gg deployment. Captured by inspecting
     // the WS frames the site sends when the user opens Market manually.
     const HOME_MARKET_ID = '019d3ea4-85bd-7389-904d-8f7c85841134';
@@ -1641,6 +1699,8 @@
         [MSG.GAME.REFRESH_USOL_MARKET]: () => root.__cor3RefreshUsolMarket(),
         'COR3_LEAVE_STASH': () => leaveRoom('stash'),
         'COR3_SELL_ITEM': (e) => root.__cor3SellItem(e.itemId, e.quantity || 1),
+        [MSG.GAME.DELETE_ITEM]: (e) => root.__cor3DeleteItem(e.itemId, e.quantity || 1),
+        [MSG.GAME.REQUEST_PROFILE]: () => root.__cor3RequestProfile(),
         [MSG.GAME.RESPOND_DECISION]: (e) => root.__cor3RespondDecision(e.expeditionId, e.messageId, e.selectedOption),
         'COR3_REQUEST_ARCHIVED_EXPEDITIONS': () => root.__cor3RequestArchivedExpeditions(),
         'COR3_REQUEST_MERCENARIES': () => root.__cor3RequestMercenaries(),

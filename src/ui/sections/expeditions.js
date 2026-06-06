@@ -1,22 +1,23 @@
 // src/ui/sections/expeditions.js
-// Combined "everything about running expeditions" tab. Merges what used to
-// be Stash + Mercs + Overview's expedition/decision blocks, plus the
-// auto-choose-decision controls that lived in Settings.
+// "Everything about running expeditions" tab (reworked).
 //
-// Layout:
-//   • Active expeditions (timers + status pills)
-//   • Recent runs (archived list — paginated to 8 entries)
-//   • Pending decisions (interactive — click an option to send response)
-//   • Auto-choose decision (toggle + risk threshold slider)
-//   • Auto-send mercenary (toggle + auto-pick toggle + disabled reason)
-//   • Mercenary roster (status, cost, risk, "pick" → autoSendMerc.mercenaryId)
-//   • Stash (capacity bar + item list)
+// Layout (top → bottom):
+//   • Master switch            — gates ALL expedition automation (#2)
+//   • Auto-send mercenary       — toggle + Money Min/Max + live status (#1,3,4,5)
+//   • Auto-choose decision      — toggle + risk threshold slider (#10)
+//   • Active expedition          — status, merc, loot/decision actions
+//   • Pending decisions          — interactive option buttons
+//   • Mercenary roster           — rich cards + "Send now" + Refresh (#6)
+//   • Stash                      — rich item cards + Sell/Throw away + Refresh (#7)
+//   • Recent runs                — full per-run detail + pagination + Refresh (#9)
 //
-// Render architecture: the DOM skeleton is built ONCE per activate(); each
-// chrome.storage key drives the narrowest refresh that depends on it.
-// List sections use replaceChildren (atomic) instead of innerHTML='' +
-// appendChild (which paints an empty intermediate state). See
-// overview.js / auto-jobs.js for the same pattern.
+// Settings model: STORAGE_SYNC.EXPEDITIONS_SETTINGS
+//   { masterEnabled, autoSend:{ enabled, moneyMin, moneyMax }, disabledReason }
+// Auto-choose keeps its own keys (AUTO_CHOOSE_ENABLED / RISK_THRESHOLD), gated
+// by masterEnabled in the automation module.
+//
+// Render: skeleton built once per activate(); each storage key drives the
+// narrowest refresh. Lists use replaceChildren (atomic).
 
 (function () {
     const root = window;
@@ -32,6 +33,9 @@
         if (html !== undefined) e.innerHTML = html;
         return e;
     }
+    function num(n) {
+        return (typeof n === 'number' && isFinite(n)) ? n.toLocaleString('en-US') : '?';
+    }
     async function getCor3Tab() {
         const [t] = await chrome.tabs.query({ url: ['https://cor3.gg/*', 'https://os.cor3.gg/*'] });
         return t || null;
@@ -42,6 +46,50 @@
         chrome.tabs.sendMessage(tab.id, Object.assign({ action }, extra)).catch(() => {});
     }
 
+    const DEFAULT_SETTINGS = { masterEnabled: false, autoSend: { enabled: false, moneyMin: 0, moneyMax: 0 }, disabledReason: null };
+    async function getSettings() {
+        const s = await Store.sync.getOne(C.STORAGE_SYNC.EXPEDITIONS_SETTINGS, null);
+        if (!s) return JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
+        if (!s.autoSend) s.autoSend = { enabled: false, moneyMin: 0, moneyMax: 0 };
+        return s;
+    }
+    // Serialise the read-modify-write of EXPEDITIONS_SETTINGS — rapid edits
+    // (toggle + type Min + type Max in quick succession) would otherwise
+    // interleave their read-then-write and clobber each other's fields.
+    let settingsWriteChain = Promise.resolve();
+    function queueSettingsWrite(mutate) {
+        settingsWriteChain = settingsWriteChain.then(async () => {
+            const s = await getSettings();
+            mutate(s);
+            await Store.sync.setOne(C.STORAGE_SYNC.EXPEDITIONS_SETTINGS, s);
+        }).catch(() => {});
+        return settingsWriteChain;
+    }
+    function patchSettings(patch) {
+        return queueSettingsWrite((s) => Object.assign(s, patch));
+    }
+    function patchAutoSend(patch) {
+        return queueSettingsWrite((s) => {
+            s.autoSend = Object.assign({ enabled: false, moneyMin: 0, moneyMax: 0 }, s.autoSend, patch);
+        });
+    }
+
+    function outcomePill(outcome) {
+        if (/full_success/i.test(outcome)) return 'ok';
+        if (/partial/i.test(outcome)) return 'warn';
+        if (/fail|lost|dead|death/i.test(outcome)) return 'err';
+        return 'idle';
+    }
+    function statusPill(status) {
+        if (/complet/i.test(status)) return 'ok';
+        if (/event/i.test(status)) return 'warn';
+        if (/run|return|prepar/i.test(status)) return 'active';
+        return 'idle';
+    }
+    function tierClass(tier) {
+        return 'exp-tier exp-tier-' + String(tier || 'common').toLowerCase();
+    }
+
     // ─── Panel state ──────────────────────────────────────────────────────
     let panel = null;
 
@@ -50,10 +98,6 @@
         for (const tm of panel.timers) try { tm.stop(); } catch (_) {}
         panel = null;
     }
-
-    // Each list section owns its own timer instances — when the list is
-    // replaced, we stop just those, not the entire panel's pool. Keeps
-    // `panel.timers` accurate without forcing per-card tracking.
     function dropSectionTimers(section) {
         for (const tm of section.timers) {
             try { tm.stop(); } catch (_) {}
@@ -71,53 +115,77 @@
     function build(container) {
         tearDown();
         container.innerHTML = '';
-
         panel = {
-            container,
-            timers: [],
-            active:    { titleRow: null, listHost: null, timers: [] },
-            archived:  { titleRow: null, listHost: null, timers: [] },
-            pending:   { title: null,    listHost: null, timers: [] },
-            autoChoose:{ enabledInput: null, sliderInput: null, label: null },
-            autoSend:  { enabledInput: null, autoChooseMercInput: null, warning: null },
-            mercList:  { titleRow: null, listHost: null },
-            stash:     { card: null, capacityText: null, refreshBtn: null,
-                         itemsTitle: null, itemsHost: null },
+            container, timers: [],
+            master: { input: null, hint: null },
+            autoSend: { input: null, minMaxRow: null, minInput: null, maxInput: null, status: null, warn: null },
+            autoChoose: { enabledInput: null, sliderInput: null, label: null },
+            active: { listHost: null, timers: [] },
+            pending: { title: null, listHost: null, timers: [] },
+            roster: { listHost: null },
+            stash: { capacityText: null, bar: null, itemsTitle: null, itemsHost: null },
+            recent: { listHost: null, showAll: false, moreBtn: null },
         };
 
-        // ─── Active expeditions ───────────────────────────────────────
-        const activeHeader = el('div', 'row between');
-        activeHeader.appendChild(el('div', 'section-title', 'Active expeditions'));
-        const activeRefresh = el('button', 'btn small', 'Refresh');
-        activeRefresh.addEventListener('click', () => sendToContent('requestExpeditions'));
-        activeHeader.appendChild(activeRefresh);
-        container.appendChild(activeHeader);
+        // ─── Master switch ────────────────────────────────────────────
+        container.appendChild(el('div', 'section-title', 'Expeditions automation'));
+        const mCard = el('div', 'card');
+        const mRow = el('div', 'card-row');
+        mRow.appendChild(el('span', 'card-label', 'Master switch'));
+        const mSw = el('label', 'switch');
+        const mInput = document.createElement('input');
+        mInput.type = 'checkbox';
+        mSw.appendChild(mInput); mSw.appendChild(el('span', 'switch-slider'));
+        mRow.appendChild(mSw);
+        mCard.appendChild(mRow);
+        const mHint = el('div', 'muted xs mt-sm', 'Off = all expedition automation paused (auto-send, auto-choose decision, auto-collect).');
+        mCard.appendChild(mHint);
+        container.appendChild(mCard);
+        mInput.addEventListener('change', (e) => patchSettings({ masterEnabled: e.target.checked }));
+        panel.master = { input: mInput, hint: mHint };
 
-        const activeListHost = el('div');
-        container.appendChild(activeListHost);
-        panel.active.listHost = activeListHost;
+        // ─── Auto-send mercenary ──────────────────────────────────────
+        container.appendChild(el('div', 'section-title', 'Auto-send mercenary'));
+        const asCard = el('div', 'card');
+        const asRow = el('div', 'card-row');
+        asRow.appendChild(el('span', 'card-label', 'Auto-send by balance'));
+        const asSw = el('label', 'switch');
+        const asInput = document.createElement('input');
+        asInput.type = 'checkbox';
+        asSw.appendChild(asInput); asSw.appendChild(el('span', 'switch-slider'));
+        asRow.appendChild(asSw);
+        asCard.appendChild(asRow);
 
-        // ─── Recent runs ──────────────────────────────────────────────
-        const archivedHeader = el('div', 'row between mt-md');
-        archivedHeader.appendChild(el('div', 'section-title', 'Recent runs'));
-        const archivedRefresh = el('button', 'btn small', 'Refresh');
-        archivedRefresh.addEventListener('click', () => sendToContent('requestArchivedExpeditions'));
-        archivedHeader.appendChild(archivedRefresh);
-        container.appendChild(archivedHeader);
+        // Money Min / Max inputs (hidden until enabled)
+        const mmRow = el('div', 'exp-minmax mt-sm');
+        const minWrap = el('label', 'exp-minmax-field');
+        minWrap.appendChild(el('span', 'card-label', 'Money: Min (CR)'));
+        const minInput = document.createElement('input');
+        minInput.type = 'number'; minInput.min = '0'; minInput.className = 'exp-num'; minInput.placeholder = '0';
+        minWrap.appendChild(minInput);
+        const maxWrap = el('label', 'exp-minmax-field');
+        maxWrap.appendChild(el('span', 'card-label', 'Money: Max (CR)'));
+        const maxInput = document.createElement('input');
+        maxInput.type = 'number'; maxInput.min = '0'; maxInput.className = 'exp-num'; maxInput.placeholder = '0';
+        maxWrap.appendChild(maxInput);
+        mmRow.appendChild(minWrap); mmRow.appendChild(maxWrap);
+        asCard.appendChild(mmRow);
+        asCard.appendChild(el('div', 'muted xs mt-sm',
+            'Sends the cheapest available merc once balance ≥ Max, keeps sending until balance ≤ Min. Never stops itself — waits while mercs are resting.'));
 
-        const archivedListHost = el('div');
-        container.appendChild(archivedListHost);
-        panel.archived.listHost = archivedListHost;
+        const asStatus = el('div', 'exp-status mt-sm', '');
+        asCard.appendChild(asStatus);
+        const asWarn = el('div', 'warn sm mt-sm', '');
+        asWarn.style.display = 'none';
+        asCard.appendChild(asWarn);
+        container.appendChild(asCard);
 
-        // ─── Pending decisions ────────────────────────────────────────
-        // Title is part of the skeleton but hidden when no pending exists.
-        const pendingTitle = el('div', 'section-title', 'Pending decisions');
-        pendingTitle.style.display = 'none';
-        container.appendChild(pendingTitle);
-        const pendingListHost = el('div');
-        container.appendChild(pendingListHost);
-        panel.pending.title = pendingTitle;
-        panel.pending.listHost = pendingListHost;
+        asInput.addEventListener('change', (e) => patchAutoSend({ enabled: e.target.checked }));
+        const commitMin = () => patchAutoSend({ moneyMin: Math.max(0, Math.floor(Number(minInput.value) || 0)) });
+        const commitMax = () => patchAutoSend({ moneyMax: Math.max(0, Math.floor(Number(maxInput.value) || 0)) });
+        minInput.addEventListener('change', commitMin);
+        maxInput.addEventListener('change', commitMax);
+        panel.autoSend = { input: asInput, minMaxRow: mmRow, minInput, maxInput, status: asStatus, warn: asWarn };
 
         // ─── Auto-choose decision ─────────────────────────────────────
         container.appendChild(el('div', 'section-title', 'Auto-choose decision'));
@@ -127,240 +195,165 @@
         const acSw = el('label', 'switch');
         const acInput = document.createElement('input');
         acInput.type = 'checkbox';
-        acSw.appendChild(acInput);
-        acSw.appendChild(el('span', 'switch-slider'));
+        acSw.appendChild(acInput); acSw.appendChild(el('span', 'switch-slider'));
         acRow.appendChild(acSw);
         acCard.appendChild(acRow);
-
         const rtRow = el('div', 'card-row mt-sm');
         rtRow.appendChild(el('span', 'card-label', 'Risk threshold'));
         const rtLabel = el('span', 'mono', '5');
         rtRow.appendChild(rtLabel);
         acCard.appendChild(rtRow);
-
         const rtSlider = document.createElement('input');
-        rtSlider.type = 'range';
-        rtSlider.min = '0';
-        rtSlider.max = '10';
-        rtSlider.step = '1';
-        rtSlider.className = 'mt-sm';
+        rtSlider.type = 'range'; rtSlider.min = '0'; rtSlider.max = '10'; rtSlider.step = '1'; rtSlider.className = 'mt-sm';
         acCard.appendChild(rtSlider);
         acCard.appendChild(el('div', 'muted xs mt-sm', '0 = strong risk penalty · 10 = ignore risk'));
         container.appendChild(acCard);
-
-        acInput.addEventListener('change', (e) =>
-            Store.sync.setOne(C.STORAGE_SYNC.AUTO_CHOOSE_ENABLED, e.target.checked));
+        acInput.addEventListener('change', (e) => Store.sync.setOne(C.STORAGE_SYNC.AUTO_CHOOSE_ENABLED, e.target.checked));
         rtSlider.addEventListener('input', (e) => { rtLabel.textContent = e.target.value; });
-        rtSlider.addEventListener('change', (e) =>
-            Store.sync.setOne(C.STORAGE_SYNC.RISK_THRESHOLD, Number(e.target.value)));
-
+        rtSlider.addEventListener('change', (e) => Store.sync.setOne(C.STORAGE_SYNC.RISK_THRESHOLD, Number(e.target.value)));
         panel.autoChoose = { enabledInput: acInput, sliderInput: rtSlider, label: rtLabel };
 
-        // ─── Auto-send mercenary ──────────────────────────────────────
-        container.appendChild(el('div', 'section-title', 'Auto-send mercenary'));
-        const asCard = el('div', 'card');
+        // ─── Active expedition ────────────────────────────────────────
+        const aHead = el('div', 'row between mt-md');
+        aHead.appendChild(el('div', 'section-title', 'Active expedition'));
+        const aRefresh = el('button', 'btn small', 'Refresh');
+        aRefresh.addEventListener('click', () => sendToContent('requestExpeditions'));
+        aHead.appendChild(aRefresh);
+        container.appendChild(aHead);
+        const aHost = el('div');
+        container.appendChild(aHost);
+        // delegated clicks: open container / collect
+        aHost.addEventListener('click', (e) => {
+            const b = e.target.closest('button[data-act]');
+            if (!b) return;
+            const id = b.dataset.exp;
+            if (b.dataset.act === 'open') sendToContent('openContainer', { expeditionId: id });
+            else if (b.dataset.act === 'collect') sendToContent('collectAll', { expeditionId: id });
+        });
+        panel.active.listHost = aHost;
 
-        const asRow1 = el('div', 'card-row');
-        asRow1.appendChild(el('span', 'card-label', 'Enabled'));
-        const asSw1 = el('label', 'switch');
-        const asEnabled = document.createElement('input');
-        asEnabled.type = 'checkbox';
-        asEnabled.dataset.k = 'enabled';
-        asSw1.appendChild(asEnabled);
-        asSw1.appendChild(el('span', 'switch-slider'));
-        asRow1.appendChild(asSw1);
-        asCard.appendChild(asRow1);
-
-        const asRow2 = el('div', 'card-row mt-sm');
-        asRow2.appendChild(el('span', 'card-label', 'Auto-choose cheapest'));
-        const asSw2 = el('label', 'switch');
-        const asAuto = document.createElement('input');
-        asAuto.type = 'checkbox';
-        asAuto.dataset.k = 'autoChooseMerc';
-        asSw2.appendChild(asAuto);
-        asSw2.appendChild(el('span', 'switch-slider'));
-        asRow2.appendChild(asSw2);
-        asCard.appendChild(asRow2);
-
-        const asWarn = el('div', 'warn sm mt-sm', '');
-        asWarn.style.display = 'none';
-        asCard.appendChild(asWarn);
-
-        container.appendChild(asCard);
-
-        const onAutoSendChange = async (e) => {
-            const cur = (await Store.sync.getOne(C.STORAGE_SYNC.AUTO_SEND_MERC, {})) || {};
-            cur[e.target.dataset.k] = e.target.checked;
-            if (e.target.dataset.k === 'enabled' && e.target.checked) cur.disabledReason = null;
-            await Store.sync.setOne(C.STORAGE_SYNC.AUTO_SEND_MERC, cur);
-        };
-        asEnabled.addEventListener('change', onAutoSendChange);
-        asAuto.addEventListener('change', onAutoSendChange);
-
-        panel.autoSend = { enabledInput: asEnabled, autoChooseMercInput: asAuto, warning: asWarn };
+        // ─── Pending decisions ────────────────────────────────────────
+        const pTitle = el('div', 'section-title', 'Pending decisions');
+        pTitle.style.display = 'none';
+        container.appendChild(pTitle);
+        const pHost = el('div');
+        container.appendChild(pHost);
+        panel.pending.title = pTitle;
+        panel.pending.listHost = pHost;
 
         // ─── Mercenary roster ─────────────────────────────────────────
-        container.appendChild(el('div', 'section-title', 'Mercenary roster'));
-        const mercListHost = el('div');
-        container.appendChild(mercListHost);
-
-        // Delegated click for "Pick" buttons — survives replaceChildren.
-        mercListHost.addEventListener('click', async (e) => {
-            const btn = e.target.closest('button[data-pick]');
-            if (!btn) return;
-            const cur = (await Store.sync.getOne(C.STORAGE_SYNC.AUTO_SEND_MERC, {})) || {};
-            cur.mercenaryId = btn.dataset.pick;
-            cur.mercenaryName = btn.dataset.pickName || btn.dataset.pick;
-            await Store.sync.setOne(C.STORAGE_SYNC.AUTO_SEND_MERC, cur);
+        const rHead = el('div', 'row between mt-md');
+        rHead.appendChild(el('div', 'section-title', 'Mercenary roster'));
+        const rRefresh = el('button', 'btn small', 'Refresh');
+        rRefresh.addEventListener('click', () => { sendToContent('requestMercenaries'); sendToContent('requestExpeditionConfig'); });
+        rHead.appendChild(rRefresh);
+        container.appendChild(rHead);
+        const rHost = el('div');
+        container.appendChild(rHost);
+        rHost.addEventListener('click', (e) => {
+            const b = e.target.closest('button[data-send]');
+            if (!b || b.disabled) return;
+            sendToContent('sendMercNow', { mercenaryId: b.dataset.send });
+            b.disabled = true; b.textContent = 'Sending…';
         });
-
-        panel.mercList = { listHost: mercListHost };
+        panel.roster.listHost = rHost;
 
         // ─── Stash ────────────────────────────────────────────────────
-        container.appendChild(el('div', 'section-title', 'Stash'));
-        const stashCard = el('div', 'card');
-        const stashCapRow = el('div', 'card-row');
-        stashCapRow.appendChild(el('span', 'card-label', 'Capacity'));
-        const stashCapText = el('span', '', '');
-        stashCapRow.appendChild(stashCapText);
-        stashCard.appendChild(stashCapRow);
-
-        const stashRefresh = el('button', 'btn small mt-sm', 'Refresh');
-        stashRefresh.addEventListener('click', () => sendToContent('requestStash'));
-        stashCard.appendChild(stashRefresh);
-        container.appendChild(stashCard);
-
+        const sHead = el('div', 'row between mt-md');
+        sHead.appendChild(el('div', 'section-title', 'Stash'));
+        const sRefresh = el('button', 'btn small', 'Refresh');
+        sRefresh.addEventListener('click', () => sendToContent('requestStash'));
+        sHead.appendChild(sRefresh);
+        container.appendChild(sHead);
+        const sCard = el('div', 'card');
+        const sCapRow = el('div', 'card-row');
+        sCapRow.appendChild(el('span', 'card-label', 'Capacity'));
+        const sCapText = el('span', '', '');
+        sCapRow.appendChild(sCapText);
+        sCard.appendChild(sCapRow);
+        const sBarOuter = el('div', 'exp-bar mt-sm');
+        const sBar = el('div', 'exp-bar-fill');
+        sBarOuter.appendChild(sBar);
+        sCard.appendChild(sBarOuter);
+        container.appendChild(sCard);
         const itemsTitle = el('div', 'section-title', '');
         itemsTitle.style.display = 'none';
         container.appendChild(itemsTitle);
-        const itemsHost = el('div');
+        const itemsHost = el('div', 'exp-item-grid');
         container.appendChild(itemsHost);
-
-        panel.stash = {
-            card: stashCard,
-            capacityText: stashCapText,
-            refreshBtn: stashRefresh,
-            itemsTitle,
-            itemsHost,
-        };
-    }
-
-    // ─── Targeted refreshes ───────────────────────────────────────────────
-
-    async function refreshActive() {
-        if (!panel) return;
-        const exps = await Store.local.getOne(C.STORAGE_LOCAL.EXPEDITIONS, []);
-        dropSectionTimers(panel.active);
-        if (!exps || exps.length === 0) {
-            panel.active.listHost.replaceChildren(el('div', 'empty', 'No active expeditions.'));
-            return;
-        }
-        const cards = [];
-        for (const exp of exps) {
-            const card = el('div', 'card');
-            const head = el('div', 'card-row');
-            head.appendChild(el('span', 'card-label',
-                `${exp.locationName || ''}${exp.zoneName ? ' · ' + exp.zoneName : ''}`));
-            head.appendChild(el('span',
-                'pill ' + (exp.status === 'COMPLETED' ? 'ok' : 'active'),
-                exp.status || ''));
-            card.appendChild(head);
-            if (exp.endTime) {
-                const tRow = el('div', 'card-row mt-sm');
-                tRow.appendChild(el('span', 'sm muted', 'ETA'));
-                const inst = uiComponents.timer.create(exp.endTime);
-                adoptTimer(panel.active, inst);
-                tRow.appendChild(inst.el);
-                card.appendChild(tRow);
-            }
-            cards.push(card);
-        }
-        panel.active.listHost.replaceChildren(...cards);
-    }
-
-    async function refreshArchived() {
-        if (!panel) return;
-        const archived = await Store.local.getOne(C.STORAGE_LOCAL.ARCHIVED_EXPEDITIONS, []);
-        const archList = Array.isArray(archived) ? archived : [];
-        if (archList.length === 0) {
-            panel.archived.listHost.replaceChildren(
-                el('div', 'empty', 'No archived runs yet — click Refresh.'));
-            return;
-        }
-        const cards = [];
-        for (const run of archList.slice(0, 8)) {
-            const status = run.status || run.outcome || '';
-            const loc = run.locationName || run.location || '';
-            const zone = run.zoneName || run.zone || '';
-            const merc = run.mercenaryCallsign || run.mercenaryName || '';
-            const card = el('div', 'card compact');
-            const head = el('div', 'card-row');
-            head.appendChild(el('span', 'card-label',
-                `${escape(loc)}${zone ? ' · ' + escape(zone) : ''}`));
-            const pillCls = /complet|success|return|won/i.test(status) ? 'ok'
-                : /fail|lost|dead|killed/i.test(status) ? 'err'
-                : 'idle';
-            head.appendChild(el('span', `pill ${pillCls}`, escape(status || '?')));
-            card.appendChild(head);
-
-            const meta = [];
-            if (merc) meta.push(`👤 ${escape(merc)}`);
-            if (run.totalCost != null) meta.push(`💸 ${run.totalCost}`);
-            // cor3.gg shapes loot in many forms — handle the common ones.
-            const loot = run.rewards || run.loot || run.payout;
-            if (loot && typeof loot === 'object') {
-                if (loot.credits) meta.push(`💰 ${loot.credits}`);
-                if (loot.reputation) meta.push(`⭐ ${loot.reputation}`);
-                if (loot.renown) meta.push(`🏅 ${loot.renown}`);
-                if (Array.isArray(loot.items) && loot.items.length) meta.push(`📦 ${loot.items.length}`);
-            }
-            if (run.completedAt || run.endedAt) {
-                const ts = new Date(run.completedAt || run.endedAt);
-                if (!isNaN(ts.getTime())) meta.push(ts.toLocaleString());
-            }
-            if (meta.length) card.appendChild(el('div', 'muted xs mt-sm', meta.join(' · ')));
-            cards.push(card);
-        }
-        panel.archived.listHost.replaceChildren(...cards);
-    }
-
-    async function refreshPending() {
-        if (!panel) return;
-        const decisions = await Store.local.getOne(C.STORAGE_LOCAL.DECISIONS, []);
-        const pending = (decisions || []).filter((d) => !d.isResolved);
-        dropSectionTimers(panel.pending);
-        if (pending.length === 0) {
-            panel.pending.title.style.display = 'none';
-            panel.pending.listHost.replaceChildren();
-            return;
-        }
-        panel.pending.title.style.display = '';
-        const cards = [];
-        for (const d of pending) {
-            const card = el('div', 'card');
-            card.appendChild(el('div', 'sm',
-                `<strong>${escape(d.mercenaryCallsign || '?')}</strong> · ${escape(d.locationName || '')}`));
-            if (d.content) card.appendChild(el('div', 'sm muted mt-sm', escape(d.content)));
-            if (d.decisionDeadline) {
-                const tRow = el('div', 'card-row mt-sm');
-                tRow.appendChild(el('span', 'sm muted', 'Decide in'));
-                const inst = uiComponents.timer.create(d.decisionDeadline);
-                adoptTimer(panel.pending, inst);
-                tRow.appendChild(inst.el);
-                card.appendChild(tRow);
-            }
-            if (Array.isArray(d.decisionOptions)) {
-                for (const opt of d.decisionOptions) {
-                    const btn = el('button', 'btn small mt-sm btn-block', escape(opt.label || opt.id));
-                    btn.addEventListener('click', () => sendToContent('respondDecision', {
-                        expeditionId: d.expeditionId, messageId: d.messageId, selectedOption: opt.id,
-                    }));
-                    card.appendChild(btn);
+        itemsHost.addEventListener('click', (e) => {
+            const b = e.target.closest('button[data-item-act]');
+            if (!b || b.disabled) return;
+            const itemId = b.dataset.item;
+            const name = b.dataset.name || 'this item';
+            if (b.dataset.itemAct === 'sell') {
+                sendToContent('sellItem', { itemId, quantity: 1 });
+                b.disabled = true;
+            } else if (b.dataset.itemAct === 'delete') {
+                if (window.confirm(`Throw away "${name}"? This is permanent.`)) {
+                    sendToContent('deleteItem', { itemId, quantity: 1 });
+                    b.disabled = true;
                 }
             }
-            cards.push(card);
+        });
+        panel.stash = { capacityText: sCapText, bar: sBar, itemsTitle, itemsHost };
+
+        // ─── Recent runs ──────────────────────────────────────────────
+        const recHead = el('div', 'row between mt-md');
+        recHead.appendChild(el('div', 'section-title', 'Recent runs'));
+        const recRefresh = el('button', 'btn small', 'Refresh');
+        recRefresh.addEventListener('click', () => sendToContent('requestArchivedExpeditions'));
+        recHead.appendChild(recRefresh);
+        container.appendChild(recHead);
+        const recHost = el('div');
+        container.appendChild(recHost);
+        recHost.addEventListener('click', (e) => {
+            const d = e.target.closest('button[data-toggle-run]');
+            if (d) { const det = d.closest('.exp-run-card').querySelector('.exp-run-detail'); if (det) det.classList.toggle('open'); return; }
+            const more = e.target.closest('button[data-show-all]');
+            if (more) { panel.recent.showAll = true; refreshRecent(); }
+        });
+        panel.recent.listHost = recHost;
+    }
+
+    // ─── Refreshers ───────────────────────────────────────────────────────
+    async function refreshMaster() {
+        if (!panel) return;
+        const s = await getSettings();
+        if (panel.master.input.checked !== !!s.masterEnabled) panel.master.input.checked = !!s.masterEnabled;
+    }
+
+    async function refreshAutoSend() {
+        if (!panel) return;
+        const [s, state, profile] = await Promise.all([
+            getSettings(),
+            Store.local.getOne(C.STORAGE_LOCAL.EXP_AUTOSEND_STATE, {}),
+            Store.local.getOne(C.STORAGE_LOCAL.PROFILE, {}),
+        ]);
+        const n = panel.autoSend;
+        const enabled = !!(s.autoSend && s.autoSend.enabled);
+        if (n.input.checked !== enabled) n.input.checked = enabled;
+        n.minMaxRow.style.display = enabled ? '' : 'none';
+        if (document.activeElement !== n.minInput) n.minInput.value = (s.autoSend.moneyMin || 0) || '';
+        if (document.activeElement !== n.maxInput) n.maxInput.value = (s.autoSend.moneyMax || 0) || '';
+
+        const bal = profile && typeof profile.balance === 'number' ? profile.balance : null;
+        const balTxt = bal != null ? `${num(bal)} CR` : '—';
+        if (enabled) {
+            const armed = state && state.armed;
+            const st = (state && state.status) || 'starting…';
+            n.status.innerHTML = `Balance: <span class="mono">${balTxt}</span> · `
+                + `<span class="${armed ? 'exp-armed' : 'muted'}">${escape(st)}</span>`;
+            n.status.style.display = '';
+        } else {
+            n.status.style.display = 'none';
         }
-        panel.pending.listHost.replaceChildren(...cards);
+        if (s.disabledReason) {
+            n.warn.textContent = `Paused: ${s.disabledReason.replace(/_/g, ' ')}`;
+            n.warn.style.display = '';
+        } else {
+            n.warn.style.display = 'none';
+        }
     }
 
     async function refreshAutoChoose() {
@@ -376,55 +369,149 @@
         n.label.textContent = tv;
     }
 
-    async function refreshAutoSend() {
+    async function refreshActive() {
         if (!panel) return;
-        const autoSend = await Store.sync.getOne(C.STORAGE_SYNC.AUTO_SEND_MERC,
-            { enabled: false, autoChooseMerc: true });
-        const n = panel.autoSend;
-        const enabled = !!(autoSend && autoSend.enabled);
-        const acm = !!(autoSend && autoSend.autoChooseMerc !== false);
-        if (n.enabledInput.checked !== enabled) n.enabledInput.checked = enabled;
-        if (n.autoChooseMercInput.checked !== acm) n.autoChooseMercInput.checked = acm;
-        if (autoSend && autoSend.disabledReason) {
-            n.warning.textContent = `Disabled: ${autoSend.disabledReason}`;
-            n.warning.style.display = '';
-        } else {
-            n.warning.style.display = 'none';
-            n.warning.textContent = '';
-        }
-    }
-
-    async function refreshMercList() {
-        if (!panel) return;
-        const [mercs, mercConfigs, autoSend] = await Promise.all([
-            Store.local.getOne(C.STORAGE_LOCAL.MERCENARIES),
-            Store.local.getOne(C.STORAGE_LOCAL.MERC_CONFIG, {}),
-            Store.sync.getOne(C.STORAGE_SYNC.AUTO_SEND_MERC, {}),
-        ]);
-        const mercList = (mercs && (Array.isArray(mercs) ? mercs : mercs.mercenaries)) || [];
-        if (mercList.length === 0) {
-            panel.mercList.listHost.replaceChildren(el('div', 'empty', 'No mercenary data yet.'));
+        const exps = (await Store.local.getOne(C.STORAGE_LOCAL.EXPEDITIONS, [])) || [];
+        dropSectionTimers(panel.active);
+        if (!exps.length) {
+            panel.active.listHost.replaceChildren(el('div', 'empty', 'No active expedition.'));
             return;
         }
         const cards = [];
-        for (const m of mercList) {
-            const cfg = (mercConfigs || {})[m.id] || {};
-            const isPicked = autoSend && autoSend.mercenaryId === m.id;
-            const card = el('div', 'merc-card'
-                + (m.status !== 'AVAILABLE' ? ' unavail' : '')
-                + (isPicked ? ' selected' : ''));
-            const body = el('div');
-            body.appendChild(el('div', '', `<strong>${escape(m.callsign || m.id)}</strong>`));
+        for (const exp of exps) {
+            const card = el('div', 'card');
+            const head = el('div', 'card-row');
+            const merc = exp.mercenary && exp.mercenary.callsign;
+            head.appendChild(el('span', 'card-label',
+                `${merc ? escape(merc) + ' · ' : ''}${escape(exp.locationName || '')}${exp.zoneName ? ' · ' + escape(exp.zoneName) : ''}`));
+            head.appendChild(el('span', `pill ${statusPill(exp.status)}`, escape(exp.status || '?')));
+            card.appendChild(head);
+
+            const meta = [];
+            if (exp.objectiveName) meta.push(escape(exp.objectiveName));
+            if (exp.riskScore != null) meta.push(`risk ${exp.riskScore}`);
+            if (exp.totalCost != null) meta.push(`${num(exp.totalCost)} CR`);
+            if (meta.length) card.appendChild(el('div', 'muted xs mt-sm', meta.join(' · ')));
+
+            if (exp.endTime) {
+                const tRow = el('div', 'card-row mt-sm');
+                tRow.appendChild(el('span', 'sm muted', 'ETA'));
+                const inst = uiComponents.timer.create(exp.endTime);
+                adoptTimer(panel.active, inst);
+                tRow.appendChild(inst.el);
+                card.appendChild(tRow);
+            } else if (exp.runDuration) {
+                card.appendChild(el('div', 'muted xs mt-sm', `Duration ~${Math.round(exp.runDuration / 60000)} min`));
+            }
+
+            // COMPLETED → loot actions
+            if (exp.status === 'COMPLETED') {
+                const opened = Array.isArray(exp.containerData);
+                const uncollected = opened && exp.containerData.some((i) => !i.isCollected);
+                const actRow = el('div', 'mt-sm');
+                if (!opened) {
+                    const b = el('button', 'btn small btn-success', 'Open container');
+                    b.dataset.act = 'open'; b.dataset.exp = exp.id;
+                    actRow.appendChild(b);
+                } else if (uncollected) {
+                    const b = el('button', 'btn small btn-success', 'Collect all');
+                    b.dataset.act = 'collect'; b.dataset.exp = exp.id;
+                    actRow.appendChild(b);
+                } else if (opened) {
+                    actRow.appendChild(el('span', 'pill ok', 'Collected'));
+                }
+                card.appendChild(actRow);
+            }
+            cards.push(card);
+        }
+        panel.active.listHost.replaceChildren(...cards);
+    }
+
+    async function refreshPending() {
+        if (!panel) return;
+        const decisions = (await Store.local.getOne(C.STORAGE_LOCAL.DECISIONS, [])) || [];
+        const pending = decisions.filter((d) => !d.isResolved && Array.isArray(d.decisionOptions));
+        dropSectionTimers(panel.pending);
+        if (!pending.length) {
+            panel.pending.title.style.display = 'none';
+            panel.pending.listHost.replaceChildren();
+            return;
+        }
+        panel.pending.title.style.display = '';
+        const cards = [];
+        for (const d of pending) {
+            const card = el('div', 'card');
+            card.appendChild(el('div', 'sm', `<strong>${escape(d.mercenaryCallsign || '?')}</strong>${d.locationName ? ' · ' + escape(d.locationName) : ''}`));
+            if (d.content) card.appendChild(el('div', 'sm muted mt-sm', escape(d.content)));
+            for (const opt of d.decisionOptions) {
+                const parts = [];
+                if (opt.riskModifier) parts.push(`risk ${opt.riskModifier > 0 ? '+' : ''}${opt.riskModifier}`);
+                if (opt.lootModifier) parts.push(`loot ${opt.lootModifier > 0 ? '+' : ''}${opt.lootModifier}`);
+                const btn = el('button', 'btn small mt-sm btn-block',
+                    `${escape(opt.label || opt.id)}${parts.length ? ' — ' + parts.join(', ') : ''}`);
+                btn.addEventListener('click', () => sendToContent('respondDecision', {
+                    expeditionId: d.expeditionId, messageId: d.messageId, selectedOption: opt.id,
+                }));
+                card.appendChild(btn);
+            }
+            cards.push(card);
+        }
+        panel.pending.listHost.replaceChildren(...cards);
+    }
+
+    async function refreshRoster() {
+        if (!panel) return;
+        const [mercsRaw, configs] = await Promise.all([
+            Store.local.getOne(C.STORAGE_LOCAL.MERCENARIES),
+            Store.local.getOne(C.STORAGE_LOCAL.MERC_CONFIG, {}),
+        ]);
+        const mercs = (mercsRaw && (Array.isArray(mercsRaw) ? mercsRaw : mercsRaw.mercenaries)) || [];
+        if (!mercs.length) {
+            panel.roster.listHost.replaceChildren(el('div', 'empty', 'No mercenary data — click Refresh.'));
+            return;
+        }
+        const cards = [];
+        for (const m of mercs) {
+            const cfg = (configs || {})[m.id] || {};
+            const avail = m.status === 'AVAILABLE';
+            const card = el('div', 'exp-merc-card' + (avail ? '' : ' unavail'));
+
+            const av = document.createElement('img');
+            av.className = 'exp-avatar'; av.src = m.avatarSeed || ''; av.alt = m.callsign || '';
+            av.referrerPolicy = 'no-referrer'; av.loading = 'lazy';
+            card.appendChild(av);
+
+            const body = el('div', 'exp-merc-body');
+            const nameRow = el('div', 'exp-merc-namerow');
+            nameRow.appendChild(el('span', 'exp-merc-name', escape(m.callsign || m.id)));
+            nameRow.appendChild(el('span', `pill ${avail ? 'ok' : (/contract|run/i.test(m.status) ? 'active' : 'idle')}`, escape(m.status || '')));
+            body.appendChild(nameRow);
+
             body.appendChild(el('div', 'sm muted',
-                `${escape(m.status || '')}${cfg.totalCost ? ` · cost ${cfg.totalCost}` : ''}${cfg.riskScore != null ? ` · risk ${cfg.riskScore}` : ''}`));
+                `${escape(m.specializationName || m.specialization || '')} · ${escape(m.rank || '')} · ${m.missionsCompleted || 0} raids`));
+            const traits = [];
+            if (m.specializationDescription) traits.push(escape(m.specializationDescription));
+            if (m.traitName) traits.push(`<strong>${escape(m.traitName)}</strong>: ${escape(m.traitDescription || '')}`);
+            if (traits.length) body.appendChild(el('div', 'xs muted mt-sm', traits.join(' · ')));
+
+            // configure preview
+            if (cfg.totalCost != null || cfg.riskScore != null) {
+                const stat = [];
+                if (cfg.totalCost != null) stat.push(`💸 ${num(cfg.totalCost)} (dep ${num(cfg.prepaymentAmount)})`);
+                if (cfg.riskScore != null) stat.push(`⚠ risk ${cfg.riskScore}${cfg.riskLevel ? ' (' + escape(cfg.riskLevel) + ')' : ''}`);
+                if (cfg.outcomeChances && cfg.outcomeChances.fullSuccessChance != null) stat.push(`✓ ${cfg.outcomeChances.fullSuccessChance}%`);
+                body.appendChild(el('div', 'xs mt-sm', stat.join(' · ')));
+            }
+            if (m.reputationRequirement != null) body.appendChild(el('div', 'xs muted mt-sm', `rep req ${m.reputationRequirement}`));
             card.appendChild(body);
-            const btn = el('button', 'btn small', isPicked ? 'Selected' : 'Pick');
-            btn.dataset.pick = m.id;
-            btn.dataset.pickName = m.callsign || m.id;
+
+            const btn = el('button', 'btn small', avail ? 'Send now' : (m.status === 'RESTING' ? 'Resting' : 'Busy'));
+            btn.dataset.send = m.id;
+            if (!avail) btn.disabled = true;
             card.appendChild(btn);
             cards.push(card);
         }
-        panel.mercList.listHost.replaceChildren(...cards);
+        panel.roster.listHost.replaceChildren(...cards);
     }
 
     async function refreshStash() {
@@ -435,16 +522,18 @@
             const used = stash.currentUsage || 0;
             const max = stash.maxCapacity || 0;
             const pct = max > 0 ? Math.round((used / max) * 100) : 0;
-            const pctCls = pct > 90 ? 'err' : pct > 70 ? 'warn' : 'ok';
-            n.capacityText.className = pctCls;
+            const cls = pct > 90 ? 'err' : pct > 70 ? 'warn' : 'ok';
+            n.capacityText.className = cls;
             n.capacityText.textContent = `${used} / ${max} (${pct}%)`;
+            n.bar.style.width = pct + '%';
+            n.bar.className = 'exp-bar-fill ' + cls;
         } else {
             n.capacityText.className = 'muted sm';
             n.capacityText.textContent = 'No stash data.';
+            n.bar.style.width = '0%';
         }
-
         const items = (stash && Array.isArray(stash.items)) ? stash.items : [];
-        if (items.length === 0) {
+        if (!items.length) {
             n.itemsTitle.style.display = 'none';
             n.itemsHost.replaceChildren();
             return;
@@ -453,63 +542,145 @@
         n.itemsTitle.textContent = `Items (${items.length})`;
         const cards = [];
         for (const item of items) {
-            const c = el('div', 'card compact');
-            const row = el('div', 'card-row');
-            row.appendChild(el('span', '', escape(item.name || item.itemName || '?')));
-            row.appendChild(el('span', 'sm muted', `x${item.quantity || 1}`));
-            c.appendChild(row);
+            const c = el('div', 'exp-item-card');
+            const top = el('div', 'exp-item-top');
+            const img = document.createElement('img');
+            img.className = 'exp-thumb'; img.src = item.imageUrl || ''; img.alt = item.name || '';
+            img.referrerPolicy = 'no-referrer'; img.loading = 'lazy';
+            top.appendChild(img);
+            const info = el('div', 'exp-item-info');
+            info.appendChild(el('div', 'exp-item-name', escape(item.name || '?')));
+            const badges = el('div', 'exp-item-badges');
+            if (item.tier) badges.appendChild(el('span', tierClass(item.tier), escape(item.tier)));
+            if (item.category) badges.appendChild(el('span', 'exp-cat', escape(String(item.category).replace(/_/g, ' '))));
+            if ((item.quantity || 1) > 1) badges.appendChild(el('span', 'exp-cat', `x${item.quantity}`));
+            info.appendChild(badges);
+            const vals = [];
+            if (item.sellPrice) vals.push(`sell ${num(item.sellPrice)}`);
+            else if (item.baseValue) vals.push(`val ${num(item.baseValue)}`);
+            if (vals.length) info.appendChild(el('div', 'xs muted mt-sm', vals.join(' · ')));
+            top.appendChild(info);
+            c.appendChild(top);
+
+            if (item.description) c.appendChild(el('div', 'xs muted exp-item-desc', escape(item.description)));
+
+            const acts = el('div', 'exp-item-acts');
+            if (item.canSell) {
+                const b = el('button', 'btn small', `Sell ${item.sellPrice ? num(item.sellPrice) : ''}`.trim());
+                b.dataset.itemAct = 'sell'; b.dataset.item = item.id; b.dataset.name = item.name || '';
+                acts.appendChild(b);
+            }
+            if (item.canDelete) {
+                const b = el('button', 'btn small btn-danger', 'Throw away');
+                b.dataset.itemAct = 'delete'; b.dataset.item = item.id; b.dataset.name = item.name || '';
+                acts.appendChild(b);
+            }
+            if (acts.childNodes.length) c.appendChild(acts);
             cards.push(c);
         }
         n.itemsHost.replaceChildren(...cards);
     }
 
+    async function refreshRecent() {
+        if (!panel) return;
+        const archived = (await Store.local.getOne(C.STORAGE_LOCAL.ARCHIVED_EXPEDITIONS, [])) || [];
+        const list = Array.isArray(archived) ? archived : [];
+        if (!list.length) {
+            panel.recent.listHost.replaceChildren(el('div', 'empty', 'No archived runs yet — click Refresh.'));
+            return;
+        }
+        const PAGE = 8;
+        const shown = panel.recent.showAll ? list : list.slice(0, PAGE);
+        const cards = [];
+        for (const run of shown) {
+            const card = el('div', 'card compact exp-run-card');
+            const head = el('div', 'card-row');
+            const merc = run.mercenary && run.mercenary.callsign;
+            head.appendChild(el('span', 'card-label',
+                `${merc ? escape(merc) + ' · ' : ''}${escape(run.locationName || '')}${run.zoneName ? ' · ' + escape(run.zoneName) : ''}`));
+            head.appendChild(el('span', `pill ${outcomePill(run.outcome || run.status)}`, escape(run.outcome || run.status || '?')));
+            card.appendChild(head);
+
+            const meta = [];
+            if (run.objectiveName) meta.push(escape(run.objectiveName));
+            if (run.riskScore != null) meta.push(`risk ${run.riskScore}`);
+            if (run.totalCost != null) meta.push(`${num(run.totalCost)} CR`);
+            const lootCount = Array.isArray(run.containerData) ? run.containerData.length : 0;
+            if (lootCount) meta.push(`📦 ${lootCount}`);
+            if (meta.length) card.appendChild(el('div', 'muted xs mt-sm', meta.join(' · ')));
+
+            const toggle = el('button', 'btn small mt-sm', 'Details');
+            toggle.dataset.toggleRun = '1';
+            card.appendChild(toggle);
+
+            const detail = el('div', 'exp-run-detail');
+            // costs
+            const costs = [];
+            if (run.prepaymentAmount != null) costs.push(`deposit ${num(run.prepaymentAmount)}`);
+            if (run.remainingAmount != null) costs.push(`postpay ${num(run.remainingAmount)}`);
+            if (run.reputationDelta != null) costs.push(`rep ${run.reputationDelta > 0 ? '+' : ''}${run.reputationDelta}`);
+            if (costs.length) detail.appendChild(el('div', 'xs muted mt-sm', costs.join(' · ')));
+            // loot
+            if (lootCount) {
+                detail.appendChild(el('div', 'xs mt-sm', '<strong>Loot</strong>'));
+                for (const it of run.containerData) {
+                    detail.appendChild(el('div', 'xs muted', `• ${escape(it.name || '?')} (${escape(it.tier || '')}) x${it.quantity || 1}`));
+                }
+            }
+            // timeline / decisions
+            const tl = Array.isArray(run.timelineEvents) ? run.timelineEvents
+                : (Array.isArray(run.messages) ? run.messages.map((m) => ({ type: m.messageType, content: m.content, selectedOption: m.selectedOption, isAutoResolved: m.isAutoResolved })) : []);
+            if (tl.length) {
+                detail.appendChild(el('div', 'xs mt-sm', '<strong>Timeline</strong>'));
+                for (const ev of tl) {
+                    const dec = ev.selectedOption ? ` → ${escape(ev.selectedOption)}${ev.isAutoResolved ? ' (auto)' : ''}` : '';
+                    detail.appendChild(el('div', 'xs muted', `• [${escape(ev.type || '')}] ${escape((ev.content || '').slice(0, 90))}${dec}`));
+                }
+            }
+            card.appendChild(detail);
+            cards.push(card);
+        }
+        if (!panel.recent.showAll && list.length > PAGE) {
+            const more = el('button', 'btn small btn-block mt-sm', `Show all (${list.length})`);
+            more.dataset.showAll = '1';
+            cards.push(more);
+        }
+        panel.recent.listHost.replaceChildren(...cards);
+    }
+
     async function refreshAll() {
         await Promise.all([
-            refreshActive(),
-            refreshArchived(),
-            refreshPending(),
-            refreshAutoChoose(),
-            refreshAutoSend(),
-            refreshMercList(),
-            refreshStash(),
+            refreshMaster(), refreshAutoSend(), refreshAutoChoose(),
+            refreshActive(), refreshPending(), refreshRoster(), refreshStash(), refreshRecent(),
         ]);
     }
 
     // ─── Lifecycle ────────────────────────────────────────────────────────
-    let unsubLocal = null;
-    let unsubSync = null;
+    let unsubLocal = null, unsubSync = null;
 
     root.COR3.ui.expeditions = {
-        // Subscribe-only mount; first render runs from activate() to avoid
-        // the dup-render race (see overview.js / logs-panel.js).
         mount(container) {
             unsubLocal = Store.local.onChanged((changes) => {
                 if (!container.classList.contains('active')) return;
-                if (changes[C.STORAGE_LOCAL.EXPEDITIONS])          refreshActive();
-                if (changes[C.STORAGE_LOCAL.ARCHIVED_EXPEDITIONS]) refreshArchived();
-                if (changes[C.STORAGE_LOCAL.DECISIONS])            refreshPending();
-                if (changes[C.STORAGE_LOCAL.MERCENARIES] ||
-                    changes[C.STORAGE_LOCAL.MERC_CONFIG])          refreshMercList();
-                if (changes[C.STORAGE_LOCAL.STASH])                refreshStash();
+                if (changes[C.STORAGE_LOCAL.EXPEDITIONS]) { refreshActive(); refreshAutoSend(); }
+                if (changes[C.STORAGE_LOCAL.ARCHIVED_EXPEDITIONS]) refreshRecent();
+                if (changes[C.STORAGE_LOCAL.DECISIONS]) refreshPending();
+                if (changes[C.STORAGE_LOCAL.MERCENARIES] || changes[C.STORAGE_LOCAL.MERC_CONFIG]) refreshRoster();
+                if (changes[C.STORAGE_LOCAL.STASH]) refreshStash();
+                if (changes[C.STORAGE_LOCAL.PROFILE] || changes[C.STORAGE_LOCAL.EXP_AUTOSEND_STATE]) refreshAutoSend();
             });
             unsubSync = Store.sync.onChanged((changes) => {
                 if (!container.classList.contains('active')) return;
-                // AUTO_SEND_MERC affects both the auto-send card AND the
-                // mercenary roster's "selected" highlight on the picked
-                // merc — both need refreshing on its change.
-                if (changes[C.STORAGE_SYNC.AUTO_SEND_MERC]) {
-                    refreshAutoSend();
-                    refreshMercList();
-                }
-                if (changes[C.STORAGE_SYNC.AUTO_CHOOSE_ENABLED] ||
-                    changes[C.STORAGE_SYNC.RISK_THRESHOLD]) {
-                    refreshAutoChoose();
-                }
+                if (changes[C.STORAGE_SYNC.EXPEDITIONS_SETTINGS]) { refreshMaster(); refreshAutoSend(); }
+                if (changes[C.STORAGE_SYNC.AUTO_CHOOSE_ENABLED] || changes[C.STORAGE_SYNC.RISK_THRESHOLD]) refreshAutoChoose();
             });
         },
         async activate(container) {
             build(container);
             await refreshAll();
+            // seed a fresh profile balance + mercenary/config snapshot on open.
+            sendToContent('requestProfile');
+            sendToContent('requestExpeditions');
         },
         deactivate() { tearDown(); },
     };

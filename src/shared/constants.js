@@ -74,6 +74,15 @@
             EXPEDITION_LAUNCH_ERROR: 'COR3_WS_EXPEDITION_LAUNCH_ERROR',
             EXPEDITION_RETRY_LAUNCH: 'COR3_WS_EXPEDITION_RETRY_LAUNCH',
             INSUFFICIENT_CREDITS: 'COR3_WS_INSUFFICIENT_CREDITS',
+            // Player profile signals from the `profile` room. Posted by the
+            // interceptor for profile.get.credits / receive.credits (balance
+            // deltas) / receive.progress (account RENOWN) AND seeded from
+            // market.get.options.userCredits. Shape (partial, only what fired):
+            //   { balance?, creditsDelta?, renownLevel?, renownProgress?,
+            //     renownNext?, source }
+            // Consumed by the `profile` data module → STORAGE_LOCAL.PROFILE,
+            // which the Expeditions auto-send min/max logic reads.
+            PROFILE: 'COR3_WS_PROFILE',
             LOG: 'COR3_WS_LOG',
         },
 
@@ -97,6 +106,15 @@
             LAUNCH_EXPEDITION: 'COR3_LAUNCH_EXPEDITION',
             OPEN_CONTAINER: 'COR3_OPEN_CONTAINER',
             COLLECT_ALL: 'COR3_COLLECT_ALL',
+            // Request a player-profile snapshot (join `profile` room + send
+            // profile.get.credits). Seeds STORAGE_LOCAL.PROFILE balance for the
+            // Expeditions min/max auto-send; live deltas then arrive via
+            // profile.receive.credits.
+            REQUEST_PROFILE: 'COR3_REQUEST_PROFILE',
+            // stash.delete.item { itemId, quantity } — "Throw Away" in the
+            // in-game Stash item-info panel. Captured live; sell uses the
+            // pre-existing literal 'COR3_SELL_ITEM'.
+            DELETE_ITEM: 'COR3_DELETE_ITEM',
             ACCEPT_JOB: 'COR3_ACCEPT_JOB',
             // market.job.complete (endpoint-preflight handled in the interceptor,
             // like ACCEPT_JOB). Generic game RPC — used by the Auto Jobs flow
@@ -281,6 +299,12 @@
         DAILY_OPS_ERROR: 'dailyOpsError',
         DAILY_OPS_ERROR_AT: 'dailyOpsErrorUpdatedAt',
         DAILY_REWARDS: 'dailyRewardsData',
+        // Player profile snapshot (credits balance + account RENOWN). Written by
+        // the `profile` data module from MSG.WS.PROFILE. Shape:
+        //   { balance, renownLevel, renownProgress, renownNext, updatedAt }
+        // The Expeditions min/max auto-send reads `balance`.
+        PROFILE: 'profileData',
+        PROFILE_AT: 'profileDataUpdatedAt',
 
         // Auth + version
         BEARER_TOKEN: 'bearerToken',
@@ -295,6 +319,11 @@
         // Expedition runtime
         LAST_LAUNCH: 'lastExpeditionLaunchData',
         LAUNCH_ERROR: 'expeditionLaunchError',
+        // Auto-send min/max engine runtime state (published for the UI). Shape:
+        //   { armed: bool, balance: number|null, status: string, updatedAt }
+        // `armed` is the hysteresis latch (true between balance≥Max and ≤Min);
+        // `status` is a human-readable phase shown under the Money Min/Max card.
+        EXP_AUTOSEND_STATE: 'expAutoSendState',
 
         // Network Map runtime
         NM_GRAPH:   'networkMapGraph',    // { home, currentEndpointId, servers:[{id,name,depth,faction,…}] }
@@ -366,8 +395,22 @@
         // by its `enabled` flag.
         AUTOJOBS_SETTINGS: 'autoJobsSettings',
 
-        // Auto-send merc
+        // Auto-send merc (LEGACY — pre-rework per-merc pin object. Kept for
+        // one-time migration into EXPEDITIONS_SETTINGS; no longer the source
+        // of truth.)
         AUTO_SEND_MERC: 'autoSendMerc',
+
+        // Expeditions tab settings (the rework). Single object:
+        //   { masterEnabled: bool,                  // #2 master switch — gates ALL
+        //                                            //    expedition automation
+        //                                            //    (auto-send + auto-choose
+        //                                            //    decision + auto-collect)
+        //     autoSend: { enabled, moneyMin, moneyMax },  // #3–5 min/max latch
+        //     disabledReason: string|null }         // surfaced in the UI
+        // moneyMin/moneyMax are CR-balance thresholds: arm sending at
+        // balance ≥ moneyMax, keep sending the cheapest AVAILABLE merc until
+        // balance ≤ moneyMin (hysteresis latch; never self-disables).
+        EXPEDITIONS_SETTINGS: 'expeditionsSettings',
 
         // Auto-decrypt / Auto-ice-wall / Auto-simple-decrypt
         AUTO_DECRYPT_ENABLED: 'autoDecryptEnabled',

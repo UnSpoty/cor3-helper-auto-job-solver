@@ -61,7 +61,15 @@ body {
     min-height: 600px;
 }
 
-body.mode-popout, body.mode-side-panel { width: auto; }
+/* A pop-out window / side panel is a resizable frame that is usually taller
+   than the 600px content floor, so the body box stopped at its content and
+   the window's canvas (painted from <html>, whose --os-color-bg stays the
+   default since the theme class lives on <body>) showed through below it —
+   "the background doesn't fill the window". min-height:100vh makes the body
+   box span the whole frame so its themed background reaches the bottom.
+   Present on every theme; most visible on Neon (gradient body vs flat
+   canvas). Content keeps its natural size — nothing is stretched. */
+body.mode-popout, body.mode-side-panel { width: auto; min-height: 100vh; }
 
 a { color: var(--os-color-primary-hex); }
 
@@ -1646,3 +1654,59 @@ body.theme-neon a { text-shadow: 0 0 6px rgba(0, 240, 255, 0.45); }
 /* ✓ complete — green sibling of the ✕ dismiss button, on READY-to-complete rows. */
 .aj-complete { color: var(--os-color-success); }
 .aj-complete:not(:disabled):hover { color: var(--os-color-success); border-color: var(--os-color-success); background: rgba(74, 222, 128, 0.12); }
+
+/* ─── Expeditions tab (rework) ─────────────────────────────────────────── */
+.exp-minmax { display: flex; gap: 10px; }
+.exp-minmax-field { flex: 1; display: flex; flex-direction: column; gap: 4px; }
+.exp-num {
+    width: 100%; box-sizing: border-box; padding: 5px 8px;
+    background: var(--os-color-input-bg); color: var(--os-color-text);
+    border: 1px solid var(--os-color-border-secondary); border-radius: 4px;
+    font-family: var(--os-font); font-size: 12px;
+}
+.exp-num:focus { outline: none; border-color: var(--os-color-primary-hex); }
+.exp-status { font-size: 12px; color: var(--os-color-text-secondary); }
+.exp-armed { color: var(--os-color-success); }
+
+.exp-bar { height: 6px; background: var(--os-color-bg-tertiary); border-radius: 3px; overflow: hidden; }
+.exp-bar-fill { height: 100%; width: 0; background: var(--os-color-primary-hex); transition: width .3s; }
+.exp-bar-fill.warn { background: var(--os-color-warning); }
+.exp-bar-fill.err { background: var(--os-color-danger); }
+
+.exp-merc-card {
+    display: grid; grid-template-columns: 44px 1fr auto; gap: 6px 10px; align-items: center;
+    padding: 8px 10px; margin-bottom: 6px;
+    background: var(--os-color-bg-card); border: 1px solid var(--os-color-border-secondary);
+    border-radius: 6px;
+}
+.exp-merc-card.unavail { opacity: 0.55; }
+.exp-avatar { width: 44px; height: 44px; border-radius: 6px; object-fit: cover; background: var(--os-color-bg-tertiary); grid-row: 1 / span 2; }
+.exp-merc-body { min-width: 0; }
+.exp-merc-namerow { display: flex; align-items: center; gap: 8px; }
+.exp-merc-name { font-weight: 600; color: var(--os-color-text); }
+
+.exp-item-card {
+    padding: 8px 10px; margin-bottom: 6px;
+    background: var(--os-color-bg-card); border: 1px solid var(--os-color-border-secondary);
+    border-radius: 6px;
+}
+.exp-item-top { display: flex; gap: 10px; align-items: flex-start; }
+.exp-thumb { width: 40px; height: 40px; border-radius: 4px; object-fit: cover; background: var(--os-color-bg-tertiary); flex: none; }
+.exp-item-info { min-width: 0; flex: 1; }
+.exp-item-name { font-weight: 500; color: var(--os-color-text); font-size: 13px; }
+.exp-item-badges { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.exp-cat {
+    font-size: 10px; padding: 1px 6px; border-radius: 8px;
+    background: rgba(107, 120, 136, 0.15); color: var(--os-color-text-secondary);
+}
+.exp-tier { font-size: 10px; padding: 1px 6px; border-radius: 8px; text-transform: capitalize; }
+.exp-tier-common { background: rgba(107, 120, 136, 0.18); color: var(--os-color-text-grey); }
+.exp-tier-rare { background: rgba(118, 193, 209, 0.18); color: var(--os-color-primary-hex); }
+.exp-tier-epic { background: rgba(168, 85, 247, 0.20); color: #c084fc; }
+.exp-tier-legendary { background: rgba(255, 200, 87, 0.20); color: var(--os-color-warning); }
+.exp-tier-quest { background: rgba(74, 222, 128, 0.18); color: var(--os-color-success); }
+.exp-item-desc { margin-top: 6px; line-height: 1.35; }
+.exp-item-acts { display: flex; gap: 6px; margin-top: 8px; }
+
+.exp-run-detail { display: none; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--os-color-divider); }
+.exp-run-detail.open { display: block; }

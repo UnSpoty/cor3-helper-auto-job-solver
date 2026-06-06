@@ -41,9 +41,14 @@
             fwd('requestArchivedExpeditions', MSG.GAME.REQUEST_ARCHIVED_EXPEDITIONS);
             fwd('requestMercenaries',         'COR3_REQUEST_MERCENARIES');
             fwd('requestExpeditionConfig',    'COR3_REQUEST_EXPEDITION_CONFIG');
+            fwd('requestProfile',             MSG.GAME.REQUEST_PROFILE);
 
             this.track(Bus.runtime.on('sellItem', (p) => {
                 Bus.window.post('COR3_SELL_ITEM', { itemId: p && p.itemId, quantity: (p && p.quantity) || 1 });
+                return { success: true };
+            }));
+            this.track(Bus.runtime.on('deleteItem', (p) => {
+                Bus.window.post(MSG.GAME.DELETE_ITEM, { itemId: p && p.itemId, quantity: (p && p.quantity) || 1 });
                 return { success: true };
             }));
 
@@ -59,6 +64,31 @@
                 if (!p || !p.config) return { error: 'no config' };
                 root.COR3.Store.local.setOne(C.STORAGE_LOCAL.LAST_LAUNCH, p.config);
                 Bus.window.post(MSG.GAME.LAUNCH_EXPEDITION, { config: p.config });
+                return { success: true };
+            }));
+
+            // Manual "Send now" from the Mercenary roster: build the launch
+            // config from the cached expedition config (default location/zone/
+            // objective — the same one the auto-send engine uses) and launch.
+            this.track(Bus.runtime.on('sendMercNow', async (p) => {
+                if (!p || !p.mercenaryId) return { error: 'no mercenaryId' };
+                const cfg = await root.COR3.Store.local.getOne(C.STORAGE_LOCAL.EXPEDITION_CONFIG);
+                if (!cfg || !Array.isArray(cfg.locations) || cfg.locations.length === 0) {
+                    Bus.window.post('COR3_REQUEST_EXPEDITION_CONFIG', null);
+                    return { error: 'no expedition config' };
+                }
+                const loc = cfg.locations[0];
+                const zone = loc.zones && loc.zones[0];
+                const obj = zone && zone.objectives && zone.objectives[0];
+                if (!zone || !obj) return { error: 'incomplete expedition config' };
+                const launch = {
+                    mercenaryId: p.mercenaryId,
+                    marketId: '019d3ea4-85bd-7389-904d-8f7c85841134',
+                    locationConfigId: loc.id, zoneConfigId: zone.id, objectiveId: obj.id,
+                    hasInsurance: false,
+                };
+                root.COR3.Store.local.setOne(C.STORAGE_LOCAL.LAST_LAUNCH, launch);
+                Bus.window.post(MSG.GAME.LAUNCH_EXPEDITION, { config: launch });
                 return { success: true };
             }));
 

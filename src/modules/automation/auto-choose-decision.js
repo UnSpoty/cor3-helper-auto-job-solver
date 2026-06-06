@@ -1,11 +1,16 @@
-// When `autoChooseEnabled` is true and there's a pending expedition decision
-// with < 60s remaining, auto-pick the option whose score is highest.
-// Score formula uses a single user-tunable `riskThreshold` (0..10).
+// When the Expeditions master switch is ON and `autoChooseEnabled` is true,
+// auto-pick the highest-scoring option for any pending (unresolved) expedition
+// decision. Score formula uses a single user-tunable `riskThreshold` (0..10).
 //
 // Score(opt) = lootModifier - (riskModifier * riskWeight)
 //   where riskWeight = (10 - riskThreshold) / 5  (so threshold=0 → strong
 //   penalty for risk, threshold=10 → ignore risk).
 // Ties broken by lower riskModifier.
+//
+// NOTE: we do NOT gate on `decisionDeadline` — it comes through as `null` on
+// the wire (verified live), and a decision pauses the raid at status=EVENT
+// until answered (or the server auto-defaults to the safe option on timeout),
+// so we respond promptly instead of waiting for a (non-existent) countdown.
 
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
@@ -19,9 +24,14 @@
     const RETRY_AFTER_MS = 15_000;
 
     async function getSettings() {
-        const enabled = await Store.sync.getOne(C.STORAGE_SYNC.AUTO_CHOOSE_ENABLED, false);
-        const threshold = await Store.sync.getOne(C.STORAGE_SYNC.RISK_THRESHOLD, 5);
-        return { enabled: !!enabled, threshold: Math.max(0, Math.min(10, Number(threshold) || 5)) };
+        const [exp, enabled, threshold] = await Promise.all([
+            Store.sync.getOne(C.STORAGE_SYNC.EXPEDITIONS_SETTINGS, null),
+            Store.sync.getOne(C.STORAGE_SYNC.AUTO_CHOOSE_ENABLED, false),
+            Store.sync.getOne(C.STORAGE_SYNC.RISK_THRESHOLD, 5),
+        ]);
+        // Master switch (#2) gates ALL expedition automation.
+        const master = !!(exp && exp.masterEnabled);
+        return { master, enabled: !!enabled, threshold: Math.max(0, Math.min(10, Number(threshold) || 5)) };
     }
 
     function score(opt, threshold) {
@@ -32,8 +42,8 @@
     }
 
     async function tick(mod) {
-        const { enabled, threshold } = await getSettings();
-        if (!enabled) return;
+        const { master, enabled, threshold } = await getSettings();
+        if (!master || !enabled) return;
         const decisions = (await Store.local.getOne(C.STORAGE_LOCAL.DECISIONS, [])) || [];
         if (decisions.length === 0) return;
 
@@ -43,15 +53,13 @@
         for (const id of [...chosen.keys()]) if (!present.has(id)) chosen.delete(id);
 
         for (const d of decisions) {
-            if (d.isResolved || !d.decisionDeadline || !Array.isArray(d.decisionOptions)) continue;
+            if (d.isResolved || !Array.isArray(d.decisionOptions) || d.decisionOptions.length === 0) continue;
             // Skip only if we attempted recently — a dropped/failed
             // RESPOND_DECISION is retried after RETRY_AFTER_MS rather than being
-            // blacklisted forever.
+            // blacklisted forever. (No decisionDeadline gating: it's null on the
+            // wire and the raid is paused at EVENT until we answer.)
             const last = chosen.get(d.messageId);
             if (last != null && (Date.now() - last) < RETRY_AFTER_MS) continue;
-            const remaining = new Date(d.decisionDeadline).getTime() - Date.now();
-            if (remaining <= 0) continue;
-            if (remaining > 60_000) continue;
 
             let best = null, bestS = -Infinity;
             for (const opt of d.decisionOptions) {
