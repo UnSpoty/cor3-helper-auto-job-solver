@@ -89,6 +89,17 @@
     function tierClass(tier) {
         return 'exp-tier exp-tier-' + String(tier || 'common').toLowerCase();
     }
+    // Real expedition end time (ms epoch). The server sends startTime/endTime as
+    // null even while RUNNING, but the expedition `id` is a UUIDv7 whose first
+    // 48 bits are the launch unix-ms — so end = launch + runDuration.
+    function expEndMs(exp) {
+        if (exp.endTime) { const t = Date.parse(exp.endTime); if (!isNaN(t)) return t; }
+        if (exp.id && exp.runDuration) {
+            const start = parseInt(String(exp.id).replace(/-/g, '').slice(0, 12), 16);
+            if (isFinite(start) && start > 1e12) return start + exp.runDuration;
+        }
+        return null;
+    }
 
     // ─── Panel state ──────────────────────────────────────────────────────
     let panel = null;
@@ -138,11 +149,9 @@
         mSw.appendChild(mInput); mSw.appendChild(el('span', 'switch-slider'));
         mRow.appendChild(mSw);
         mCard.appendChild(mRow);
-        const mHint = el('div', 'muted xs mt-sm', 'Off = all expedition automation paused (auto-send, auto-choose decision, auto-collect).');
-        mCard.appendChild(mHint);
         container.appendChild(mCard);
         mInput.addEventListener('change', (e) => patchSettings({ masterEnabled: e.target.checked }));
-        panel.master = { input: mInput, hint: mHint };
+        panel.master = { input: mInput };
 
         // ─── Auto-send mercenary ──────────────────────────────────────
         container.appendChild(el('div', 'section-title', 'Auto-send mercenary'));
@@ -170,8 +179,6 @@
         maxWrap.appendChild(maxInput);
         mmRow.appendChild(minWrap); mmRow.appendChild(maxWrap);
         asCard.appendChild(mmRow);
-        asCard.appendChild(el('div', 'muted xs mt-sm',
-            'Sends the cheapest available merc once balance ≥ Max, keeps sending until balance ≤ Min. Never stops itself — waits while mercs are resting.'));
 
         const asStatus = el('div', 'exp-status mt-sm', '');
         asCard.appendChild(asStatus);
@@ -393,15 +400,14 @@
             if (exp.totalCost != null) meta.push(`${num(exp.totalCost)} CR`);
             if (meta.length) card.appendChild(el('div', 'muted xs mt-sm', meta.join(' · ')));
 
-            if (exp.endTime) {
+            const endMs = expEndMs(exp);
+            if (exp.status !== 'COMPLETED' && endMs) {
                 const tRow = el('div', 'card-row mt-sm');
                 tRow.appendChild(el('span', 'sm muted', 'ETA'));
-                const inst = uiComponents.timer.create(exp.endTime);
+                const inst = uiComponents.timer.create(endMs);
                 adoptTimer(panel.active, inst);
                 tRow.appendChild(inst.el);
                 card.appendChild(tRow);
-            } else if (exp.runDuration) {
-                card.appendChild(el('div', 'muted xs mt-sm', `Duration ~${Math.round(exp.runDuration / 60000)} min`));
             }
 
             // COMPLETED → loot actions
@@ -461,10 +467,13 @@
 
     async function refreshRoster() {
         if (!panel) return;
-        const [mercsRaw, configs] = await Promise.all([
+        const [mercsRaw, configs, exps] = await Promise.all([
             Store.local.getOne(C.STORAGE_LOCAL.MERCENARIES),
             Store.local.getOne(C.STORAGE_LOCAL.MERC_CONFIG, {}),
+            Store.local.getOne(C.STORAGE_LOCAL.EXPEDITIONS, []),
         ]);
+        // Only one expedition can run at a time — block "Send now" while any is active.
+        const hasActive = (exps || []).some((e) => e.status && e.status !== 'COMPLETED');
         const mercs = (mercsRaw && (Array.isArray(mercsRaw) ? mercsRaw : mercsRaw.mercenaries)) || [];
         if (!mercs.length) {
             panel.roster.listHost.replaceChildren(el('div', 'empty', 'No mercenary data — click Refresh.'));
@@ -505,9 +514,13 @@
             if (m.reputationRequirement != null) body.appendChild(el('div', 'xs muted mt-sm', `rep req ${m.reputationRequirement}`));
             card.appendChild(body);
 
-            const btn = el('button', 'btn small', avail ? 'Send now' : (m.status === 'RESTING' ? 'Resting' : 'Busy'));
+            const canSend = avail && !hasActive;
+            const label = !avail ? (m.status === 'RESTING' ? 'Resting' : 'Busy')
+                : (hasActive ? 'Busy' : 'Send now');
+            const btn = el('button', 'btn small', label);
             btn.dataset.send = m.id;
-            if (!avail) btn.disabled = true;
+            if (!canSend) btn.disabled = true;
+            if (avail && hasActive) btn.title = 'An expedition is already running (max 1 at a time)';
             card.appendChild(btn);
             cards.push(card);
         }
@@ -542,36 +555,37 @@
         n.itemsTitle.textContent = `Items (${items.length})`;
         const cards = [];
         for (const item of items) {
+            // Compact single-line row: [thumb][name + tier/cat/value][actions].
+            // Full description goes to the tooltip to keep the row short.
             const c = el('div', 'exp-item-card');
-            const top = el('div', 'exp-item-top');
+            if (item.description) c.title = item.description;
+
             const img = document.createElement('img');
             img.className = 'exp-thumb'; img.src = item.imageUrl || ''; img.alt = item.name || '';
             img.referrerPolicy = 'no-referrer'; img.loading = 'lazy';
-            top.appendChild(img);
+            c.appendChild(img);
+
             const info = el('div', 'exp-item-info');
             info.appendChild(el('div', 'exp-item-name', escape(item.name || '?')));
-            const badges = el('div', 'exp-item-badges');
-            if (item.tier) badges.appendChild(el('span', tierClass(item.tier), escape(item.tier)));
-            if (item.category) badges.appendChild(el('span', 'exp-cat', escape(String(item.category).replace(/_/g, ' '))));
-            if ((item.quantity || 1) > 1) badges.appendChild(el('span', 'exp-cat', `x${item.quantity}`));
-            info.appendChild(badges);
-            const vals = [];
-            if (item.sellPrice) vals.push(`sell ${num(item.sellPrice)}`);
-            else if (item.baseValue) vals.push(`val ${num(item.baseValue)}`);
-            if (vals.length) info.appendChild(el('div', 'xs muted mt-sm', vals.join(' · ')));
-            top.appendChild(info);
-            c.appendChild(top);
-
-            if (item.description) c.appendChild(el('div', 'xs muted exp-item-desc', escape(item.description)));
+            const sub = el('div', 'exp-item-sub');
+            if (item.tier) sub.appendChild(el('span', tierClass(item.tier), escape(item.tier)));
+            if (item.category) sub.appendChild(el('span', 'exp-cat', escape(String(item.category).replace(/_/g, ' '))));
+            if ((item.quantity || 1) > 1) sub.appendChild(el('span', 'exp-cat', `x${item.quantity}`));
+            const value = item.sellPrice || item.baseValue;
+            if (value) sub.appendChild(el('span', 'exp-val', num(value)));
+            info.appendChild(sub);
+            c.appendChild(info);
 
             const acts = el('div', 'exp-item-acts');
             if (item.canSell) {
-                const b = el('button', 'btn small', `Sell ${item.sellPrice ? num(item.sellPrice) : ''}`.trim());
+                const b = el('button', 'btn small', 'Sell');
+                b.title = item.sellPrice ? `Sell for ${num(item.sellPrice)} CR` : 'Sell';
                 b.dataset.itemAct = 'sell'; b.dataset.item = item.id; b.dataset.name = item.name || '';
                 acts.appendChild(b);
             }
             if (item.canDelete) {
-                const b = el('button', 'btn small btn-danger', 'Throw away');
+                const b = el('button', 'btn small btn-danger', '✕');
+                b.title = 'Throw away';
                 b.dataset.itemAct = 'delete'; b.dataset.item = item.id; b.dataset.name = item.name || '';
                 acts.appendChild(b);
             }
@@ -662,7 +676,7 @@
         mount(container) {
             unsubLocal = Store.local.onChanged((changes) => {
                 if (!container.classList.contains('active')) return;
-                if (changes[C.STORAGE_LOCAL.EXPEDITIONS]) { refreshActive(); refreshAutoSend(); }
+                if (changes[C.STORAGE_LOCAL.EXPEDITIONS]) { refreshActive(); refreshAutoSend(); refreshRoster(); }
                 if (changes[C.STORAGE_LOCAL.ARCHIVED_EXPEDITIONS]) refreshRecent();
                 if (changes[C.STORAGE_LOCAL.DECISIONS]) refreshPending();
                 if (changes[C.STORAGE_LOCAL.MERCENARIES] || changes[C.STORAGE_LOCAL.MERC_CONFIG]) refreshRoster();

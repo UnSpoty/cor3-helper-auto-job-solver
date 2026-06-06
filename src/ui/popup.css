@@ -1686,15 +1686,16 @@ body.theme-neon a { text-shadow: 0 0 6px rgba(0, 240, 255, 0.45); }
 .exp-merc-name { font-weight: 600; color: var(--os-color-text); }
 
 .exp-item-card {
-    padding: 8px 10px; margin-bottom: 6px;
+    display: flex; align-items: center; gap: 8px;
+    padding: 5px 8px; margin-bottom: 4px;
     background: var(--os-color-bg-card); border: 1px solid var(--os-color-border-secondary);
     border-radius: 6px;
 }
-.exp-item-top { display: flex; gap: 10px; align-items: flex-start; }
-.exp-thumb { width: 40px; height: 40px; border-radius: 4px; object-fit: cover; background: var(--os-color-bg-tertiary); flex: none; }
+.exp-thumb { width: 32px; height: 32px; border-radius: 4px; object-fit: cover; background: var(--os-color-bg-tertiary); flex: none; }
 .exp-item-info { min-width: 0; flex: 1; }
-.exp-item-name { font-weight: 500; color: var(--os-color-text); font-size: 13px; }
-.exp-item-badges { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.exp-item-name { color: var(--os-color-text); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.exp-item-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 2px; }
+.exp-val { font-size: 10px; color: var(--os-color-text-tertiary); }
 .exp-cat {
     font-size: 10px; padding: 1px 6px; border-radius: 8px;
     background: rgba(107, 120, 136, 0.15); color: var(--os-color-text-secondary);
@@ -1705,8 +1706,7 @@ body.theme-neon a { text-shadow: 0 0 6px rgba(0, 240, 255, 0.45); }
 .exp-tier-epic { background: rgba(168, 85, 247, 0.20); color: #c084fc; }
 .exp-tier-legendary { background: rgba(255, 200, 87, 0.20); color: var(--os-color-warning); }
 .exp-tier-quest { background: rgba(74, 222, 128, 0.18); color: var(--os-color-success); }
-.exp-item-desc { margin-top: 6px; line-height: 1.35; }
-.exp-item-acts { display: flex; gap: 6px; margin-top: 8px; }
+.exp-item-acts { display: flex; gap: 6px; flex: none; }
 
 .exp-run-detail { display: none; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--os-color-divider); }
 .exp-run-detail.open { display: block; }
