@@ -135,7 +135,7 @@
             pending: { title: null, listHost: null, timers: [] },
             roster: { listHost: null },
             stash: { capacityText: null, bar: null, itemsTitle: null, itemsHost: null },
-            recent: { listHost: null, showAll: false, moreBtn: null },
+            recent: { listHost: null, showAll: false, collapsed: true, caret: null },
         };
 
         // ─── Master switch ────────────────────────────────────────────
@@ -305,14 +305,20 @@
         });
         panel.stash = { capacityText: sCapText, bar: sBar, itemsTitle, itemsHost };
 
-        // ─── Recent runs ──────────────────────────────────────────────
+        // ─── Recent runs (collapsible — collapsed by default) ─────────
         const recHead = el('div', 'row between mt-md');
-        recHead.appendChild(el('div', 'section-title', 'Recent runs'));
+        const recTitle = el('div', 'section-title exp-collapsible');
+        const recCaret = el('span', 'exp-caret', '▸');
+        recTitle.appendChild(recCaret);
+        recTitle.appendChild(document.createTextNode(' Recent runs'));
+        recTitle.addEventListener('click', () => setRecentCollapsed(!panel.recent.collapsed));
+        recHead.appendChild(recTitle);
         const recRefresh = el('button', 'btn small', 'Refresh');
-        recRefresh.addEventListener('click', () => sendToContent('requestArchivedExpeditions'));
+        recRefresh.addEventListener('click', (e) => { e.stopPropagation(); sendToContent('requestArchivedExpeditions'); });
         recHead.appendChild(recRefresh);
         container.appendChild(recHead);
         const recHost = el('div');
+        recHost.style.display = 'none'; // collapsed by default
         container.appendChild(recHost);
         recHost.addEventListener('click', (e) => {
             const d = e.target.closest('button[data-toggle-run]');
@@ -321,6 +327,15 @@
             if (more) { panel.recent.showAll = true; refreshRecent(); }
         });
         panel.recent.listHost = recHost;
+        panel.recent.caret = recCaret;
+        panel.recent.collapsed = true;
+    }
+
+    function setRecentCollapsed(collapsed) {
+        if (!panel) return;
+        panel.recent.collapsed = collapsed;
+        panel.recent.listHost.style.display = collapsed ? 'none' : '';
+        panel.recent.caret.textContent = collapsed ? '▸' : '▾';
     }
 
     // ─── Refreshers ───────────────────────────────────────────────────────

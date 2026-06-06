@@ -1710,3 +1710,7 @@ body.theme-neon a { text-shadow: 0 0 6px rgba(0, 240, 255, 0.45); }
 
 .exp-run-detail { display: none; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--os-color-divider); }
 .exp-run-detail.open { display: block; }
+
+.exp-collapsible { cursor: pointer; user-select: none; }
+.exp-collapsible:hover { color: var(--os-color-text-primary-light); }
+.exp-caret { display: inline-block; width: 12px; color: var(--os-color-text-secondary); }
