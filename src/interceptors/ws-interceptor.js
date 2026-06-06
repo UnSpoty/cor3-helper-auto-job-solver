@@ -362,11 +362,14 @@
             }
 
             if (action === 'get.archived') {
-                // Unwrap data.expeditions when present so the module can
-                // subscribe with the same envelope shape as MSG.WS.EXPEDITIONS.
-                const archived = (payload.data && Array.isArray(payload.data.expeditions))
-                    ? payload.data.expeditions
-                    : (Array.isArray(payload.data) ? payload.data : []);
+                // Reply shape (captured live): { items:[…], hasMore, nextCursor,
+                // totalCount }. The runs live under `items` — older builds used
+                // `expeditions`/a bare array, so accept all three. Forward as the
+                // same { expeditions } envelope the data module subscribes to.
+                const d = payload.data;
+                const archived = (d && Array.isArray(d.items)) ? d.items
+                    : (d && Array.isArray(d.expeditions)) ? d.expeditions
+                    : (Array.isArray(d) ? d : []);
                 post(MSG.WS.ARCHIVED_EXPEDITIONS, { expeditions: archived });
                 return;
             }
