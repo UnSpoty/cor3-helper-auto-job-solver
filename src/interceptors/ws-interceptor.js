@@ -382,6 +382,11 @@
             // Default: bulk expedition data with embedded decisions
             if (payload && payload.data) {
                 const expeditions = Array.isArray(payload.data) ? payload.data : [payload.data];
+                // Enrich with the game's authoritative end time when the
+                // Expeditions widget is mounted (exact match to the on-screen
+                // countdown); the data module snaps its tracker to it.
+                const gameEnds = root.__cor3ReadGameExpeditionEnds();
+                for (const e of expeditions) { if (e && e.id && gameEnds[e.id] != null) e._gameEndMs = gameEnds[e.id]; }
                 post(MSG.WS.EXPEDITIONS, { expeditions });
 
                 const decisions = [];
@@ -983,6 +988,33 @@
     root.__cor3RequestArchivedExpeditions = function () {
         wsSendRpc('expeditions', 'get.archived', { cursor: null, limit: 20 });
         return true;
+    };
+
+    // Read the game's own expedition end time(s) from the Expeditions widget's
+    // React state, when it's mounted. The widget builds a `card` carrying
+    // startTimeMs/endTimeMs (computed client-side — the WS data has none), and
+    // endTimeMs is EXACTLY the countdown the user sees. Returns { [expId]: endMs }.
+    // Empty when the widget is closed or its structure changed; the expeditions
+    // data module then falls back to its own departure+pause tracker.
+    root.__cor3ReadGameExpeditionEnds = function () {
+        const ends = {};
+        try {
+            const cards = document.querySelectorAll('[data-component-name="ExpeditionsActiveCard"],[data-sentry-component="ExpeditionsActiveCard"]');
+            for (const el of cards) {
+                const fk = Object.keys(el).find((k) => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$'));
+                if (!fk) continue;
+                let f = el[fk], hop = 0;
+                while (f && hop < 20) {
+                    const p = f.memoizedProps;
+                    if (p && p.card && typeof p.card.endTimeMs === 'number' && p.card.id) {
+                        ends[p.card.id] = p.card.endTimeMs;
+                        break;
+                    }
+                    f = f.return; hop++;
+                }
+            }
+        } catch (_) { /* widget structure changed → caller falls back */ }
+        return ends;
     };
 
     root.__cor3RequestMercenaries = function (marketId) {

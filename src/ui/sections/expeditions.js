@@ -415,9 +415,12 @@
             if (exp.totalCost != null) meta.push(`${num(exp.totalCost)} CR`);
             if (meta.length) card.appendChild(el('div', 'muted xs mt-sm', meta.join(' · ')));
 
-            if (exp.status !== 'COMPLETED') {
+            if (exp.status !== 'COMPLETED' && exp._timerPreparing) {
+                card.appendChild(el('div', 'muted xs mt-sm', 'Preparing for deployment…'));
+            } else if (exp.status !== 'COMPLETED') {
                 // _timerFrozenMs/_timerEndMs are stamped by the expeditions data
-                // module (accrues EVENT-pause time so it matches the in-game timer).
+                // module (run clock starts at departure + accrues EVENT-pause, so
+                // it matches the in-game countdown).
                 const frozen = (typeof exp._timerFrozenMs === 'number') ? exp._timerFrozenMs : null;
                 const endMs = (typeof exp._timerEndMs === 'number') ? exp._timerEndMs : expEndMs(exp);
                 if (frozen != null || endMs) {

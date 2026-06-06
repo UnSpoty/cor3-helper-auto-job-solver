@@ -1,27 +1,32 @@
 // Owns: expeditionsData + expeditionsDataUpdatedAt.
 //
-// Also computes a corrected expedition end time. The server sends startTime/
-// endTime as null even while RUNNING (only `runDuration` is given), and a raid
-// PAUSES while a decision is pending (status === 'EVENT'), so the real end =
-// launch + runDuration + Σ(time spent paused). The game tracks this client-side;
-// we mirror it here, since this module runs continuously alongside the game and
-// sees every status transition.
-//
-// Per active expedition we keep an in-memory timer and stamp two derived fields
-// onto the stored object for the UI:
-//   _timerEndMs    — wall-clock end (ms epoch); RUNNING counts down to this.
-//   _timerFrozenMs — static remaining ms while paused at a decision (else null).
-// Base end is seeded from the UUIDv7 id (first 48 bits = launch unix-ms) +
-// runDuration; pause time is accrued from observed EVENT intervals. (Resets on
-// page reload — pauses before the script started watching aren't recoverable,
-// same as the game.)
+// Also computes a corrected expedition end time to match the in-game countdown.
+// The server sends startTime/endTime null even while RUNNING (only runDuration);
+// verified live, the game derives them purely client-side:
+//   • the `runDuration` countdown starts at DEPARTURE (PREPARING → RUNNING), NOT
+//     at launch — PREPARING takes ~30–70s, which is why a launch-time base ran
+//     ~90s fast.
+//   • a pending decision (status EVENT) PAUSES the raid, pushing the end later by
+//     the time spent paused.
+// So: end = runStart + runDuration + Σ(EVENT-pause). This module runs alongside
+// the game and sees the same get.active frames, so recording runStart at the
+// first observed RUNNING (and accruing EVENT-pause) lands on the same value the
+// game shows. We stamp three derived fields onto each stored expedition:
+//   _timerPreparing — true while still PREPARING (no countdown yet).
+//   _timerEndMs     — wall-clock end (ms); RUNNING/RETURNING counts down to this.
+//   _timerFrozenMs  — static remaining ms while paused at a decision (else null).
+// (Resets on page reload; a raid first seen mid-flight is estimated from the
+// UUIDv7 launch time + a typical PREPARING offset — the game can't recover a
+// reloaded raid's exact start either.)
 
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
     const { Module, Bus, Store, Registry, constants: C } = root.COR3;
 
-    // expId -> { endMs, lastAt, lastStatus, frozenMs }
+    // expId -> { started, sawPreparing, baseEndMs, lastAt, lastStatus, frozenMs }
     const timers = new Map();
+    const STARTED = new Set(['RUNNING', 'EVENT', 'RETURNING', 'IN_PROGRESS']);
+    const PREPARING_FALLBACK_MS = 60000; // est. PREPARING for raids first seen mid-flight
 
     function launchMs(id) {
         const n = parseInt(String(id || '').replace(/-/g, '').slice(0, 12), 16);
@@ -29,29 +34,47 @@
     }
 
     function track(exp, now) {
-        if (!exp || !exp.id || !exp.runDuration || !exp.status || exp.status === 'COMPLETED') return exp;
+        if (!exp || !exp.id || !exp.runDuration || !exp.status) return exp;
+        if (exp.status === 'COMPLETED') return exp;
+
         let st = timers.get(exp.id);
-        if (!st) {
-            const base = launchMs(exp.id);
-            st = {
-                endMs: (base != null ? base : now) + exp.runDuration,
-                lastAt: now,
-                lastStatus: exp.status,
-                // first seen already paused → freeze at full duration (best guess)
-                frozenMs: exp.status === 'EVENT' ? exp.runDuration : null,
-            };
+        if (!st) st = { started: false, sawPreparing: false, baseEndMs: null, lastAt: now, lastStatus: exp.status, frozenMs: null };
+
+        if (typeof exp._gameEndMs === 'number') {
+            // Authoritative: the game's own endTimeMs (Expeditions widget is open).
+            // Snap the tracker to it so it stays correct after the widget closes.
+            st.started = true;
+            st.baseEndMs = exp._gameEndMs;
         } else {
-            // Time spent paused since the last observation pushes the end later.
-            if (st.lastStatus === 'EVENT') st.endMs += (now - st.lastAt);
-            // Entering EVENT freezes the displayed remaining; leaving clears it.
-            if (exp.status === 'EVENT' && st.lastStatus !== 'EVENT') st.frozenMs = Math.max(0, st.endMs - now);
-            else if (exp.status !== 'EVENT') st.frozenMs = null;
-            st.lastAt = now;
-            st.lastStatus = exp.status;
+            // Accrue pause time spent at a decision since the last observation.
+            if (st.started && st.lastStatus === 'EVENT') st.baseEndMs += (now - st.lastAt);
+            // Start the run clock the first time we see a departed (non-PREPARING) status.
+            if (!st.started && STARTED.has(exp.status)) {
+                st.started = true;
+                if (st.sawPreparing) {
+                    st.baseEndMs = now + exp.runDuration;           // watched departure → matches game
+                } else {
+                    const l = launchMs(exp.id);                      // first seen mid-flight → estimate
+                    st.baseEndMs = (l != null ? l : now) + exp.runDuration + PREPARING_FALLBACK_MS;
+                }
+            }
         }
+        if (exp.status === 'PREPARING') st.sawPreparing = true;
+
+        // Freeze the displayed remaining while a decision is pending (capture on entry).
+        if (exp.status === 'EVENT' && st.lastStatus !== 'EVENT' && st.baseEndMs != null) {
+            st.frozenMs = Math.max(0, st.baseEndMs - now);
+        } else if (exp.status !== 'EVENT') {
+            st.frozenMs = null;
+        }
+
+        st.lastAt = now;
+        st.lastStatus = exp.status;
         timers.set(exp.id, st);
+
         return Object.assign({}, exp, {
-            _timerEndMs: st.endMs,
+            _timerPreparing: exp.status === 'PREPARING',
+            _timerEndMs: st.baseEndMs,
             _timerFrozenMs: exp.status === 'EVENT' ? st.frozenMs : null,
         });
     }
