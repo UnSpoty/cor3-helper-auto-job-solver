@@ -65,11 +65,12 @@
     // SAI mutation — fire trigger, resolve the next SAI_ACTION { action, data, error }.
     function awaitAction(timeoutMs, trigger) { return awaitBus(MSG.WS.SAI_ACTION, timeoutMs || 12000, trigger); }
 
-    // Resolve a Downloads fileId by exact name (or by bare ".ext") purely over
-    // WS (desktop.open.folder → match files[]), same recipe as file-decryption.
-    // Used by data_upload (source file to push) and decrypt_extract (the
-    // SAI-downloaded file to open). Returns the fileId or null.
-    async function findDownloadsFileId(match, ms) {
+    // Resolve a Downloads file object by exact name (or by bare ".ext") purely
+    // over WS (desktop.open.folder → match files[]), same recipe as
+    // file-decryption. Used by data_upload (source file to push: needs name +
+    // sizeMb for the upload DTO) and decrypt_extract (the SAI-downloaded file to
+    // open: needs the id). Returns the raw file object {id, name, sizeMb, …} or null.
+    async function findDownloadsFile(match, ms) {
         let folderId = root.__cor3DownloadFolderId;
         if (!folderId) {
             if (typeof root.__cor3DesktopGetOptions !== 'function') return null;
@@ -81,9 +82,9 @@
         const files = (resp && resp.data && Array.isArray(resp.data.files)) ? resp.data.files : [];
         const raw = String(match || '').trim().toLowerCase();
         const isExt = raw.startsWith('.');
-        const f = files.find((x) => { const n = String((x && x.name) || '').toLowerCase(); return isExt ? n.endsWith(raw) : n === raw; });
-        return f ? f.id : null;
+        return files.find((x) => { const n = String((x && x.name) || '').toLowerCase(); return isExt ? n.endsWith(raw) : n === raw; }) || null;
     }
+    async function findDownloadsFileId(match, ms) { const f = await findDownloadsFile(match, ms); return f ? f.id : null; }
 
     // ── Server access ──────────────────────────────────────────────────────
     const pickGrant = (s) => ((s && s.activeAccesses) || []).find((g) => g.sourceType === 'task_access') || ((s && s.activeAccesses) || [])[0] || null;
@@ -317,7 +318,7 @@
                         // lastNode (the *_ACCESS step the flow just emitted) lets
                         // ensureAccess light SAI_HACK then return to that ACCESS node.
                         ensureAccess: (sid, stype, sname) => ensureAccess(sid, stype, sname, say, env.batchKey, step, lastNode),
-                        awaitBus, awaitAction, getTransit, getFiles, getLogs, findDownloadsFileId,
+                        awaitBus, awaitAction, getTransit, getFiles, getLogs, findDownloadsFileId, findDownloadsFile,
                         startSolvers, stopSolvers, findMinigame,
                         complete: () => {
                             // In a multi-job SAI batch the orchestrator defers every
@@ -362,7 +363,7 @@
 
     root.COR3.autoJobs = root.COR3.autoJobs || {};
     root.COR3.autoJobs.saiFlow = {
-        awaitBus, awaitAction, getTransit, getFiles, getLogs, findDownloadsFileId, ensureAccess, defineFlow,
+        awaitBus, awaitAction, getTransit, getFiles, getLogs, findDownloadsFileId, findDownloadsFile, ensureAccess, defineFlow,
         startSolvers, stopSolvers, findMinigame,
     };
 })();

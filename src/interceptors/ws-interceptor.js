@@ -1351,13 +1351,15 @@
         if (!serverId || seq == null) { console.warn('[COR3] __cor3SaiLogDelete: missing serverId/seq'); return false; }
         return wsSendRpc('sai', 'log.delete', { serverId, seq });
     };
-    // data_upload — push a Downloads file to the server. The
-    // payload shape is the best-guess {serverId, fileId} (fileId = the player's
-    // Downloads file id) — NOT yet captured live (the SAI Files tab needs a
-    // LOAD/upload tool equipped). Verify live before relying on it.
-    root.__cor3SaiFileUpload = function (serverId, fileId) {
-        if (!serverId || !fileId) { console.warn('[COR3] __cor3SaiFileUpload: missing serverId/fileId'); return false; }
-        return wsSendRpc('sai', 'file.upload', { serverId, fileId });
+    // data_upload — push a Downloads file to the server. The server's upload
+    // DTO is {serverId, name, sizeMb} — it does NOT accept a fileId (a local
+    // Downloads id is meaningless on the target; the server creates the file
+    // record from name + size). Confirmed by the server's own validation reply:
+    // "property fileId should not exist; name must be <=128 chars; sizeMb should
+    // not be empty". name + sizeMb come from the Downloads file object.
+    root.__cor3SaiFileUpload = function (serverId, name, sizeMb) {
+        if (!serverId || !name || sizeMb == null) { console.warn('[COR3] __cor3SaiFileUpload: missing serverId/name/sizeMb'); return false; }
+        return wsSendRpc('sai', 'file.upload', { serverId, name, sizeMb });
     };
 
     root.__cor3SellItem = function (itemId, quantity) {

@@ -3,10 +3,12 @@
 // see pipeline JOB_TYPE_KEYWORDS). Push the job's target file(s) from the
 // player's Downloads to the server over WS.
 //
-// ⚠️ UNVERIFIED WIRE: file.upload was not captured live (the SAI Files tab needs
-// a LOAD/upload tool equipped). __cor3SaiFileUpload sends the best-guess
-// { serverId, fileId } (fileId = the Downloads file id). Verify live and adjust
-// the wire if the server rejects it.
+// file.upload wire: the server's upload DTO is { serverId, name, sizeMb } — it
+// rejects a fileId (a local Downloads id means nothing on the target server),
+// so we read the source file's name + sizeMb from the Downloads folder object
+// and send those. (Earlier { serverId, fileId } guess was rejected with
+// "property fileId should not exist; name must be <=128 chars; sizeMb should not
+// be empty".)
 (function () {
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
     if (!root.COR3 || !root.COR3.constants || !root.COR3.autoJobs || !root.COR3.autoJobs.saiFlow) return;
@@ -29,12 +31,12 @@
             let uploaded = 0, notFound = 0;
             for (const name of job.fileNames) {
                 if (h.abort()) return { success: false, retryable: true, reason: 'aborted' };
-                const fileId = await h.findDownloadsFileId(name);
-                if (!fileId) { notFound++; h.say('warn', `"${name}" not in Downloads to upload`); continue; }
-                const r = await h.awaitAction(15000, () => root.__cor3SaiFileUpload(job.serverId, fileId));
+                const file = await h.findDownloadsFile(name);
+                if (!file) { notFound++; h.say('warn', `"${name}" not in Downloads to upload`); continue; }
+                const r = await h.awaitAction(15000, () => root.__cor3SaiFileUpload(job.serverId, file.name, file.sizeMb));
                 const ok = r && !r.error;
                 if (ok) uploaded++;
-                h.say('info', `file.upload ${name} (${fileId}) → ${ok ? 'uploaded' : 'failed'}${r && r.error ? ' [' + JSON.stringify(r.error) + ']' : ''}`);
+                h.say('info', `file.upload ${file.name} (${file.sizeMb} MB) → ${ok ? 'uploaded' : 'failed'}${r && r.error ? ' [' + JSON.stringify(r.error) + ']' : ''}`);
             }
 
             if (uploaded === 0) return { success: true, didWork: false, reason: `no file uploaded (${notFound} not in Downloads)` };
