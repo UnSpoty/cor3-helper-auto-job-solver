@@ -13,7 +13,7 @@
     // produce noise — only nudge when we actually rely on a new field. The
     // banner doesn't disable the extension; it just warns the user that
     // their game version is outside the tested range.
-    const EXPECTED_WEB_VERSION = '1.19.55';
+    const EXPECTED_WEB_VERSION = '1.20.34';
 
     const TABS = [
         { id: 'overview',    labelKey: 'tabs.overview' },

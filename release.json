@@ -1,13 +1,19 @@
 {
-  "version": "1.4.0",
+  "version": "1.4.1",
   "changes": [
-    "Added: Simple Decrypt minigame solver — auto-clicks the Decrypt button and waits for completion. Toggle via chrome.storage.sync.autoSimpleDecryptEnabled.",
-    "File Decryption flow: now recognises the Simple Decrypt minigame variant (previously timed out after 90s and could mark the job bugged after a few retries).",
-    "File Decryption flow: opens files via direct WebSocket (desktop.open.file) when the server-side fileId is known — bypasses the DOM lookup that fails on name mismatches or stale folder views.",
-    "File Decryption flow: tracks the file's live id during the run, so jobs survive the server re-issuing the encrypted file under the same name after take.",
-    "WebSocket interceptor: exposes desktop.get.options / open.folder / open.file RPCs and caches the Downloads folder id once per session.",
-    "UI: Overview, Expeditions and Auto Jobs sections now build their skeleton once and swap content atomically, eliminating the flicker that happened on every WebSocket update.",
-    "UI: Simple Decrypt toggle added next to Auto-decrypt and Auto-ICE-Wall in the Auto solvers card.",
-    "Update check: upstream release.json is now polled every 10 minutes (was every 6 hours) so new releases show up in the popup almost immediately."
+    "Auto Jobs: complete rewrite — a single orchestrator runs the accept→complete pipeline over pure WebSocket, with the old DOM-driven flows removed. SAI jobs (ip injection/cleanup, file elimination, log deletion/download, data download/upload, decrypt extract) and file decryption now run headless.",
+    "Auto Jobs: accepts and works one server at a time (sequential), holding while a server's batch is still in flight so a stuck or inaccessible server can't block the others.",
+    "Auto Jobs: hacks not-accessible servers automatically over WebSocket when there is no Active Access grant, installing covering HACK software via the headless loadout API.",
+    "Auto Jobs: file decryption opens files directly over WebSocket (desktop.open.file) and auto-installs/swaps the matching DECRYPT software for the file type.",
+    "Auto Jobs: new Master Switches panel — global market and job-type toggles, plus an opt-in auto-dismiss of FAILED jobs (default off).",
+    "Auto Jobs: Job List now surfaces FAILED and 'ready to complete' jobs, adds a manual ✓ complete button, and a Job details panel showing the raw WebSocket payload.",
+    "Auto Jobs: added USOL (URM7-M) market support across all modules.",
+    "Network Map: rebuilt the popup map to match the in-game cor3.gg look, with pan/zoom; K/D servers dominate the hack indication and block Open SAI.",
+    "Expeditions: full tab rework — master switch, min/max auto-send latch, a rich roster/stash/runs view, and a profile/credits tracker.",
+    "Expeditions: EVENT-pause-aware active timer that matches the in-game countdown — starts at departure, accrues pauses, and snaps to the game's end time.",
+    "Expeditions: auto-opens the loot container on a full-success run (master-gated), with retry-safe open/collect.",
+    "ICE WALL solver: multi-anchor matching, flicker-free diff overlay, anchor-lock commit priority to stop wrong partial clicks, and an overlay-exclusion fix so the solver no longer mis-reads its own markers.",
+    "Theme: new Neon (synthwave) theme with a fixed, readable theme selector.",
+    "UI: popup now stretches to full width in the Chrome side panel and shows the build commit hash in the header."
   ]
 }
