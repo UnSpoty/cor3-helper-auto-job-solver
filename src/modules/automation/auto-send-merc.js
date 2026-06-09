@@ -28,7 +28,7 @@
     const { Module, Bus, Store, Registry, constants: C } = root.COR3;
     const MSG = C.MSG;
 
-    const HOME_MARKET_ID = '019d3ea4-85bd-7389-904d-8f7c85841134';
+    const HOME_MARKET_ID = C.HOME_MARKET_ID;
     const POLL_MS = 20000;            // re-check balance + merc availability
     const BUSY_MS = 25000;            // max time a launch/collect RPC holds the lock
 
@@ -90,11 +90,12 @@
         if (!cfg || !Array.isArray(cfg.locations) || cfg.locations.length === 0) return null;
         const loc = cfg.locations[0];
         const zone = loc.zones && loc.zones[0];
-        const obj = zone && zone.objectives && zone.objectives[0];
-        if (!zone || !obj) return null;
+        // Post-patch: zone.goals (was zone.objectives); launch DTO field is goalId.
+        const goal = zone && zone.goals && zone.goals[0];
+        if (!zone || !goal) return null;
         return {
             mercenaryId: merc.id, marketId: HOME_MARKET_ID,
-            locationConfigId: loc.id, zoneConfigId: zone.id, objectiveId: obj.id,
+            locationConfigId: loc.id, zoneConfigId: zone.id, goalId: goal.id,
             hasInsurance: false,
         };
     }

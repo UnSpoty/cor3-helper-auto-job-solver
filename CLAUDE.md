@@ -62,11 +62,16 @@ once then bugged; completion uses `MSG.GAME.COMPLETE_JOB`. Flow modules live in
 [src/modules/game/flows/auto-jobs/](src/modules/game/flows/auto-jobs/) (ids
 `flow-*`):
   - **`file_decryption`** (`flows/auto-jobs/file-decryption.js`, id
-    `flow-file-decryption`): reads the file format, uses the headless loadout
-    API `COR3.game.loadout.ensureDecrypt(ext)` (install/swap owned software or
-    bug-out if none), then finds + opens the file **purely over WS** (no DOM
-    scrape): `__cor3DesktopOpenFolder` (Downloads) → match `files[]` by
-    name/ext → `__cor3DesktopOpenFile(fileId)`. The raw `open.file` is REQUIRED:
+    `flow-file-decryption`): reads the file format, uses the **power-aware**
+    headless loadout API `COR3.game.loadout.ensureDecrypt(ext, requiredPower)`
+    (install/swap owned software — and max out hardware — to clear the file's
+    CRYPT RATE, or bug-out: `none`/`underpower` are non-retryable). `requiredPower`
+    is the decrypt condition's `encryptionLevel` upper bound (`hi`), supplied on
+    the FLOW_START payload by the orchestrator
+    (`pipeline.requiredPowerForDecrypt`). Then finds + opens the file **purely
+    over WS** (no DOM scrape): `__cor3DesktopOpenFolder` (Downloads) → match
+    `files[]` by name/ext → `__cor3DesktopOpenFile(fileId)`. The raw `open.file`
+    is REQUIRED:
     a cor3.gg update made a DOM double-click open a "File Analysis" info window
     (`desktop.get.file.analysis` → `FileAnalysisProtocolApplication`) instead of
     the minigame; WS `open.file` starts the minigame directly. The standalone
@@ -75,7 +80,17 @@ once then bugged; completion uses `MSG.GAME.COMPLETE_JOB`. Flow modules live in
     log_deletion/log_download, data_download/data_upload, decrypt_extract) share
     a base factory in `flows/auto-jobs/_sai-flow.js`: connect +
     Active-Access/hack login, then the get.*/mutate.* WS loop, then
-    `job.complete`.
+    `job.complete`. The base also exposes shared file-name resolution helpers
+    (`resolveFile`/`parseExt`/`stemOf`/`normExt` + `listDownloads`, on both `h.*`
+    and `COR3.autoJobs.saiFlow`): cor3.gg names the SAME file three ways — the
+    condition NAME, the server `get.files` NAME, and the local Downloads NAME all
+    differ — so the file flows match by **fileId → exact name → stem** (text
+    before the first dot), never exact-name only. The orchestrator hands the
+    file SAI flows the `{id,name,ext}` descriptors (`fileDescriptorsForJob`);
+    `decrypt_extract` also carries `requiredPower` and decrypts by the local
+    file's REAL extension; `data_upload` defaults `sizeMb` to 1 when the Downloads
+    object omits it (the post-patch `open.folder` file no longer carries
+    `sizeMb`).
 
 The bridge drives the Network-Map context-menu Open SAI / Open Market actions
 **without DOM coordinate clicks**: it opens the Network Map / SAI windows via
@@ -159,7 +174,9 @@ cor3-helper/
     │   ├── data/         13 modules — one per WS payload (auth, expeditions,
     │   │                  archived-expeditions, decisions, market, dark-market,
     │   │                  srm-market, usol-market, stash, loadout, mercenaries,
-    │   │                  merc-config, expedition-config)
+    │   │                  merc-config, expedition-config) — `mercenaries` now
+    │   │                  stores a per-market map (MERC_MARKETS) keyed by market
+    │   │                  id, mirroring ONLY the HOME market into MERCENARIES
     │   ├── automation/   10 modules — timers, auto-refresh, auto-send-merc,
     │   │                  auto-choose-decision, auto-decrypt, auto-ice-wall,
     │   │                  auto-simple-decrypt, daily-ops, auto-jobs,
@@ -181,6 +198,7 @@ cor3-helper/
 |---|---|
 | Change how WS frames are parsed | `src/shared/ws-frames.js` |
 | Add a new game-data field to track | new file in `src/modules/data/` + entry in `MSG.WS.*` + entry in `STORAGE_LOCAL.*` |
+| Reference a market / faction id (home/dark/srm/usol) | `C.MARKETS` in `src/shared/constants.js` (single source of truth: `{id, serverId, key, label}[]` + `C.HOME_MARKET_ID` / `C.HOME_SERVER_ID`) — never hardcode the ids |
 | Tweak Auto Jobs scheduling / loop | `src/modules/automation/auto-jobs.js` (orchestrator) + `src/modules/automation/auto-jobs/pipeline.js` (stages) |
 | Add a new job type | pipeline.js `detectJobType` + condition parsing; new `flow-*` module in `src/modules/game/flows/auto-jobs/`; wire it into the orchestrator's JOB_FLOW batch dispatch |
 | Adjust the SAI access / navigation | `src/modules/game/auto-jobs-bridge.js` (`saiAccess()` login) + `src/modules/game/flows/auto-jobs/_sai-flow.js` (SAI flow base); WS helpers `__cor3Sai*` in `src/interceptors/ws-interceptor.js` |
@@ -273,10 +291,14 @@ Quick list of every registered module ID and its world:
   Notifications widget (via Sentry data-attr, language-independent).
   Opening it auto-powers the system off (`localStorage["loadout-powered"]`
   client-side flag, restored on close — toggleable via AUTO mini-pill),
-  then renders equipped/owned hardware + software, resources usage bars
-  with hover-delta preview when picking alternatives, and a dynamically
-  discovered capability list (DECRYPT/HACK/SEARCH targets — file
-  extensions or server types — coloured green=active / grey=available).
+  then renders equipped/owned hardware + software (each software card shows
+  one "TYPE · power · targets" capability line — power is computed/max when
+  equipped else the spec's min–max band), resources usage bars with hover-delta
+  preview when picking alternatives, and a dynamically discovered capability list
+  (DECRYPT/HACK/SEARCH targets — file extensions or server types — coloured
+  green=active / grey=available). Each capability target is **clickable** → a
+  chooser overlay listing every owned software that provides that exact target
+  (callsign/tier/power band); clicking a row equips/unequips it.
   Mutations (equip/unequip software, swap hardware) go via plain WS
   RPCs in src/interceptors/ws-interceptor.js (`__cor3Loadout*` helpers
   — `loadout/equip.software`, `unequip.software`, `equip.hardware`,
@@ -311,10 +333,16 @@ Quick list of every registered module ID and its world:
   **hacks** the server (`COR3.game.loadout.ensureHack` → click the hack-tool
   row → solver wins the minigame → use the granted access). Logs under id
   `auto-jobs`. `loadout-panel` also exposes a headless `COR3.game.loadout`
-  API — `planDecrypt`/`ensureDecrypt(ext)` (DECRYPT, matched by `fileTypes`)
-  for the file flow, and `planHack`/`ensureHack(serverType)` (HACK, matched by
-  `serverTypes`) for the Open-SAI hack path — both doing install/swap with the
-  same resource-fit logic.
+  API — `planDecrypt`/`ensureDecrypt(ext, requiredPower)` (DECRYPT, matched by
+  `fileTypes`, now **power-aware**: picks owned software whose DECRYPT power band
+  max ≥ `requiredPower`, installs alongside the current rig if it fits else frees
+  other software, and maxes out hardware per slot to raise `computedPower`; plan
+  statuses `ready`/`install`/`swap`/`none`/`underpower`/`unknown`, ensure results
+  `ready`/`installed`/`swapped`/`none`/`underpower`/`unknown`/`no-helper`/`install-failed`
+  — `none`/`underpower` are PERMANENT so the orchestrator bugs the job;
+  `requiredPower<=0` = no gate, any covering software qualifies), and
+  `planHack`/`ensureHack(serverType)` (HACK, matched by `serverTypes`) for the
+  Open-SAI hack path — both doing install/swap with the same resource-fit logic.
 
 **Isolated content_scripts:**
 - `auth`, `expeditions`, `archived-expeditions`, `decisions`, `market`,

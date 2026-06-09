@@ -44,9 +44,12 @@ Run any of these in the MCP browser console:
 | `window.COR3.Registry.get('auto-jobs')?.started` | isolated | whether the orchestrator loop is running |
 | `Object.keys(window.COR3.autoJobs?.pipeline?.stages ?? {})` | isolated | the stage objects (getServers, checkAccess, updateMarkets, jobQueue, buggedJobs, checkCondition, jobAcception) |
 | `await chrome.storage.sync.get(['autoJobsSettings','modules','autoSendMerc'])` | isolated/popup | user prefs + module state (Auto Jobs is `{enabled}`) |
+| `(await chrome.storage.local.get('loadoutData')).loadoutData.resources.softwarePower` | isolated/popup | per-software server-computed power: `[{moduleId, ratio, abilities:[{type, computedPower}]}]`. `computedPower ≈ pmin + ratio·(pmax−pmin)` for the equipped hardware — the number compared against a file's CRYPT RATE (decrypt succeeds iff an equipped covering software's `computedPower ≥ CRYPT RATE`) |
+| `(await chrome.storage.local.get('mercMarketsData')).mercMarketsData` | isolated/popup | per-market `get.mercenaries` payloads, keyed by marketId: `{ [marketId]: {mercenaries[], userReputation, mercenaryReputation, hireSlots, eliteSlots[]} }` (each market is its own faction). `mercenariesData` mirrors only the HOME market |
 | `window.__cor3WsInterceptorActive` | MAIN | confirms WS wrap is installed |
 | `window.__cor3LastMarketId` | MAIN | last home market id seen by interceptor |
-| `window.__cor3CachedMercIds` | MAIN | cached mercenary IDs for configure cascade |
+| `window.__cor3CachedMercIds` | MAIN | cached HOME mercenary IDs for the configure cascade |
+| `window.__cor3ExpConfigIds` | MAIN | HOME `{locationConfigId, zoneConfigId, goalId}` from `get.config` (post-patch field is `goalId`, was `objectiveId`) |
 | `window.__cor3Abort`, `window.__cor3FlowLock`, `window.__cor3SaiSession` | MAIN | Auto Jobs flow abort flag / cross-module busy guard / shared SAI batch session |
 
 ### Forcing actions from the console
@@ -59,6 +62,15 @@ window.postMessage({ type: 'COR3_REFRESH_DARK_MARKET' }, '*');
 // Re-request the Network Map graph (interceptor replies COR3_NM_GRAPH,
 // which the orchestrator persists to STORAGE_LOCAL.NM_GRAPH)
 window.postMessage({ type: 'COR3_REQUEST_NM_MAP' }, '*');
+
+// Fetch mercenaries for EVERY market (each market is its own faction →
+// distinct mercs / elite mercs / reputation). Replies are serialized one
+// at a time and written per-market to STORAGE_LOCAL.MERC_MARKETS.
+// NOTE: post-patch get.mercenaries AND get.config both REQUIRE a marketId
+// ("Validation failed: marketId must be a string"); __cor3Request* default
+// it to __cor3LastMarketId / HOME. get.mercenaries works by marketId
+// WITHOUT connecting to the server.
+window.postMessage({ type: 'COR3_REQUEST_ALL_MERCENARIES' }, '*');
 
 // ── Auto Jobs ──
 // Start / stop the loop (from isolated or popup console — the orchestrator
@@ -208,6 +220,28 @@ shape — re-verify the `network-map.get.map` frame in DevTools → Network → 
 A stale graph self-heals on the next rescan (`REQUEST_NM_MAP` / the Network Map
 "Refresh" button).
 
+### "Decrypt job bugs as `underpower` / I need to read a file's CRYPT RATE"
+
+A decrypt job (`file_decryption` / `decrypt_extract`) only succeeds if an
+*equipped* covering software's `computedPower ≥` the file's **CRYPT RATE** (the
+upper bound of the condition's `details.extensions[].encryptionLevel: [lo, hi]`).
+`requiredPowerForDecrypt(rawJob)` in `pipeline.js` derives that number from the
+job condition; `COR3.game.loadout.ensureDecrypt(ext, requiredPower)` returns
+status `underpower` (→ non-retryable bug) when no owned SW+HW combo can reach it.
+
+Two live readouts:
+
+1. **The loadout snapshot** — `resources.softwarePower` (the probe above) gives
+   the *current* per-software `computedPower` for the equipped hardware.
+2. **The in-game File Analysis window** is authoritative for a specific file. A
+   cor3.gg patch made double-clicking a Downloads file open it
+   (`desktop.get.file.analysis` → `FileAnalysisProtocol`) instead of the
+   minigame; it shows **CRYPT RATE** and **DECRYPT POWER** side by side. (The
+   flows avoid it — they send the raw `open.file` so the minigame mounts
+   directly — but it is the easiest manual way to confirm the rate.) The
+   `desktop.open.folder` (Downloads) file object does NOT carry the rate, and a
+   post-patch update also DROPPED its `sizeMb` field.
+
 ### "Auto-send merc launches with the wrong merc"
 
 Sort key in `auto-send-merc.js` is `(totalCost, riskScore)`. If a cheaper
@@ -218,7 +252,9 @@ does. Either:
 - The user pinned a specific `mercenaryId` (overrides auto-choose). Check
   `chrome.storage.sync.autoSendMerc.mercenaryId`.
 - The merc list / config data is stale. Force refresh:
-  `window.postMessage({type:'COR3_REQUEST_MERCENARIES'}, '*')`.
+  `window.postMessage({type:'COR3_REQUEST_MERCENARIES'}, '*')` (HOME only —
+  auto-send only sends from HOME; `COR3_REQUEST_ALL_MERCENARIES` refreshes
+  every market's `mercMarketsData`).
 
 ### "Daily ops never updates"
 

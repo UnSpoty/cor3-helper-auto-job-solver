@@ -189,6 +189,34 @@
         return null;
     }
 
+    // Required decrypt power for a File Decryption / Decrypt&Extract job. A
+    // cor3.gg update added `encryptionLevel:[lo,hi]` to the decrypt condition
+    // item (per-extension and item-level). The file's CRYPT RATE — the bar the
+    // equipped software's DECRYPT power must clear — is the UPPER bound `hi`
+    // (verified live in the in-game File Analysis window: a [7,15] job → CRYPT
+    // RATE 15.0). Returns the MAX hi across the job's decrypt items (exact for
+    // the usual single-extension job, conservative for multi). 0 when absent
+    // (older jobs / no band) → no power gate, behaves as before.
+    function requiredPowerForDecrypt(rawJob) {
+        const items = rawJob && rawJob.conditions && Array.isArray(rawJob.conditions.items)
+            ? rawJob.conditions.items : [];
+        let need = 0;
+        const consider = (lvl) => {
+            if (Array.isArray(lvl) && lvl.length) {
+                const hi = Number(lvl[lvl.length - 1]);
+                if (Number.isFinite(hi)) need = Math.max(need, hi);
+            }
+        };
+        for (const it of items) {
+            const d = (it && it.details) || {};
+            if (Array.isArray(d.extensions)) {
+                for (const e of d.extensions) if (e && e.encryptionLevel) consider(e.encryptionLevel);
+            }
+            if (d.encryptionLevel) consider(d.encryptionLevel);
+        }
+        return need;
+    }
+
     // ──────────────────────────────────────────────────────────────────────
     // SAI-flow target resolvers. The target (which IPs / files / logs) lives in
     // the PRIMARY condition item's `details`, which is null on AVAILABLE board
@@ -247,6 +275,29 @@
             if (Array.isArray(d.files)) for (const f of d.files) if (f && typeof f.name === 'string' && f.name) out.push(f.name);
         }
         return [...new Set(out)];
+    }
+    // Richer file targets for decrypt_extract: {id, name, ext}. cor3.gg's own
+    // data is inconsistent across the three places a file is named — the job
+    // condition NAME ("db_8914.dat"), the server's get.files NAME ("db_8914.bin")
+    // and the downloaded LOCAL name ("db_8914.eb54x") often differ; only the
+    // fileId (condition files[].id === server fileId) and the base name (stem)
+    // are stable. `ext` is the encrypted extension the job declares
+    // (extensions[0].ext), used as a fallback when the local name lacks one. The
+    // flow resolves by id → name → stem and decrypts by the real local extension.
+    function fileDescriptorsForJob(rawJob) {
+        const out = [];
+        for (const it of conditionItems(rawJob)) {
+            const d = (it && it.details) || {};
+            const ext = (Array.isArray(d.extensions) && d.extensions[0] && d.extensions[0].ext)
+                ? String(d.extensions[0].ext) : null;
+            if (Array.isArray(d.files)) for (const f of d.files) if (f && typeof f.name === 'string' && f.name) out.push({ id: f.id || null, name: f.name, ext });
+            if (Array.isArray(d.fileNames)) for (const n of d.fileNames) if (typeof n === 'string' && n) out.push({ id: null, name: n, ext });
+            if (typeof d.fileName === 'string' && d.fileName) out.push({ id: null, name: d.fileName, ext });
+        }
+        const seen = new Set();
+        const res = [];
+        for (const x of out) { const k = x.id || x.name.toLowerCase(); if (seen.has(k)) continue; seen.add(k); res.push(x); }
+        return res;
     }
     function logSeqsForJob(rawJob) {
         const out = [];
@@ -867,11 +918,13 @@
         jobServer,
         buildJobWsInfo,
         fileConditionForDecrypt,
+        requiredPowerForDecrypt,
         // SAI-flow target resolvers (read from the TAKEN job's condition details).
         serverConfigId,
         jobServerReachable,
         ipsForJob,
         fileNamesForJob,
+        fileDescriptorsForJob,
         logSeqsForJob,
         logNamesForJob,
         stages: { getServers, checkAccess, updateMarkets, jobQueue, buggedJobs, checkCondition, jobAcception },

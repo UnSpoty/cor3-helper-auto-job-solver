@@ -25,15 +25,22 @@ surfaced on `NM_GRAPH.servers[]` and consumed by the pipeline's `checkAccess`
 stage as `onCooldown`. A job whose server is on K/D is **postponed** by
 `jobServerReachable()` (never bugged) until the next rescan clears it.
 
-**Markets** — four job boards. **Home Market** (id
-`019d3ea4-85bd-7389-904d-8f7c85841134`) is the player's own. **Dark Market
-(D4RK)** (market `019d3ea4-…-908ba9194aa0`, server
-`019d29c5-4b37-79bf-b23e-304d8ea03c15`), **SRM7-M (SOYUZ)** (market
-`019da731-…`, server `019da6f1-…`) and **URM7-M (USOL)** (market `019e4065-…`,
-server `019e4052-…`) are remote: fetching them flips the WS endpoint to their
-server, runs `get.jobs`, then reverts to home. Each may be unreachable
-(no-path-to-server) — the `darkMarketAvailable` / `srmMarketAvailable` /
-`usolMarketAvailable` flags track this.
+**Markets** — four job boards (also four **factions** for expeditions).
+**Home Market** (key `home`) is the player's own. **Dark Market (D4RK RM7MI)**
+(key `dark`), **SRM7-M** (key `srm`) and **URM7-M (USOL)** (key `usol`) are
+remote: fetching them flips the WS endpoint to their server, runs `get.jobs`,
+then reverts to home. Each may be unreachable (no-path-to-server) — the
+`darkMarketAvailable` / `srmMarketAvailable` / `usolMarketAvailable` flags track
+this.
+
+**Market registry** — `constants.MARKETS` is the SINGLE source of truth for the
+four markets: `[{ id, serverId, key, label }]` in display order (home, dark, srm,
+usol), plus `constants.HOME_MARKET_ID` / `HOME_SERVER_ID` (= `MARKETS[0]`).
+Previously each id was hardcoded in 5+ files (ws-interceptor, mercenaries,
+runtime-bridge, auto-send-merc, the Expeditions UI); all now reference
+`C.MARKETS` / `C.HOME_MARKET_ID`. The WS bus channel for a market is `MARKET`
+(home) or `<KEY>_MARKET` (dark/srm/usol); `get.mercenaries` / `get.config` /
+`get.jobs` address a market by its `id`.
 
 **Job** — a task on the market. Has a `name`, `category`, `relatedServers`
 (IDs of servers needed to complete it), and `conditions` (the params:
@@ -42,6 +49,37 @@ file names, IPs, log seqs, etc.). Statuses: `AVAILABLE`, `TAKEN` (in-progress),
 
 **Job type** — derived from job name keywords. We support 9 types — see
 [messaging.md → FLOW](messaging.md#flow--job-type-identifiers).
+
+**CRYPT RATE / encryptionLevel** — the strength of a file's encryption, i.e. the
+DECRYPT-power bar a decrypt job demands. A decrypt job's condition items
+(`DecryptFile` / `DecryptDownloadedFile`) carry
+`details.extensions[].{ext, encryptionLevel:[lo,hi]}` (plus an item-level
+`details.encryptionLevel`). The file's **CRYPT RATE** is the band's UPPER bound
+`hi` (verified live: a `[7,15]` job reads CRYPT RATE 15.0 in the in-game File
+Analysis window). `pipeline.requiredPowerForDecrypt(rawJob)` returns the MAX `hi`
+across the job's decrypt items (0 when absent → no power gate, behaves as before).
+
+**Decrypt power / computedPower / power band** — a DECRYPT software's spec lists
+`power:[min,max]` (its power *band*). The server reports per-equipped-software
+`resources.softwarePower[].{ratio, abilities:[{type, computedPower}]}`, where
+`computedPower ≈ pmin + ratio·(pmax−pmin)` and the ratio is hardware-dependent
+(more supply → higher ratio → higher power). A decrypt **succeeds iff** an
+equipped covering software's `computedPower ≥` the file's CRYPT RATE. The
+headless loadout API (`COR3.game.loadout.planDecrypt(ext, requiredPower)` /
+`ensureDecrypt(ext, requiredPower, log)`) is power-aware: it picks an owned tool
+whose band max can reach the bar, dedicates the rig to it, and swaps in stronger
+hardware if still short. The plan/ensure status **`underpower`** = we own covering
+software but no SW+HW combo can reach the bar (PERMANENT → the orchestrator bugs
+the job; other statuses: `ready`/`install`/`swap`/`none`/`unknown` and
+`installed`/`swapped`/`no-helper`/`install-failed`).
+
+**File Analysis window** — the authoritative in-game readout of a file's CRYPT
+RATE and DECRYPT POWER, opened over WS via `desktop.get.file.analysis`
+(`FileAnalysisProtocol`). A DOM double-click on a Downloads file now
+opens THIS info window instead of the minigame, so the file-decryption flow uses
+the raw WS `open.file` to start the minigame directly. The Downloads `open.folder`
+file object does NOT carry the CRYPT RATE and (post-patch) DROPPED the `sizeMb`
+field (data_upload now defaults `sizeMb` to 1 — `DEFAULT_UPLOAD_SIZE_MB`).
 
 **SAI (Server Administration Interface)** — the in-game server admin
 subsystem (Logs, Files, Transit Access). The extension no longer scrapes the
@@ -60,11 +98,38 @@ be opened (`open.container`) before items can be `collect.all`'d into the
 stash.
 
 **Mercenary (merc)** — a hireable agent for expeditions. Has `status`
-(`AVAILABLE`, `RESTING`, etc.), `callsign`, and after `configure` a per-merc
-`{totalCost, riskScore, …}`.
+(`AVAILABLE`, `RESTING`, etc.), `callsign`, `faction{key,name,icon}`,
+`reputationRequirement`, and after `configure` a per-merc `{totalCost,
+riskScore, …}`. The `get.mercenaries` reply is per-market (no `marketId` in the
+reply — the interceptor serialises requests and matches each reply to the lone
+in-flight one). Its payload: `{ mercenaries[], userReputation{level,progress,
+score}, mercenaryReputation{score,level,trustLevel,successfulRuns,deadMercs,
+hireCostMultiplier,breakdown{…}}, hireSlots{baseSlots,purchasedSlots,
+maxMercenaries,pools[]}, eliteSlots[] }`.
+
+**Faction reputation** — each market is its own faction with two reputation
+tracks in the `get.mercenaries` reply: `userReputation` (the player's standing
+with the faction: `level`/`progress`/`score`) and `mercenaryReputation` (the
+faction's trust in the player: `trustLevel`, `successfulRuns`, `deadMercs`,
+`hireCostMultiplier`, plus a score `breakdown`). The Expeditions tab renders one
+block per market from `C.MARKETS`, reading these out of `STORAGE_LOCAL.MERC_MARKETS`.
+
+**Elite mercenary** — a premium merc in `eliteSlots[]`, distinct shape from a
+regular merc: `{eliteConfigId, callsign, specialization, trait, avatarSeed,
+state (e.g. AVAILABLE / QUEST_IN_PROGRESS), unlock:{requiredFactionReputationLevel,
+sideQuestId}, progress:{factionReputationLevel, sideQuestCompleted},
+info:{specializationName/Description, traitName/Description}}`. Unlocked by
+reaching a faction-reputation level and/or completing a side quest.
 
 **Expedition** — multi-step sci-fi mission with mercenary, location, zone,
-objective. Has `endTime`, may have pending `decisionOptions` mid-run.
+**goal**. Has `endTime`, may have pending `decisionOptions` mid-run.
+
+**Goal** (formerly **objective**) — the expedition's target within a zone. A
+cor3.gg patch renamed `zones[].objectives[]` → `zones[].goals[]` and the
+configure/launch DTO field `objectiveId` → `goalId` (the server now rejects
+`objectiveId`: "property objectiveId should not exist; goalId must be a string").
+Runs surface `goalName` (the code still reads `goalName || objectiveName` for
+back-compat).
 
 **Decision** — branching choice during an expedition. Each option has
 `lootModifier` (positive, more reward) and `riskModifier` (positive, more

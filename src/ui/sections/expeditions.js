@@ -23,6 +23,7 @@
     const root = window;
     root.COR3.ui = root.COR3.ui || {};
     const { Store, constants: C, uiComponents } = root.COR3;
+    const t = (k, vars) => root.COR3.i18n.t(k, vars);
 
     function escape(s) {
         return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -133,16 +134,16 @@
             autoChoose: { enabledInput: null, sliderInput: null, label: null },
             active: { listHost: null, timers: [] },
             pending: { title: null, listHost: null, timers: [] },
-            roster: { listHost: null },
+            markets: { host: null },
             stash: { capacityText: null, bar: null, itemsTitle: null, itemsHost: null },
             recent: { listHost: null, showAll: false, collapsed: true, caret: null },
         };
 
         // ─── Master switch ────────────────────────────────────────────
-        container.appendChild(el('div', 'section-title', 'Expeditions automation'));
+        container.appendChild(el('div', 'section-title', t('expeditions.section.automation')));
         const mCard = el('div', 'card');
         const mRow = el('div', 'card-row');
-        mRow.appendChild(el('span', 'card-label', 'Master switch'));
+        mRow.appendChild(el('span', 'card-label', t('expeditions.master.label')));
         const mSw = el('label', 'switch');
         const mInput = document.createElement('input');
         mInput.type = 'checkbox';
@@ -154,10 +155,10 @@
         panel.master = { input: mInput };
 
         // ─── Auto-send mercenary ──────────────────────────────────────
-        container.appendChild(el('div', 'section-title', 'Auto-send mercenary'));
+        container.appendChild(el('div', 'section-title', t('expeditions.section.autoSend')));
         const asCard = el('div', 'card');
         const asRow = el('div', 'card-row');
-        asRow.appendChild(el('span', 'card-label', 'Auto-send by balance'));
+        asRow.appendChild(el('span', 'card-label', t('expeditions.autoSend.byBalance')));
         const asSw = el('label', 'switch');
         const asInput = document.createElement('input');
         asInput.type = 'checkbox';
@@ -168,12 +169,12 @@
         // Money Min / Max inputs (hidden until enabled)
         const mmRow = el('div', 'exp-minmax mt-sm');
         const minWrap = el('label', 'exp-minmax-field');
-        minWrap.appendChild(el('span', 'card-label', 'Money: Min (CR)'));
+        minWrap.appendChild(el('span', 'card-label', t('expeditions.autoSend.moneyMin')));
         const minInput = document.createElement('input');
         minInput.type = 'number'; minInput.min = '0'; minInput.className = 'exp-num'; minInput.placeholder = '0';
         minWrap.appendChild(minInput);
         const maxWrap = el('label', 'exp-minmax-field');
-        maxWrap.appendChild(el('span', 'card-label', 'Money: Max (CR)'));
+        maxWrap.appendChild(el('span', 'card-label', t('expeditions.autoSend.moneyMax')));
         const maxInput = document.createElement('input');
         maxInput.type = 'number'; maxInput.min = '0'; maxInput.className = 'exp-num'; maxInput.placeholder = '0';
         maxWrap.appendChild(maxInput);
@@ -195,10 +196,10 @@
         panel.autoSend = { input: asInput, minMaxRow: mmRow, minInput, maxInput, status: asStatus, warn: asWarn };
 
         // ─── Auto-choose decision ─────────────────────────────────────
-        container.appendChild(el('div', 'section-title', 'Auto-choose decision'));
+        container.appendChild(el('div', 'section-title', t('expeditions.section.autoChoose')));
         const acCard = el('div', 'card');
         const acRow = el('div', 'card-row');
-        acRow.appendChild(el('span', 'card-label', 'Enabled'));
+        acRow.appendChild(el('span', 'card-label', t('expeditions.autoChoose.enabled')));
         const acSw = el('label', 'switch');
         const acInput = document.createElement('input');
         acInput.type = 'checkbox';
@@ -206,14 +207,14 @@
         acRow.appendChild(acSw);
         acCard.appendChild(acRow);
         const rtRow = el('div', 'card-row mt-sm');
-        rtRow.appendChild(el('span', 'card-label', 'Risk threshold'));
+        rtRow.appendChild(el('span', 'card-label', t('expeditions.autoChoose.riskThreshold')));
         const rtLabel = el('span', 'mono', '5');
         rtRow.appendChild(rtLabel);
         acCard.appendChild(rtRow);
         const rtSlider = document.createElement('input');
         rtSlider.type = 'range'; rtSlider.min = '0'; rtSlider.max = '10'; rtSlider.step = '1'; rtSlider.className = 'mt-sm';
         acCard.appendChild(rtSlider);
-        acCard.appendChild(el('div', 'muted xs mt-sm', '0 = strong risk penalty · 10 = ignore risk'));
+        acCard.appendChild(el('div', 'muted xs mt-sm', t('expeditions.autoChoose.riskHint')));
         container.appendChild(acCard);
         acInput.addEventListener('change', (e) => Store.sync.setOne(C.STORAGE_SYNC.AUTO_CHOOSE_ENABLED, e.target.checked));
         rtSlider.addEventListener('input', (e) => { rtLabel.textContent = e.target.value; });
@@ -222,8 +223,8 @@
 
         // ─── Active expedition ────────────────────────────────────────
         const aHead = el('div', 'row between mt-md');
-        aHead.appendChild(el('div', 'section-title', 'Active expedition'));
-        const aRefresh = el('button', 'btn small', 'Refresh');
+        aHead.appendChild(el('div', 'section-title', t('expeditions.section.active')));
+        const aRefresh = el('button', 'btn small', t('common.refresh'));
         aRefresh.addEventListener('click', () => sendToContent('requestExpeditions'));
         aHead.appendChild(aRefresh);
         container.appendChild(aHead);
@@ -240,7 +241,7 @@
         panel.active.listHost = aHost;
 
         // ─── Pending decisions ────────────────────────────────────────
-        const pTitle = el('div', 'section-title', 'Pending decisions');
+        const pTitle = el('div', 'section-title', t('expeditions.section.pending'));
         pTitle.style.display = 'none';
         container.appendChild(pTitle);
         const pHost = el('div');
@@ -248,33 +249,39 @@
         panel.pending.title = pTitle;
         panel.pending.listHost = pHost;
 
-        // ─── Mercenary roster ─────────────────────────────────────────
-        const rHead = el('div', 'row between mt-md');
-        rHead.appendChild(el('div', 'section-title', 'Mercenary roster'));
-        const rRefresh = el('button', 'btn small', 'Refresh');
-        rRefresh.addEventListener('click', () => { sendToContent('requestMercenaries'); sendToContent('requestExpeditionConfig'); });
-        rHead.appendChild(rRefresh);
-        container.appendChild(rHead);
-        const rHost = el('div');
-        container.appendChild(rHost);
-        rHost.addEventListener('click', (e) => {
+        // ─── Markets & mercenaries ────────────────────────────────────
+        // One block per market — each market is its own faction with distinct
+        // reputation, regular + elite mercs, and hire slots (verified live).
+        const mHead = el('div', 'row between mt-md');
+        mHead.appendChild(el('div', 'section-title', t('expeditions.section.markets')));
+        const mRefresh = el('button', 'btn small', t('common.refresh'));
+        mRefresh.addEventListener('click', () => {
+            sendToContent('requestAllMercenaries');
+            sendToContent('requestExpeditionConfig');
+            sendToContent('requestProfile');
+        });
+        mHead.appendChild(mRefresh);
+        container.appendChild(mHead);
+        const mHost = el('div');
+        container.appendChild(mHost);
+        mHost.addEventListener('click', (e) => {
             const b = e.target.closest('button[data-send]');
             if (!b || b.disabled) return;
             sendToContent('sendMercNow', { mercenaryId: b.dataset.send });
-            b.disabled = true; b.textContent = 'Sending…';
+            b.disabled = true; b.textContent = t('expeditions.markets.sending');
         });
-        panel.roster.listHost = rHost;
+        panel.markets = { host: mHost };
 
         // ─── Stash ────────────────────────────────────────────────────
         const sHead = el('div', 'row between mt-md');
-        sHead.appendChild(el('div', 'section-title', 'Stash'));
-        const sRefresh = el('button', 'btn small', 'Refresh');
+        sHead.appendChild(el('div', 'section-title', t('expeditions.section.stash')));
+        const sRefresh = el('button', 'btn small', t('common.refresh'));
         sRefresh.addEventListener('click', () => sendToContent('requestStash'));
         sHead.appendChild(sRefresh);
         container.appendChild(sHead);
         const sCard = el('div', 'card');
         const sCapRow = el('div', 'card-row');
-        sCapRow.appendChild(el('span', 'card-label', 'Capacity'));
+        sCapRow.appendChild(el('span', 'card-label', t('expeditions.stash.capacity')));
         const sCapText = el('span', '', '');
         sCapRow.appendChild(sCapText);
         sCard.appendChild(sCapRow);
@@ -292,12 +299,12 @@
             const b = e.target.closest('button[data-item-act]');
             if (!b || b.disabled) return;
             const itemId = b.dataset.item;
-            const name = b.dataset.name || 'this item';
+            const name = b.dataset.name || t('expeditions.stash.thisItem');
             if (b.dataset.itemAct === 'sell') {
                 sendToContent('sellItem', { itemId, quantity: 1 });
                 b.disabled = true;
             } else if (b.dataset.itemAct === 'delete') {
-                if (window.confirm(`Throw away "${name}"? This is permanent.`)) {
+                if (window.confirm(t('expeditions.stash.throwConfirm', { name }))) {
                     sendToContent('deleteItem', { itemId, quantity: 1 });
                     b.disabled = true;
                 }
@@ -310,10 +317,10 @@
         const recTitle = el('div', 'section-title exp-collapsible');
         const recCaret = el('span', 'exp-caret', '▸');
         recTitle.appendChild(recCaret);
-        recTitle.appendChild(document.createTextNode(' Recent runs'));
+        recTitle.appendChild(document.createTextNode(' ' + t('expeditions.section.recent')));
         recTitle.addEventListener('click', () => setRecentCollapsed(!panel.recent.collapsed));
         recHead.appendChild(recTitle);
-        const recRefresh = el('button', 'btn small', 'Refresh');
+        const recRefresh = el('button', 'btn small', t('common.refresh'));
         recRefresh.addEventListener('click', (e) => { e.stopPropagation(); sendToContent('requestArchivedExpeditions'); });
         recHead.appendChild(recRefresh);
         container.appendChild(recHead);
@@ -363,15 +370,15 @@
         const balTxt = bal != null ? `${num(bal)} CR` : '—';
         if (enabled) {
             const armed = state && state.armed;
-            const st = (state && state.status) || 'starting…';
-            n.status.innerHTML = `Balance: <span class="mono">${balTxt}</span> · `
+            const st = (state && state.status) || t('expeditions.autoSend.starting');
+            n.status.innerHTML = `${escape(t('expeditions.autoSend.balance'))}: <span class="mono">${balTxt}</span> · `
                 + `<span class="${armed ? 'exp-armed' : 'muted'}">${escape(st)}</span>`;
             n.status.style.display = '';
         } else {
             n.status.style.display = 'none';
         }
         if (s.disabledReason) {
-            n.warn.textContent = `Paused: ${s.disabledReason.replace(/_/g, ' ')}`;
+            n.warn.textContent = t('expeditions.autoSend.paused', { reason: s.disabledReason.replace(/_/g, ' ') });
             n.warn.style.display = '';
         } else {
             n.warn.style.display = 'none';
@@ -396,7 +403,7 @@
         const exps = (await Store.local.getOne(C.STORAGE_LOCAL.EXPEDITIONS, [])) || [];
         dropSectionTimers(panel.active);
         if (!exps.length) {
-            panel.active.listHost.replaceChildren(el('div', 'empty', 'No active expedition.'));
+            panel.active.listHost.replaceChildren(el('div', 'empty', t('expeditions.active.empty')));
             return;
         }
         const cards = [];
@@ -410,13 +417,14 @@
             card.appendChild(head);
 
             const meta = [];
-            if (exp.objectiveName) meta.push(escape(exp.objectiveName));
-            if (exp.riskScore != null) meta.push(`risk ${exp.riskScore}`);
+            const goalNm = exp.goalName || exp.objectiveName;
+            if (goalNm) meta.push(escape(goalNm));
+            if (exp.riskScore != null) meta.push(t('expeditions.active.risk', { n: exp.riskScore }));
             if (exp.totalCost != null) meta.push(`${num(exp.totalCost)} CR`);
             if (meta.length) card.appendChild(el('div', 'muted xs mt-sm', meta.join(' · ')));
 
             if (exp.status !== 'COMPLETED' && exp._timerPreparing) {
-                card.appendChild(el('div', 'muted xs mt-sm', 'Preparing for deployment…'));
+                card.appendChild(el('div', 'muted xs mt-sm', t('expeditions.active.preparing')));
             } else if (exp.status !== 'COMPLETED') {
                 // _timerFrozenMs/_timerEndMs are stamped by the expeditions data
                 // module (run clock starts at departure + accrues EVENT-pause, so
@@ -425,7 +433,7 @@
                 const endMs = (typeof exp._timerEndMs === 'number') ? exp._timerEndMs : expEndMs(exp);
                 if (frozen != null || endMs) {
                     const tRow = el('div', 'card-row mt-sm');
-                    tRow.appendChild(el('span', 'sm muted', frozen != null ? 'Paused (decision)' : 'ETA'));
+                    tRow.appendChild(el('span', 'sm muted', frozen != null ? t('expeditions.active.pausedDecision') : t('expeditions.active.eta')));
                     if (frozen != null) {
                         tRow.appendChild(el('span', 'timer warn', uiComponents.timer.fmt(Math.floor(frozen / 1000))));
                     } else {
@@ -443,15 +451,15 @@
                 const uncollected = opened && exp.containerData.some((i) => !i.isCollected);
                 const actRow = el('div', 'mt-sm');
                 if (!opened) {
-                    const b = el('button', 'btn small btn-success', 'Open container');
+                    const b = el('button', 'btn small btn-success', t('expeditions.active.openContainer'));
                     b.dataset.act = 'open'; b.dataset.exp = exp.id;
                     actRow.appendChild(b);
                 } else if (uncollected) {
-                    const b = el('button', 'btn small btn-success', 'Collect all');
+                    const b = el('button', 'btn small btn-success', t('expeditions.active.collectAll'));
                     b.dataset.act = 'collect'; b.dataset.exp = exp.id;
                     actRow.appendChild(b);
                 } else if (opened) {
-                    actRow.appendChild(el('span', 'pill ok', 'Collected'));
+                    actRow.appendChild(el('span', 'pill ok', t('expeditions.active.collected')));
                 }
                 card.appendChild(actRow);
             }
@@ -478,8 +486,8 @@
             if (d.content) card.appendChild(el('div', 'sm muted mt-sm', escape(d.content)));
             for (const opt of d.decisionOptions) {
                 const parts = [];
-                if (opt.riskModifier) parts.push(`risk ${opt.riskModifier > 0 ? '+' : ''}${opt.riskModifier}`);
-                if (opt.lootModifier) parts.push(`loot ${opt.lootModifier > 0 ? '+' : ''}${opt.lootModifier}`);
+                if (opt.riskModifier) parts.push(t('expeditions.pending.risk', { n: `${opt.riskModifier > 0 ? '+' : ''}${opt.riskModifier}` }));
+                if (opt.lootModifier) parts.push(t('expeditions.pending.loot', { n: `${opt.lootModifier > 0 ? '+' : ''}${opt.lootModifier}` }));
                 const btn = el('button', 'btn small mt-sm btn-block',
                     `${escape(opt.label || opt.id)}${parts.length ? ' — ' + parts.join(', ') : ''}`);
                 btn.addEventListener('click', () => sendToContent('respondDecision', {
@@ -492,66 +500,173 @@
         panel.pending.listHost.replaceChildren(...cards);
     }
 
-    async function refreshRoster() {
-        if (!panel) return;
-        const [mercsRaw, configs, exps] = await Promise.all([
-            Store.local.getOne(C.STORAGE_LOCAL.MERCENARIES),
+    // Markets, in registry order, from the shared C.MARKETS source of truth.
+    // Each is its own faction (distinct rep + elite mercs). Future/unknown
+    // markets present in the data map are appended after these.
+    const MARKETS = (C.MARKETS || []).map((m) => ({ id: m.id, label: `${m.key.toUpperCase()} · ${m.label}` }));
+
+    // A regular (hireable) mercenary card. `hasActive` disables "Send now" while
+    // an expedition is already running (max 1 at a time).
+    function mercCardEl(m, cfg, hasActive) {
+        const avail = m.status === 'AVAILABLE';
+        const card = el('div', 'exp-merc-card' + (avail ? '' : ' unavail'));
+        const av = document.createElement('img');
+        av.className = 'exp-avatar'; av.src = m.avatarSeed || ''; av.alt = m.callsign || '';
+        av.referrerPolicy = 'no-referrer'; av.loading = 'lazy';
+        card.appendChild(av);
+        const body = el('div', 'exp-merc-body');
+        const nameRow = el('div', 'exp-merc-namerow');
+        nameRow.appendChild(el('span', 'exp-merc-name', escape(m.callsign || m.id)));
+        nameRow.appendChild(el('span', `pill ${avail ? 'ok' : (/contract|run/i.test(m.status) ? 'active' : 'idle')}`, escape(m.status || '')));
+        body.appendChild(nameRow);
+        body.appendChild(el('div', 'sm muted',
+            `${escape(m.specializationName || m.specialization || '')} · ${escape(m.rank || '')} · ${t('expeditions.markets.raids', { n: m.missionsCompleted || 0 })}`));
+        const traits = [];
+        if (m.specializationDescription) traits.push(escape(m.specializationDescription));
+        if (m.traitName) traits.push(`<strong>${escape(m.traitName)}</strong>: ${escape(m.traitDescription || '')}`);
+        if (traits.length) body.appendChild(el('div', 'xs muted mt-sm', traits.join(' · ')));
+        if (cfg && (cfg.totalCost != null || cfg.riskScore != null)) {
+            const stat = [];
+            if (cfg.totalCost != null) stat.push(`💸 ${num(cfg.totalCost)} (${t('expeditions.markets.deposit', { n: num(cfg.prepaymentAmount) })})`);
+            if (cfg.riskScore != null) stat.push(`⚠ ${t('expeditions.markets.risk', { n: cfg.riskScore })}${cfg.riskLevel ? ' (' + escape(cfg.riskLevel) + ')' : ''}`);
+            if (cfg.outcomeChances && cfg.outcomeChances.fullSuccessChance != null) stat.push(`✓ ${cfg.outcomeChances.fullSuccessChance}%`);
+            body.appendChild(el('div', 'xs mt-sm', stat.join(' · ')));
+        }
+        if (m.reputationRequirement != null) body.appendChild(el('div', 'xs muted mt-sm', t('expeditions.markets.repReq', { n: m.reputationRequirement })));
+        card.appendChild(body);
+        const canSend = avail && !hasActive;
+        const label = !avail ? (m.status === 'RESTING' ? t('expeditions.markets.resting') : t('expeditions.markets.busy')) : (hasActive ? t('expeditions.markets.busy') : t('expeditions.markets.sendNow'));
+        const btn = el('button', 'btn small', label);
+        btn.dataset.send = m.id;
+        if (!canSend) btn.disabled = true;
+        if (avail && hasActive) btn.title = t('expeditions.markets.alreadyRunning');
+        card.appendChild(btn);
+        return card;
+    }
+
+    // An ELITE mercenary card — different shape: eliteConfigId/state + unlock
+    // (faction-rep level + side quest) and the player's current progress.
+    function eliteCardEl(e) {
+        const info = e.info || {};
+        const card = el('div', 'exp-merc-card unavail');
+        const av = document.createElement('img');
+        av.className = 'exp-avatar'; av.src = e.avatarSeed || ''; av.alt = e.callsign || '';
+        av.referrerPolicy = 'no-referrer'; av.loading = 'lazy';
+        card.appendChild(av);
+        const body = el('div', 'exp-merc-body');
+        const nameRow = el('div', 'exp-merc-namerow');
+        nameRow.appendChild(el('span', 'exp-merc-name', `★ ${escape(e.callsign || '?')}`));
+        const stateCls = e.state === 'AVAILABLE' ? 'ok' : (e.state === 'QUEST_IN_PROGRESS' ? 'warn' : 'idle');
+        nameRow.appendChild(el('span', `pill ${stateCls}`, escape(String(e.state || 'ELITE').replace(/_/g, ' '))));
+        body.appendChild(nameRow);
+        body.appendChild(el('div', 'sm muted',
+            `${escape(info.specializationName || e.specialization || '')}${(info.traitName || e.trait) ? ' · ' + escape(info.traitName || e.trait) : ''}`));
+        const traits = [];
+        if (info.specializationDescription) traits.push(escape(info.specializationDescription));
+        if (info.traitName) traits.push(`<strong>${escape(info.traitName)}</strong>: ${escape(info.traitDescription || '')}`);
+        if (traits.length) body.appendChild(el('div', 'xs muted mt-sm', traits.join(' · ')));
+        const u = e.unlock || {}, p = e.progress || {};
+        const reqs = [];
+        if (u.requiredFactionReputationLevel != null) {
+            const have = p.factionReputationLevel;
+            const ok = (have != null && have >= u.requiredFactionReputationLevel);
+            reqs.push(t('expeditions.markets.factionRep', { n: u.requiredFactionReputationLevel }) + `${have != null ? ` (${have}${ok ? ' ✓' : ' ✗'})` : ''}`);
+        }
+        if (u.sideQuestId != null) reqs.push(`${t('expeditions.markets.sideQuest')} ${p.sideQuestCompleted ? t('expeditions.markets.questDone') + ' ✓' : t('expeditions.markets.questInProgress') + ' ✗'}`);
+        if (reqs.length) body.appendChild(el('div', 'xs mt-sm', t('expeditions.markets.unlock') + reqs.join(' · ')));
+        card.appendChild(body);
+        return card;
+    }
+
+    // One market block: header (faction rep + trust), a stats line + score
+    // breakdown (the "history of reputation"), then regular + elite merc cards.
+    function marketBlockEl(market, data, configs, hasActive) {
+        const userRep = data && data.userReputation;
+        const mercRep = data && data.mercenaryReputation;
+        const slots = data && data.hireSlots;
+        const regulars = (data && Array.isArray(data.mercenaries)) ? data.mercenaries : [];
+        const elites = (data && Array.isArray(data.eliteSlots)) ? data.eliteSlots : [];
+
+        const block = el('div', 'card mt-sm');
+        const head = el('div', 'card-row');
+        head.appendChild(el('span', 'card-label', escape(market.label)));
+        if (userRep && userRep.level != null) head.appendChild(el('span', 'pill active', t('expeditions.markets.rep', { n: num(userRep.level) })));
+        if (mercRep && mercRep.trustLevel) head.appendChild(el('span', 'pill ok', escape(String(mercRep.trustLevel).replace(/_/g, ' '))));
+        block.appendChild(head);
+
+        const bits = [];
+        if (userRep && userRep.score != null) bits.push(t('expeditions.markets.faction', { n: userRep.score }));
+        if (mercRep && mercRep.score != null) bits.push(t('expeditions.markets.trust', { n: mercRep.score }));
+        if (mercRep && mercRep.hireCostMultiplier != null) bits.push(t('expeditions.markets.hire', { n: mercRep.hireCostMultiplier }));
+        if (mercRep && mercRep.successfulRuns != null) bits.push(t('expeditions.markets.runs', { n: mercRep.successfulRuns }));
+        if (slots && slots.maxMercenaries != null) bits.push(t('expeditions.markets.slots', { n: slots.maxMercenaries }));
+        if (bits.length) block.appendChild(el('div', 'xs muted mt-sm', bits.join(' · ')));
+
+        const b = mercRep && mercRep.breakdown;
+        if (b && typeof b === 'object') {
+            const LBL = {
+                factionReputationComponent: t('expeditions.markets.bdFaction'),
+                successfulRunsBonus: t('expeditions.markets.bdRuns'),
+                deathPenalty: t('expeditions.markets.bdDeaths'),
+                peakScore: t('expeditions.markets.bdPeak'),
+                floor: t('expeditions.markets.bdFloor'),
+            };
+            const parts = [];
+            for (const k of Object.keys(b)) if (typeof b[k] === 'number' && LBL[k]) parts.push(`${LBL[k]} ${b[k] > 0 ? '+' : ''}${b[k]}`);
+            if (parts.length) block.appendChild(el('div', 'xs muted mt-sm', t('expeditions.markets.breakdown') + ' ' + parts.join(' · ')));
+        }
+
+        // buyable hire-slot pools (gated by mercenary reputation)
+        const pools = (slots && Array.isArray(slots.pools)) ? slots.pools.filter((p) => !p.isPurchased) : [];
+        for (const p of pools) {
+            const req = p.unlockConditions && p.unlockConditions.requiredMercenaryReputation;
+            const parts = [t('expeditions.markets.slotPlus', { n: p.slots })];
+            if (p.price != null) parts.push(`${num(p.price)} CR`);
+            if (req != null) parts.push(t('expeditions.markets.reqRep', { n: req }));
+            parts.push(p.canPurchase ? t('expeditions.markets.available') : t('expeditions.markets.locked'));
+            block.appendChild(el('div', 'xs ' + (p.canPurchase ? '' : 'muted'), `• ${t('expeditions.markets.slotPool')}: ${parts.join(' · ')}`));
+        }
+
+        if (regulars.length) {
+            const wrap = el('div', 'mt-sm');
+            for (const m of regulars) wrap.appendChild(mercCardEl(m, (configs || {})[m.id] || {}, hasActive));
+            block.appendChild(wrap);
+        }
+        if (elites.length) {
+            block.appendChild(el('div', 'xs mt-sm', `<strong>${escape(t('expeditions.markets.eliteMercs'))}</strong>`));
+            const wrap = el('div');
+            for (const e of elites) wrap.appendChild(eliteCardEl(e));
+            block.appendChild(wrap);
+        }
+        if (!regulars.length && !elites.length) {
+            block.appendChild(el('div', 'xs muted mt-sm', t('expeditions.markets.noMercs')));
+        }
+        return block;
+    }
+
+    async function refreshMarkets() {
+        if (!panel || !panel.markets) return;
+        const [map, configs, exps] = await Promise.all([
+            Store.local.getOne(C.STORAGE_LOCAL.MERC_MARKETS, {}),
             Store.local.getOne(C.STORAGE_LOCAL.MERC_CONFIG, {}),
             Store.local.getOne(C.STORAGE_LOCAL.EXPEDITIONS, []),
         ]);
-        // Only one expedition can run at a time — block "Send now" while any is active.
         const hasActive = (exps || []).some((e) => e.status && e.status !== 'COMPLETED');
-        const mercs = (mercsRaw && (Array.isArray(mercsRaw) ? mercsRaw : mercsRaw.mercenaries)) || [];
-        if (!mercs.length) {
-            panel.roster.listHost.replaceChildren(el('div', 'empty', 'No mercenary data — click Refresh.'));
+        const host = panel.markets.host;
+        const m = map || {};
+        if (!Object.keys(m).length) {
+            host.replaceChildren(el('div', 'empty', t('expeditions.markets.empty')));
             return;
         }
-        const cards = [];
-        for (const m of mercs) {
-            const cfg = (configs || {})[m.id] || {};
-            const avail = m.status === 'AVAILABLE';
-            const card = el('div', 'exp-merc-card' + (avail ? '' : ' unavail'));
-
-            const av = document.createElement('img');
-            av.className = 'exp-avatar'; av.src = m.avatarSeed || ''; av.alt = m.callsign || '';
-            av.referrerPolicy = 'no-referrer'; av.loading = 'lazy';
-            card.appendChild(av);
-
-            const body = el('div', 'exp-merc-body');
-            const nameRow = el('div', 'exp-merc-namerow');
-            nameRow.appendChild(el('span', 'exp-merc-name', escape(m.callsign || m.id)));
-            nameRow.appendChild(el('span', `pill ${avail ? 'ok' : (/contract|run/i.test(m.status) ? 'active' : 'idle')}`, escape(m.status || '')));
-            body.appendChild(nameRow);
-
-            body.appendChild(el('div', 'sm muted',
-                `${escape(m.specializationName || m.specialization || '')} · ${escape(m.rank || '')} · ${m.missionsCompleted || 0} raids`));
-            const traits = [];
-            if (m.specializationDescription) traits.push(escape(m.specializationDescription));
-            if (m.traitName) traits.push(`<strong>${escape(m.traitName)}</strong>: ${escape(m.traitDescription || '')}`);
-            if (traits.length) body.appendChild(el('div', 'xs muted mt-sm', traits.join(' · ')));
-
-            // configure preview
-            if (cfg.totalCost != null || cfg.riskScore != null) {
-                const stat = [];
-                if (cfg.totalCost != null) stat.push(`💸 ${num(cfg.totalCost)} (dep ${num(cfg.prepaymentAmount)})`);
-                if (cfg.riskScore != null) stat.push(`⚠ risk ${cfg.riskScore}${cfg.riskLevel ? ' (' + escape(cfg.riskLevel) + ')' : ''}`);
-                if (cfg.outcomeChances && cfg.outcomeChances.fullSuccessChance != null) stat.push(`✓ ${cfg.outcomeChances.fullSuccessChance}%`);
-                body.appendChild(el('div', 'xs mt-sm', stat.join(' · ')));
-            }
-            if (m.reputationRequirement != null) body.appendChild(el('div', 'xs muted mt-sm', `rep req ${m.reputationRequirement}`));
-            card.appendChild(body);
-
-            const canSend = avail && !hasActive;
-            const label = !avail ? (m.status === 'RESTING' ? 'Resting' : 'Busy')
-                : (hasActive ? 'Busy' : 'Send now');
-            const btn = el('button', 'btn small', label);
-            btn.dataset.send = m.id;
-            if (!canSend) btn.disabled = true;
-            if (avail && hasActive) btn.title = 'An expedition is already running (max 1 at a time)';
-            card.appendChild(btn);
-            cards.push(card);
+        const blocks = [];
+        for (const market of MARKETS) {
+            if (m[market.id]) blocks.push(marketBlockEl(market, m[market.id], configs, hasActive));
         }
-        panel.roster.listHost.replaceChildren(...cards);
+        for (const id of Object.keys(m)) {
+            if (MARKETS.some((x) => x.id === id)) continue;
+            blocks.push(marketBlockEl({ id, label: id }, m[id], configs, hasActive));
+        }
+        host.replaceChildren(...blocks);
     }
 
     async function refreshStash() {
@@ -569,7 +684,7 @@
             n.bar.className = 'exp-bar-fill ' + cls;
         } else {
             n.capacityText.className = 'muted sm';
-            n.capacityText.textContent = 'No stash data.';
+            n.capacityText.textContent = t('expeditions.stash.noData');
             n.bar.style.width = '0%';
         }
         const items = (stash && Array.isArray(stash.items)) ? stash.items : [];
@@ -579,7 +694,7 @@
             return;
         }
         n.itemsTitle.style.display = '';
-        n.itemsTitle.textContent = `Items (${items.length})`;
+        n.itemsTitle.textContent = t('expeditions.stash.items', { n: items.length });
         const cards = [];
         for (const item of items) {
             // Compact single-line row: [thumb][name + tier/cat/value][actions].
@@ -605,14 +720,14 @@
 
             const acts = el('div', 'exp-item-acts');
             if (item.canSell) {
-                const b = el('button', 'btn small', 'Sell');
-                b.title = item.sellPrice ? `Sell for ${num(item.sellPrice)} CR` : 'Sell';
+                const b = el('button', 'btn small', t('expeditions.stash.sell'));
+                b.title = item.sellPrice ? t('expeditions.stash.sellFor', { n: num(item.sellPrice) }) : t('expeditions.stash.sell');
                 b.dataset.itemAct = 'sell'; b.dataset.item = item.id; b.dataset.name = item.name || '';
                 acts.appendChild(b);
             }
             if (item.canDelete) {
                 const b = el('button', 'btn small btn-danger', '✕');
-                b.title = 'Throw away';
+                b.title = t('expeditions.stash.throwAway');
                 b.dataset.itemAct = 'delete'; b.dataset.item = item.id; b.dataset.name = item.name || '';
                 acts.appendChild(b);
             }
@@ -627,7 +742,7 @@
         const archived = (await Store.local.getOne(C.STORAGE_LOCAL.ARCHIVED_EXPEDITIONS, [])) || [];
         const list = Array.isArray(archived) ? archived : [];
         if (!list.length) {
-            panel.recent.listHost.replaceChildren(el('div', 'empty', 'No archived runs yet — click Refresh.'));
+            panel.recent.listHost.replaceChildren(el('div', 'empty', t('expeditions.recent.empty')));
             return;
         }
         const PAGE = 8;
@@ -643,27 +758,28 @@
             card.appendChild(head);
 
             const meta = [];
-            if (run.objectiveName) meta.push(escape(run.objectiveName));
-            if (run.riskScore != null) meta.push(`risk ${run.riskScore}`);
+            const goalNm = run.goalName || run.objectiveName;
+            if (goalNm) meta.push(escape(goalNm));
+            if (run.riskScore != null) meta.push(t('expeditions.recent.risk', { n: run.riskScore }));
             if (run.totalCost != null) meta.push(`${num(run.totalCost)} CR`);
             const lootCount = Array.isArray(run.containerData) ? run.containerData.length : 0;
             if (lootCount) meta.push(`📦 ${lootCount}`);
             if (meta.length) card.appendChild(el('div', 'muted xs mt-sm', meta.join(' · ')));
 
-            const toggle = el('button', 'btn small mt-sm', 'Details');
+            const toggle = el('button', 'btn small mt-sm', t('expeditions.recent.details'));
             toggle.dataset.toggleRun = '1';
             card.appendChild(toggle);
 
             const detail = el('div', 'exp-run-detail');
             // costs
             const costs = [];
-            if (run.prepaymentAmount != null) costs.push(`deposit ${num(run.prepaymentAmount)}`);
-            if (run.remainingAmount != null) costs.push(`postpay ${num(run.remainingAmount)}`);
-            if (run.reputationDelta != null) costs.push(`rep ${run.reputationDelta > 0 ? '+' : ''}${run.reputationDelta}`);
+            if (run.prepaymentAmount != null) costs.push(t('expeditions.recent.deposit', { n: num(run.prepaymentAmount) }));
+            if (run.remainingAmount != null) costs.push(t('expeditions.recent.postpay', { n: num(run.remainingAmount) }));
+            if (run.reputationDelta != null) costs.push(t('expeditions.recent.rep', { n: `${run.reputationDelta > 0 ? '+' : ''}${run.reputationDelta}` }));
             if (costs.length) detail.appendChild(el('div', 'xs muted mt-sm', costs.join(' · ')));
             // loot
             if (lootCount) {
-                detail.appendChild(el('div', 'xs mt-sm', '<strong>Loot</strong>'));
+                detail.appendChild(el('div', 'xs mt-sm', `<strong>${escape(t('expeditions.recent.loot'))}</strong>`));
                 for (const it of run.containerData) {
                     detail.appendChild(el('div', 'xs muted', `• ${escape(it.name || '?')} (${escape(it.tier || '')}) x${it.quantity || 1}`));
                 }
@@ -672,9 +788,9 @@
             const tl = Array.isArray(run.timelineEvents) ? run.timelineEvents
                 : (Array.isArray(run.messages) ? run.messages.map((m) => ({ type: m.messageType, content: m.content, selectedOption: m.selectedOption, isAutoResolved: m.isAutoResolved })) : []);
             if (tl.length) {
-                detail.appendChild(el('div', 'xs mt-sm', '<strong>Timeline</strong>'));
+                detail.appendChild(el('div', 'xs mt-sm', `<strong>${escape(t('expeditions.recent.timeline'))}</strong>`));
                 for (const ev of tl) {
-                    const dec = ev.selectedOption ? ` → ${escape(ev.selectedOption)}${ev.isAutoResolved ? ' (auto)' : ''}` : '';
+                    const dec = ev.selectedOption ? ` → ${escape(ev.selectedOption)}${ev.isAutoResolved ? ' ' + t('expeditions.recent.auto') : ''}` : '';
                     detail.appendChild(el('div', 'xs muted', `• [${escape(ev.type || '')}] ${escape((ev.content || '').slice(0, 90))}${dec}`));
                 }
             }
@@ -682,7 +798,7 @@
             cards.push(card);
         }
         if (!panel.recent.showAll && list.length > PAGE) {
-            const more = el('button', 'btn small btn-block mt-sm', `Show all (${list.length})`);
+            const more = el('button', 'btn small btn-block mt-sm', t('expeditions.recent.showAll', { n: list.length }));
             more.dataset.showAll = '1';
             cards.push(more);
         }
@@ -692,7 +808,7 @@
     async function refreshAll() {
         await Promise.all([
             refreshMaster(), refreshAutoSend(), refreshAutoChoose(),
-            refreshActive(), refreshPending(), refreshRoster(), refreshStash(), refreshRecent(),
+            refreshActive(), refreshPending(), refreshMarkets(), refreshStash(), refreshRecent(),
         ]);
     }
 
@@ -703,10 +819,10 @@
         mount(container) {
             unsubLocal = Store.local.onChanged((changes) => {
                 if (!container.classList.contains('active')) return;
-                if (changes[C.STORAGE_LOCAL.EXPEDITIONS]) { refreshActive(); refreshAutoSend(); refreshRoster(); }
+                if (changes[C.STORAGE_LOCAL.EXPEDITIONS]) { refreshActive(); refreshAutoSend(); refreshMarkets(); }
                 if (changes[C.STORAGE_LOCAL.ARCHIVED_EXPEDITIONS]) refreshRecent();
                 if (changes[C.STORAGE_LOCAL.DECISIONS]) refreshPending();
-                if (changes[C.STORAGE_LOCAL.MERCENARIES] || changes[C.STORAGE_LOCAL.MERC_CONFIG]) refreshRoster();
+                if (changes[C.STORAGE_LOCAL.MERC_MARKETS] || changes[C.STORAGE_LOCAL.MERCENARIES] || changes[C.STORAGE_LOCAL.MERC_CONFIG]) refreshMarkets();
                 if (changes[C.STORAGE_LOCAL.STASH]) refreshStash();
                 if (changes[C.STORAGE_LOCAL.PROFILE] || changes[C.STORAGE_LOCAL.EXP_AUTOSEND_STATE]) refreshAutoSend();
             });
@@ -719,8 +835,10 @@
         async activate(container) {
             build(container);
             await refreshAll();
-            // seed a fresh profile balance + mercenary/config snapshot on open.
+            // seed fresh profile + all-market mercenaries/config + expeditions on open.
             sendToContent('requestProfile');
+            sendToContent('requestAllMercenaries');
+            sendToContent('requestExpeditionConfig');
             sendToContent('requestExpeditions');
         },
         deactivate() { tearDown(); },

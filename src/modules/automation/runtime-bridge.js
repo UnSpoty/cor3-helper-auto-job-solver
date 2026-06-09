@@ -40,6 +40,7 @@
             fwd('keepWorkerAlive',    'COR3_KEEP_ALIVE');
             fwd('requestArchivedExpeditions', MSG.GAME.REQUEST_ARCHIVED_EXPEDITIONS);
             fwd('requestMercenaries',         'COR3_REQUEST_MERCENARIES');
+            fwd('requestAllMercenaries',      'COR3_REQUEST_ALL_MERCENARIES');
             fwd('requestExpeditionConfig',    'COR3_REQUEST_EXPEDITION_CONFIG');
             fwd('requestProfile',             MSG.GAME.REQUEST_PROFILE);
 
@@ -79,12 +80,13 @@
                 }
                 const loc = cfg.locations[0];
                 const zone = loc.zones && loc.zones[0];
-                const obj = zone && zone.objectives && zone.objectives[0];
-                if (!zone || !obj) return { error: 'incomplete expedition config' };
+                // Post-patch: zone.goals (was zone.objectives); launch DTO field is goalId.
+                const goal = zone && zone.goals && zone.goals[0];
+                if (!zone || !goal) return { error: 'incomplete expedition config' };
                 const launch = {
                     mercenaryId: p.mercenaryId,
-                    marketId: '019d3ea4-85bd-7389-904d-8f7c85841134',
-                    locationConfigId: loc.id, zoneConfigId: zone.id, objectiveId: obj.id,
+                    marketId: C.HOME_MARKET_ID,
+                    locationConfigId: loc.id, zoneConfigId: zone.id, goalId: goal.id,
                     hasInsurance: false,
                 };
                 root.COR3.Store.local.setOne(C.STORAGE_LOCAL.LAST_LAUNCH, launch);

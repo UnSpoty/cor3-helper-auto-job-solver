@@ -109,6 +109,11 @@ orchestrator (isolated) ──FLOW_START { jobId, marketId, jobType, serverId, s
 orchestrator (isolated) ◀──FLOW_RESULT { jobId, marketId, success, didWork, retryable, reason }── flow module (MAIN)
 ```
 
+`<targets>` are the per-type resolved targets, all from the TAKEN job's
+condition: `fileCondition` + `requiredPower` for file_decryption; `ips` for
+ip_*; `fileNames` + `files` (`{id,name,ext}` descriptors) for the file SAI types,
+plus `requiredPower` for decrypt_extract; `logSeqs` + `logNames` for log_*.
+
 - `success:true, didWork:true`  → flow sent `job.complete` (`MSG.GAME.COMPLETE_JOB`).
 - `success:true, didWork:false` → can't do it (e.g. no decrypt capability) → orchestrator `MARK_AS_BUGGED` (`AJ_BUGGED_JOBS`).
 - `success:false`               → runtime failure/timeout → `MARK_AS_BUGGED`.
@@ -125,12 +130,22 @@ Access grant).
 id `flow-file-decryption`). The most unique flow, because it manages the
 loadout:
 
-1. Parse the file format (extension) from the job's `fileCondition`.
-2. `COR3.game.loadout.ensureDecrypt(ext)` (headless API exposed by
-   `loadout-panel`): `ready` (equipped already covers it) → proceed; `install`
-   (an owned, resource-fitting software covers it) → equip it; `swap` (owned SW
-   covers it but needs resources freed) → unequip everything, then equip; `none`
-   → return `didWork:false` (→ bugged).
+1. Parse the file format (extension) from the job's `fileCondition`, and read
+   `requiredPower` — the file's CRYPT RATE, the upper bound `hi` of the decrypt
+   condition's `encryptionLevel:[lo,hi]` band
+   (`pipeline.requiredPowerForDecrypt`, passed on FLOW_START). `0` = no band on
+   the job → no power gate (the flow logs a warn and accepts any covering
+   software).
+2. `COR3.game.loadout.ensureDecrypt(ext, requiredPower)` (power-aware headless
+   API exposed by `loadout-panel`): picks owned software whose DECRYPT power band
+   max ≥ `requiredPower` (preferring already-equipped/cheapest), installs it
+   ALONGSIDE the current rig when it fits, frees other software only when it
+   doesn't, and swaps in the best owned hardware per slot to raise
+   `computedPower` if still short. Statuses: `ready` (equipped already covers it)
+   → proceed; `install`/`swap` → equip it; `none` (no owned software covers the
+   ext) and `underpower` (owns covering software but no SW+HW combo reaches the
+   CRYPT RATE) → return `didWork:false` (→ bugged, non-retryable); `unknown` /
+   `no-helper` (timing races) → retry next cycle.
 3. Find + open the file **purely over WS** (no DOM scrape): `__cor3DesktopOpenFolder`
    (Downloads, id cached in `__cor3DownloadFolderId`) → match `files[]` by name/ext
    → `__cor3DesktopOpenFile(fileId)`. The raw `open.file` is REQUIRED — a cor3.gg
@@ -149,11 +164,24 @@ SAI batch — see above). By job type:
 
 - **ip_injection / ip_cleanup** — Transit Access: add / remove IPs.
 - **file_elimination** — delete files.
-- **data_download / data_upload** — download / upload files.
+- **data_download / data_upload** — download / upload files. cor3.gg names the
+  SAME file three ways (condition NAME / server `get.files` NAME / local Downloads
+  NAME differ — only the fileId and the base name *stem* are stable), so these
+  carry `{id,name,ext}` descriptors (`pipeline.fileDescriptorsForJob`) and the
+  flow resolves the source file by **id → exact name → stem(+declared ext)** via
+  the shared `h.resolveFile` (`_sai-flow.js`), never assuming the condition's
+  name is the real one. data_upload's DTO is `{serverId, name, sizeMb}` (a local
+  Downloads fileId means nothing on the target server); `sizeMb` defaults to 1
+  (`DEFAULT_UPLOAD_SIZE_MB`) since the post-patch Downloads file object dropped
+  the `sizeMb` field.
 - **log_download / log_deletion** — download / delete logs (rejected up-front for
   the `NO_LOGS_SERVERS` D4RK servers that have no Logs section).
 - **decrypt_extract** — SAI download + decrypt-SW install/swap + the decrypt
-  minigame solve.
+  minigame solve. Resolves the SERVER file and the LOCAL Downloads file by
+  id → name → stem (same `h.resolveFile`), downloads it if it isn't local yet,
+  then decrypts by the LOCAL file's REAL extension. It carries the SAME decrypt
+  `requiredPower` gate as file_decryption (the extract half opens the file's
+  minigame, so the loadout must clear the CRYPT RATE first).
 
 ### Cross-references in code
 
@@ -166,7 +194,7 @@ SAI batch — see above). By job type:
 | Job List | `ui/sections/auto-jobs/job-list.js` | `render()`, `jobRow()` |
 | JOB_FLOW dispatch | `automation/auto-jobs.js` | `_runJobFlows()`, `_selectBatch()`, `_dispatchFlow()`, `_completeBatchJobs()`, `_markBugged()` |
 | file_decryption flow (MAIN) | `game/flows/auto-jobs/file-decryption.js` | `runFileDecryption()` |
-| Loadout API (MAIN) | `game/loadout-panel.js` | `COR3.game.loadout.planDecrypt/ensureDecrypt` (DECRYPT/fileTypes) + `planHack/ensureHack` (HACK/serverTypes) |
+| Loadout API (MAIN) | `game/loadout-panel.js` | `COR3.game.loadout.planDecrypt(ext, requiredPower)/ensureDecrypt(ext, requiredPower, log)` (DECRYPT/fileTypes, power-aware: SW+HW to clear the CRYPT RATE, status `underpower` when unreachable) + `planHack/ensureHack` (HACK/serverTypes) |
 | Desktop window helper (MAIN) | `game/desktop-window.js` | `COR3.game.desktop.openApp/openAppAndWait/invokeReactClick/findClickableByText/selectServerTile/findPanelButton` |
 | MAIN bridge | `game/auto-jobs-bridge.js` | Open SAI/Market — client-fn window-open + WS connect (`__cor3SetEndpoint`); `saiAccess()` = Active Access (`__cor3SaiGetLoginStatus`/`__cor3SaiLoginWithAccess`) OR hack (`ensureHack` → click hack-tool → solver → grant). No DOM coordinate clicks |
 
@@ -222,7 +250,9 @@ onMercenaries(data):
             use settings.mercenaryId
     proceedWithMerc(mercId, mercs)
         ├─ verify selected merc.status === 'AVAILABLE'
-        ├─ read expeditionConfigData → loc/zone/objective IDs
+        ├─ read expeditionConfigData → locationConfigId / zoneConfigId / goalId
+        │     // post-patch: zone.goals[0] (was zone.objectives); the launch
+        │     // DTO field is goalId (was objectiveId) + marketId = HOME_MARKET_ID
         ├─ Store launchConfig to lastExpeditionLaunchData
         └─ post COR3_LAUNCH_EXPEDITION { config: launchConfig }
               [game emits WS_EXPEDITION_LAUNCHED on success]
@@ -245,6 +275,23 @@ Watchdog: every 5 s, if inProgress AND age > 120 s → reset
 
 Auto-recover from `'stash_full'` happens on next stash refresh if user
 freed at least 2 slots.
+
+### Wire notes (post-patch)
+
+- **`expeditions.get.config` now REQUIRES a `marketId`** (server: "Validation
+  failed: marketId must be a string") — `__cor3RequestExpeditionConfig(marketId)`
+  defaults to `C.HOME_MARKET_ID`. The interceptor parses `zones[].goals[]`
+  (was `zones[].objectives[]`) into `__cor3ExpConfigIds =
+  {locationConfigId, zoneConfigId, goalId}`; the configure/launch DTO field is
+  `goalId` (the server rejects the old `objectiveId`).
+- **`get.mercenaries` replies carry NO `marketId`**, so the interceptor
+  SERIALIZES requests through `mercFetchChain` (one in-flight slot) and matches
+  each reply to the lone in-flight request; unsolicited pushes are dropped and a
+  dropped / 12 s-timed-out request advances the chain. `__cor3RequestAllMercenaries()`
+  fetches mercenaries for EVERY market in `C.MARKETS` (each is its own faction;
+  `get.mercenaries` works by `marketId` without connecting to the server) — used
+  by the Expeditions tab's per-market roster, not the auto-send loop above (which
+  fetches only HOME via `COR3_REQUEST_MERCENARIES`).
 
 ---
 
@@ -320,14 +367,20 @@ spec.run(env, helpers):                     // env = FLOW_START payload
 
 **Helpers handed to `spec.run`** (from `_sai-flow.js`):
 `{ root, dom, C, MSG, sleep, say, step, abort, ensureAccess, awaitBus,
-awaitAction, getTransit, getFiles, getLogs, findDownloadsFileId, startSolvers,
-stopSolvers, findMinigame, complete }`.
+awaitAction, getTransit, getFiles, getLogs, findDownloadsFileId, findDownloadsFile,
+listDownloads, resolveFile, parseExt, stemOf, normExt, startSolvers,
+stopSolvers, findMinigame, complete }`. The file-name resolution helpers
+(`listDownloads` = the raw Downloads `files[]` over WS; `resolveFile(files, desc,
+idKey)` = match by id → exact name → stem(+declared ext); `parseExt` / `stemOf` /
+`normExt`) are also exposed on the `COR3.autoJobs.saiFlow` namespace so
+data_upload + decrypt_extract resolve cor3.gg's inconsistent file names the same
+way.
 
 The WS RPC helpers themselves live on `window.__cor3Sai*` /
 `window.__cor3Desktop*` (in `interceptors/ws-interceptor.js`); window-opening
 goes through the bridge's `COR3.game.desktop` helper:
 - `COR3.game.desktop.{openApp, openAppAndWait, isAppOpen, invokeReactClick, findClickableByText, findServerTile, selectServerTile, findPanelButton, waitFor}` (opens windows via React handlers + one targeted server-tile tap — no DOM coordinate clicks)
-- `COR3.game.loadout.{getSnapshot, decryptExtensions, planDecrypt, ensureDecrypt, hackServerTypes, planHack, ensureHack}` (headless capability/install API for the file-decryption flow + the SAI hack path)
+- `COR3.game.loadout.{getSnapshot, decryptExtensions, planDecrypt(ext, requiredPower), ensureDecrypt(ext, requiredPower, log), hackServerTypes, planHack, ensureHack}` (headless capability/install API for the file-decryption flow + the SAI hack path; `planDecrypt`/`ensureDecrypt` are power-aware — they swap software + hardware to clear the file's CRYPT RATE and return `underpower` when no owned combo can)
 
 ---
 

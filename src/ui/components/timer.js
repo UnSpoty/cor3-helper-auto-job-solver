@@ -19,14 +19,19 @@
     /**
      * @param {number|string|Date} target  epoch ms, ISO string, or Date
      * @param {object} [opts]
-     * @param {boolean} [opts.warnUnder=60]
+     * @param {number}   [opts.warnUnder=60]
+     * @param {function} [opts.onExpire]  fired ONCE when the countdown first
+     *                                    crosses ≤ 0 (lets callers clear stale
+     *                                    state / re-evaluate when a timer runs out)
      * @returns {{el: HTMLElement, stop: () => void}}
      */
     function create(target, opts = {}) {
         const warnUnder = opts.warnUnder || 60;
+        const onExpire = typeof opts.onExpire === 'function' ? opts.onExpire : null;
         const el = document.createElement('span');
         el.className = 'timer';
         let intervalId = null;
+        let expiredFired = false;
 
         function update() {
             if (!target) { el.textContent = '—'; return; }
@@ -38,6 +43,10 @@
             el.classList.remove('warn', 'err');
             if (diff <= 0) el.classList.add('err');
             else if (diff <= warnUnder) el.classList.add('warn');
+            if (diff <= 0 && onExpire && !expiredFired) {
+                expiredFired = true;
+                try { onExpire(); } catch (_) { /* caller's problem; keep ticking */ }
+            }
         }
         update();
         intervalId = setInterval(update, 1000);

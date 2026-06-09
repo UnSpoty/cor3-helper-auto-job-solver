@@ -231,9 +231,30 @@
 #${PANEL_ID} .cor3-lp-cap.unowned { background: rgba(96,108,124,0.10); color: rgba(255,255,255,0.45); border: 1px solid rgba(96,108,124,0.35); cursor: not-allowed; }
 #${PANEL_ID} .cor3-lp-cap-line { font-size: 10px; color: rgba(255,255,255,0.6); margin-top: 4px; line-height: 1.5; }
 #${PANEL_ID} .cor3-lp-cap-line-label { color: rgba(255,255,255,0.5); font-weight: 700; letter-spacing: 0.5px; }
-#${PANEL_ID} .cor3-lp-cap-tgt { display: inline-block; padding: 1px 6px; border-radius: 3px; font-family: "Roboto Mono", monospace; font-size: 10px; margin-right: 2px; }
+#${PANEL_ID} .cor3-lp-cap-tgt { display: inline-block; padding: 1px 6px; border-radius: 3px; font-family: "Roboto Mono", monospace; font-size: 10px; margin-right: 2px; cursor: pointer; transition: filter 100ms ease, transform 100ms ease; }
+#${PANEL_ID} .cor3-lp-cap-tgt:hover { filter: brightness(1.4); transform: scale(1.04); }
 #${PANEL_ID} .cor3-lp-cap-tgt.on  { background: rgba(74,222,128,0.15); color: #4ade80; border: 1px solid rgba(74,222,128,0.3); }
 #${PANEL_ID} .cor3-lp-cap-tgt.off { background: rgba(96,108,124,0.10); color: rgba(255,255,255,0.45); border: 1px solid rgba(96,108,124,0.3); }
+/* program-card capability lines (targets + power band) */
+#${PANEL_ID} .cor3-lp-prog-cap { display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px; line-height: 1.5; }
+#${PANEL_ID} .cor3-lp-prog-cap-type { color: #76C1D1; font-weight: 700; letter-spacing: 0.4px; }
+#${PANEL_ID} .cor3-lp-prog-cap-pow { color: rgba(255,255,255,0.85); font-variant-numeric: tabular-nums; }
+#${PANEL_ID} .cor3-lp-prog-cap-r { color: #ffc857; font-weight: 700; font-size: 9px; }
+#${PANEL_ID} .cor3-lp-prog-cap-tgts { color: rgba(255,255,255,0.5); font-family: "Roboto Mono", monospace; }
+/* capability-target chooser (overlay) */
+#${PANEL_ID} .cor3-lp-chooser { position: absolute; left: 0; right: 0; top: 0; bottom: 0; background: rgba(8,11,15,0.97); z-index: 6; display: flex; flex-direction: column; padding: 10px 14px 12px; }
+#${PANEL_ID} .cor3-lp-chooser-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 8px; }
+#${PANEL_ID} .cor3-lp-chooser-title { font-size: 12px; font-weight: 700; color: #76C1D1; letter-spacing: 0.4px; }
+#${PANEL_ID} .cor3-lp-chooser-close { background: none; border: 1px solid rgba(96,108,124,0.4); color: rgba(255,255,255,0.7); border-radius: 4px; width: 24px; height: 24px; cursor: pointer; font-family: inherit; font-size: 12px; flex-shrink: 0; }
+#${PANEL_ID} .cor3-lp-chooser-close:hover { background: rgba(254,73,73,0.15); color: #FE4949; border-color: rgba(254,73,73,0.4); }
+#${PANEL_ID} .cor3-lp-chooser-list { overflow-y: auto; flex: 1; }
+#${PANEL_ID} .cor3-lp-chooser-row { display: flex; gap: 10px; align-items: center; padding: 6px 8px; border: 1px solid rgba(96,108,124,0.15); border-radius: 6px; margin-bottom: 4px; background: rgba(21,28,34,0.4); cursor: pointer; }
+#${PANEL_ID} .cor3-lp-chooser-row:hover { border-color: rgba(118,193,209,0.4); background: rgba(118,193,209,0.08); }
+#${PANEL_ID} .cor3-lp-chooser-row.equipped { border-color: rgba(74,222,128,0.4); background: rgba(21,28,34,0.7); }
+#${PANEL_ID} .cor3-lp-chooser-row img { width: 30px; height: 30px; object-fit: contain; flex-shrink: 0; background: rgba(10,14,18,0.5); border-radius: 4px; }
+#${PANEL_ID} .cor3-lp-chooser-body { flex: 1; min-width: 0; }
+#${PANEL_ID} .cor3-lp-chooser-name { font-size: 12px; font-weight: 700; color: #fff; display: flex; align-items: center; gap: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#${PANEL_ID} .cor3-lp-chooser-meta { font-size: 10px; color: rgba(255,255,255,0.55); }
 #${PANEL_ID} .cor3-lp-foot { padding: 8px 14px; border-top: 1px solid rgba(96,108,124,0.25); font-size: 10px; color: rgba(255,255,255,0.4); display: flex; justify-content: space-between; align-items: center; }
 #${PANEL_ID} .cor3-lp-btn { background: rgba(118,193,209,0.12); color: #76C1D1; border: 1px solid rgba(118,193,209,0.35); padding: 3px 10px; border-radius: 4px; font-size: 10px; font-weight: 700; letter-spacing: 0.5px; cursor: pointer; font-family: inherit; }
 #${PANEL_ID} .cor3-lp-btn:hover { background: rgba(118,193,209,0.22); }
@@ -268,6 +289,7 @@
             this._reanchorTimer = null;
             this._openSlot = null;       // 'cpu' | 'gpu' | 'ram' | 'psu' | null
             this._hoveringHwId = null;   // id of HW being hovered in dropdown — drives delta overlay
+            this._chooser = null;        // { cap, tgt } when a capability-target chooser is open
             this._powerState = null;     // true=on, false=off, null=unknown
             this._autoPower = readAutoPower();   // setting: auto-poweroff on open
             this._savedPowerState = null;        // remembered across open/close when _autoPower=true
@@ -452,6 +474,7 @@
             this._open = false;
             this._openSlot = null;
             this._hoveringHwId = null;
+            this._closeCapChooser();
             const panel = document.getElementById(PANEL_ID);
             const chev = document.querySelector(`#${PILL_ID} [data-role="chev"]`);
             if (panel) panel.classList.remove('cor3-lp-open');
@@ -756,17 +779,100 @@
                     && Array.isArray(sp.fileTypes) && sp.fileTypes.some((t) => String(t).toLowerCase() === e)))
                 .sort((a, b) => (Number(a.price) || 0) - (Number(b.price) || 0));
         }
-        // Plan how to become able to decrypt `ext`:
-        //   { status:'ready' }            already covered by equipped software
-        //   { status:'install', sw }      an owned SW covers it and fits as-is
-        //   { status:'swap',    sw }      owned SW covers it but needs resources freed first
-        //   { status:'none' }             no owned SW covers this ext
+        // The server-computed DECRYPT/HACK/SEARCH power of an EQUIPPED software,
+        // from resources.softwarePower (depends on the equipped hardware feeding
+        // it — `computedPower ≈ pmin + ratio·(pmax−pmin)`). null if not equipped /
+        // no such ability. This is the number the game compares against a file's
+        // CRYPT RATE.
+        _computedPowerFor(swId, capType) {
+            const list = (this._snapshot && this._snapshot.resources && this._snapshot.resources.softwarePower) || [];
+            const sp = list.find((p) => p && p.moduleId === swId);
+            if (!sp || !Array.isArray(sp.abilities)) return null;
+            const ab = sp.abilities.find((a) => a && a.type === capType);
+            return (ab && Number.isFinite(Number(ab.computedPower))) ? Number(ab.computedPower) : null;
+        }
+        // Does this software's DECRYPT spec cover `ext` at all (by fileTypes),
+        // REGARDLESS of whether it carries a power band? Used so a covering tool
+        // whose spec omits `power` (legacy/pre-update data) isn't wrongly judged
+        // "none" when there's no power gate to clear.
+        _swDecryptCovers(sw, ext) {
+            const e = String(ext || '').toLowerCase();
+            return (sw.specs || []).some((sp) => sp && sp.type === 'DECRYPT'
+                && Array.isArray(sp.fileTypes) && sp.fileTypes.some((t) => String(t).toLowerCase() === e));
+        }
+        // Max achievable DECRYPT power a software could reach for `ext` (the
+        // spec's power-band upper bound, hit with ideal hardware). null if the
+        // software doesn't cover `ext` OR its covering spec has no power band.
+        _swDecryptMaxPowerFor(sw, ext) {
+            const e = String(ext || '').toLowerCase();
+            let max = null;
+            for (const sp of (sw.specs || [])) {
+                if (sp && sp.type === 'DECRYPT' && Array.isArray(sp.fileTypes)
+                    && sp.fileTypes.some((t) => String(t).toLowerCase() === e)
+                    && Array.isArray(sp.power) && sp.power.length) {
+                    const hi = Number(sp.power[sp.power.length - 1]);
+                    if (Number.isFinite(hi)) max = Math.max(max == null ? -Infinity : max, hi);
+                }
+            }
+            return max;
+        }
+        // Best CURRENT decrypt power for `ext` among EQUIPPED covering software,
+        // or null if nothing equipped covers `ext`.
+        _equippedDecryptPowerFor(ext) {
+            const e = String(ext || '').toLowerCase();
+            let best = null;
+            for (const sw of (this._snapshot && this._snapshot.equippedSoftware) || []) {
+                const covers = (sw.specs || []).some((sp) => sp && sp.type === 'DECRYPT'
+                    && Array.isArray(sp.fileTypes) && sp.fileTypes.some((t) => String(t).toLowerCase() === e));
+                if (!covers) continue;
+                const cp = this._computedPowerFor(sw.id, 'DECRYPT');
+                if (cp != null) best = Math.max(best == null ? -Infinity : best, cp);
+            }
+            return best;
+        }
+        // Owned decrypt software CAPABLE of reaching `required` power for `ext`
+        // (spec band's max ≥ required), cheapest/lowest-tier first. `required<=0`
+        // ⇒ any covering software qualifies (no power gate).
+        _capableDecryptSwFor(ext, required) {
+            const need = Number(required) || 0;
+            const equipped = new Set(((this._snapshot && this._snapshot.equippedSoftware) || []).map((s) => s.id));
+            return ((this._snapshot && this._snapshot.ownedSoftware) || [])
+                .map((sw) => ({ sw, pmax: this._swDecryptMaxPowerFor(sw, ext), covers: this._swDecryptCovers(sw, ext) }))
+                // need>0 → require a known power band that reaches the bar.
+                // need<=0 (no gate / older job, no encryptionLevel) → ANY covering
+                // software qualifies, even one whose spec omits `power` (don't bug
+                // a job that was completable before the power-aware rewrite).
+                .filter((c) => c.covers && (need <= 0 || (c.pmax != null && c.pmax >= need)))
+                // Prefer a capable tool that's ALREADY equipped (boost its hardware
+                // rather than swap), then lowest tier / cheapest.
+                .sort((a, b) => (equipped.has(b.sw.id) ? 1 : 0) - (equipped.has(a.sw.id) ? 1 : 0)
+                    || (Number(a.sw.tier) || 0) - (Number(b.sw.tier) || 0)
+                    || (Number(a.sw.price) || 0) - (Number(b.sw.price) || 0))
+                .map((c) => c.sw);
+        }
+        // Plan how to become able to decrypt `ext` at `requiredPower`:
+        //   { status:'ready' }            equipped SW covers it AND clears the power bar
+        //   { status:'install', sw }      an owned capable SW covers it and fits as-is
+        //   { status:'swap',    sw }      owned capable SW covers it but needs resources freed / a power boost
+        //   { status:'underpower' }       we own SW covering ext but none can reach requiredPower
+        //   { status:'none' }             no owned SW covers this ext at all
         //   { status:'unknown' }          loadout snapshot not received yet
-        apiPlanDecrypt(ext) {
+        apiPlanDecrypt(ext, requiredPower) {
+            const need = Number(requiredPower) || 0;
             if (!this._snapshot) return { status: 'unknown' };
-            if (this._equippedDecryptExts().has(String(ext || '').toLowerCase())) return { status: 'ready' };
-            const candidates = this._ownedDecryptSwFor(ext);
-            if (candidates.length === 0) return { status: 'none' };
+            // Already covered AND powerful enough?
+            const curPow = this._equippedDecryptPowerFor(ext);
+            if (curPow != null && (need <= 0 || curPow >= need)) return { status: 'ready' };
+            const candidates = this._capableDecryptSwFor(ext, need);
+            if (candidates.length === 0) {
+                // Distinguish "no covering SW owned at all" from "owned but too
+                // weak to reach the bar". Coverage is by fileTypes (power-band
+                // independent), so a covering-but-bandless tool reads as
+                // 'underpower' under a gate — never a false 'none'.
+                const ownsCovering = ((this._snapshot.ownedSoftware) || [])
+                    .some((sw) => this._swDecryptCovers(sw, ext));
+                return { status: ownsCovering ? 'underpower' : 'none' };
+            }
             const feasible = candidates.find((sw) => this._checkInstallFeasibility(sw).length === 0);
             if (feasible) return { status: 'install', sw: feasible };
             return { status: 'swap', sw: candidates[0] };
@@ -798,35 +904,116 @@
             while (Date.now() < end && !this._snapshot) await dom.sleep(250);
             return !!this._snapshot;
         }
-        // Make the loadout able to decrypt `ext`. Resolves to
-        //   { ok:true,  status:'ready'|'installed'|'swapped' }
-        //   { ok:false, status, reason }
-        async apiEnsureDecrypt(ext, log) {
-            const say = typeof log === 'function' ? log : () => {};
-            await this._ensureSnapshot(8000, say);   // auto-fetch the snapshot if not warmed yet
-            const plan = this.apiPlanDecrypt(ext);
-            if (plan.status === 'ready')   { say('info', `loadout already decrypts ${ext}`); return { ok: true, status: 'ready' }; }
-            if (plan.status === 'unknown') { say('warn', 'loadout snapshot still not loaded after request'); return { ok: false, status: 'unknown', reason: 'no-loadout-snapshot' }; }
-            if (plan.status === 'none')    { say('warn', `no owned software can decrypt ${ext}`); return { ok: false, status: 'none', reason: `no-decrypt-software:${ext}` }; }
-            if (typeof root.__cor3LoadoutEquipSoftware !== 'function') return { ok: false, status: 'no-helper', reason: 'equip-helper-missing' };
-
-            if (plan.status === 'swap') {
-                say('info', `freeing resources — unequipping all software to fit "${plan.sw.name}"`);
-                if (typeof root.__cor3LoadoutUnequipSoftware === 'function') {
-                    for (const sw of ((this._snapshot && this._snapshot.equippedSoftware) || []).slice()) {
-                        root.__cor3LoadoutUnequipSoftware(sw.id);
-                        await this._waitEquipped(sw.id, false, 6000);
-                    }
+        // Unequip every equipped software EXCEPT `keepId` — dedicates all
+        // hardware to one tool, maximising its server-computed power (ratio).
+        async _freeAllSoftwareExcept(keepId, say) {
+            if (typeof root.__cor3LoadoutUnequipSoftware !== 'function') return;
+            for (const sw of ((this._snapshot && this._snapshot.equippedSoftware) || []).slice()) {
+                if (sw.id === keepId) continue;
+                say('info', `freeing resources — unequipping "${sw.name}"`);
+                root.__cor3LoadoutUnequipSoftware(sw.id);
+                await this._waitEquipped(sw.id, false, 6000);
+            }
+        }
+        // The strongest owned hardware for a slot (server category enum, e.g.
+        // "CPU"): highest tier, tie-broken by the sum of the slot's supply
+        // specs. More supply → higher ratio → higher computedPower.
+        _bestOwnedHardwareForSlot(catEnum) {
+            const metrics = (SLOT_SUPPLY[String(catEnum || '').toLowerCase()] || []).map((m) => m.specKey);
+            const score = (h) => metrics.reduce((s, k) => s + (Number(h.specs && h.specs[k]) || 0), 0);
+            const items = ((this._snapshot && this._snapshot.ownedHardware) || []).filter((h) => h.category === catEnum);
+            if (!items.length) return null;
+            return items.slice().sort((a, b) =>
+                (Number(b.tier) || 0) - (Number(a.tier) || 0) || score(b) - score(a))[0];
+        }
+        async _waitHardwareEquipped(id, deadlineMs) {
+            const isEq = () => Object.values((this._snapshot && this._snapshot.equippedHardware) || {})
+                .some((h) => h && h.id === id);
+            const end = Date.now() + deadlineMs;
+            while (Date.now() < end) { if (isEq()) return true; await dom.sleep(300); }
+            return isEq();
+        }
+        // Equip the strongest owned hardware in every slot (to lift decrypt
+        // power). Returns true if anything was actually changed.
+        async _maxOutHardwareForDecrypt(say) {
+            if (typeof root.__cor3LoadoutEquipHardware !== 'function') return false;
+            let changed = false;
+            for (const slotKey of Object.keys((this._snapshot && this._snapshot.equippedHardware) || {})) {
+                const cur = this._snapshot.equippedHardware[slotKey];
+                const catEnum = cur && cur.category;
+                if (!catEnum) continue;
+                const best = this._bestOwnedHardwareForSlot(catEnum);
+                if (best && (!cur || best.id !== cur.id)) {
+                    say('info', `boosting ${catEnum} → "${best.name}" for more decrypt power`);
+                    root.__cor3LoadoutEquipHardware(best.id);
+                    await this._waitHardwareEquipped(best.id, 6000);
+                    changed = true;
                 }
             }
-            say('info', `installing "${plan.sw.name}" for ${ext}`);
-            root.__cor3LoadoutEquipSoftware(plan.sw.id);
-            const equipped = await this._waitEquipped(plan.sw.id, true, 8000);
-            if (!equipped) { say('error', `install of "${plan.sw.name}" did not take effect`); return { ok: false, status: 'install-failed', reason: 'install-not-applied' }; }
-            const ready = this._equippedDecryptExts().has(String(ext).toLowerCase());
-            return ready
-                ? { ok: true, status: plan.status === 'swap' ? 'swapped' : 'installed' }
-                : { ok: false, status: 'install-failed', reason: 'installed-but-ext-not-covered' };
+            return changed;
+        }
+        // Make the loadout able to decrypt `ext` at `requiredPower` (the file's
+        // CRYPT RATE). Picks an owned tool whose power band can reach the bar,
+        // dedicates the rig to it, and — if still short — swaps in the best owned
+        // hardware. Resolves to
+        //   { ok:true,  status:'ready'|'installed'|'swapped', power }
+        //   { ok:false, status:'none'|'underpower'|'unknown'|'no-helper'|'install-failed', reason }
+        // `underpower` / `none` are PERMANENT (the orchestrator bugs the job).
+        // Back-compat: an old (ext, log) call (log fn in arg 2) ⇒ no power gate.
+        async apiEnsureDecrypt(ext, requiredPower, log) {
+            if (typeof requiredPower === 'function' && log === undefined) { log = requiredPower; requiredPower = 0; }
+            const say = typeof log === 'function' ? log : () => {};
+            const need = Number(requiredPower) || 0;
+            const e = String(ext || '').toLowerCase();
+            await this._ensureSnapshot(8000, say);   // auto-fetch the snapshot if not warmed yet
+            const plan = this.apiPlanDecrypt(ext, need);
+            if (plan.status === 'ready')   { say('info', `loadout already decrypts ${ext}${need ? ` (power ≥ ${need})` : ''}`); return { ok: true, status: 'ready' }; }
+            if (plan.status === 'unknown') { say('warn', 'loadout snapshot still not loaded after request'); return { ok: false, status: 'unknown', reason: 'no-loadout-snapshot' }; }
+            if (plan.status === 'none')    { say('warn', `no owned software can decrypt ${ext}`); return { ok: false, status: 'none', reason: `no-decrypt-software:${ext}` }; }
+            if (plan.status === 'underpower') { say('warn', `owned decrypt software for ${ext} can't reach the required power ${need}`); return { ok: false, status: 'underpower', reason: `decrypt-power-too-high:${ext}:${need}` }; }
+            if (typeof root.__cor3LoadoutEquipSoftware !== 'function') return { ok: false, status: 'no-helper', reason: 'equip-helper-missing' };
+
+            const reached = () => {
+                if (!this._equippedDecryptExts().has(e)) return false;
+                if (need <= 0) return true;
+                const p = this._equippedDecryptPowerFor(ext);
+                return p != null && p >= need;
+            };
+            const candidates = this._capableDecryptSwFor(ext, need);
+            const ok = () => ({ ok: true, power: this._equippedDecryptPowerFor(ext) });
+            for (const cand of candidates) {
+                const wasEquipped = this._isEquipped(cand.id);
+                say('info', `installing "${cand.name}" for ${ext}${need ? ` (need power ${need})` : ''}`);
+                // 1) Install ALONGSIDE the current rig when it fits — don't tear
+                //    down other equipped tools (e.g. a HACK tool the SAI flow just
+                //    equipped) unless we actually need the resources. Skip the
+                //    as-is equip if the floor-check says it can't fit.
+                if (!wasEquipped && this._checkInstallFeasibility(cand).length === 0) {
+                    root.__cor3LoadoutEquipSoftware(cand.id);
+                    await this._waitEquipped(cand.id, true, 8000);
+                }
+                if (this._isEquipped(cand.id) && reached()) return Object.assign(ok(), { status: wasEquipped ? 'ready' : 'installed' });
+                // 2) Didn't fit, or shares resources and fell short on power →
+                //    dedicate the rig to this tool (free the rest) + (re)install.
+                say('info', `freeing resources to fit/boost "${cand.name}"`);
+                await this._freeAllSoftwareExcept(cand.id, say);
+                if (!this._isEquipped(cand.id)) {
+                    root.__cor3LoadoutEquipSoftware(cand.id);
+                    const applied = await this._waitEquipped(cand.id, true, 8000);
+                    if (!applied) { say('error', `install of "${cand.name}" did not take effect`); continue; }
+                }
+                if (reached()) return Object.assign(ok(), { status: wasEquipped ? 'ready' : 'installed' });
+                // 3) Still short on power — swap in the best owned hardware, re-check.
+                if (need > 0) {
+                    say('info', `"${cand.name}" power ${this._equippedDecryptPowerFor(ext)} < ${need} — boosting hardware`);
+                    const boosted = await this._maxOutHardwareForDecrypt(say);
+                    if (boosted && reached()) return Object.assign(ok(), { status: 'swapped', hardwareBoosted: true });
+                }
+                say('warn', `"${cand.name}" still under the power bar ${need} (got ${this._equippedDecryptPowerFor(ext)})`);
+            }
+            // Covered the ext but no owned SW+HW combo reaches the CRYPT RATE.
+            if (this._equippedDecryptExts().has(e)) return { ok: false, status: 'underpower', reason: `decrypt-power-unreachable:${ext}:${need}` };
+            return { ok: false, status: 'install-failed', reason: 'installed-but-ext-not-covered' };
         }
 
         // ─── HACK capability API (parallel to DECRYPT above) ──────────────
@@ -946,6 +1133,77 @@
             );
         }
 
+        // ─── Capability-target chooser ────────────────────────────────
+        // Clicking a target (e.g. ".eb54x" or "CEDRT private") in the
+        // CAPABILITIES breakdown opens a list of EVERY owned software that
+        // provides that exact target so the user picks which to equip / unequip.
+        _openCapChooser(cap, tgt) {
+            this._chooser = { cap, tgt };
+            this._renderChooser();
+        }
+        _closeCapChooser() {
+            this._chooser = null;
+            const el = document.querySelector(`#${PANEL_ID} [data-role="chooser"]`);
+            if (el) el.remove();
+        }
+        // Software (owned) providing `cap` on the exact `tgt`.
+        _swProviding(cap, tgt) {
+            const tgtL = String(tgt || '').toLowerCase();
+            const match = (sp) => sp && sp.type === cap && specTargets(sp).some((x) => String(x).toLowerCase() === tgtL);
+            const equipped = new Set(((this._snapshot && this._snapshot.equippedSoftware) || []).map((s) => s.id));
+            return ((this._snapshot && this._snapshot.ownedSoftware) || [])
+                .filter((sw) => (sw.specs || []).some(match))
+                .sort((a, b) => (equipped.has(b.id) ? 1 : 0) - (equipped.has(a.id) ? 1 : 0)
+                    || (Number(a.tier) || 0) - (Number(b.tier) || 0)
+                    || (Number(a.price) || 0) - (Number(b.price) || 0));
+        }
+        _renderChooser() {
+            const panel = document.getElementById(PANEL_ID);
+            if (!panel) return;
+            let el = panel.querySelector('[data-role="chooser"]');
+            if (!this._chooser || !this._snapshot) { if (el) el.remove(); return; }
+            const { cap, tgt } = this._chooser;
+            const tgtL = String(tgt || '').toLowerCase();
+            const equipped = new Set((this._snapshot.equippedSoftware || []).map((s) => s.id));
+            const match = (sp) => sp && sp.type === cap && specTargets(sp).some((x) => String(x).toLowerCase() === tgtL);
+            const cands = this._swProviding(cap, tgt);
+            const rows = cands.map((sw) => {
+                const sp = (sw.specs || []).find(match);
+                const max = Array.isArray(sp && sp.power) && sp.power.length ? sp.power[sp.power.length - 1] : null;
+                const isEq = equipped.has(sw.id);
+                const comp = isEq ? this._computedPowerFor(sw.id, cap) : null;
+                const powTxt = (comp != null && max != null) ? `${comp}/${max}` : powerBand(sp);
+                const verb = isEq ? t('loadout.verb.unequipSw') : t('loadout.verb.equipSw');
+                return `
+                    <div class="cor3-lp-chooser-row ${isEq ? 'equipped' : ''}" data-role="chooser-row" data-sw="${sw.id}">
+                        ${sw.image ? `<img src="${sw.image}" alt="">` : ''}
+                        <div class="cor3-lp-chooser-body">
+                            <div class="cor3-lp-chooser-name">${escapeHtml(sw.name)} ${tierBadge(sw.tier)}</div>
+                            <div class="cor3-lp-chooser-meta">${escapeHtml(cap)} ${powTxt ? escapeHtml(String(powTxt)) : ''}${isEq ? ` · ${escapeHtml(t('loadout.cap.equipped'))}` : ''}</div>
+                        </div>
+                        <button class="cor3-lp-prog-toggle ${isEq ? 'uninstall' : 'install'}" data-role="chooser-row" data-sw="${sw.id}">${isEq ? '−' : '+'}</button>
+                    </div>`;
+            }).join('') || `<div class="cor3-lp-opt-empty">${escapeHtml(t('loadout.cap.noProviders'))}</div>`;
+            const html = `
+                <div class="cor3-lp-chooser-head">
+                    <span class="cor3-lp-chooser-title">${escapeHtml(t('loadout.cap.chooseTitle', { cap, tgt }))}</span>
+                    <button class="cor3-lp-chooser-close" data-role="chooser-close" title="${escapeHtml(t('loadout.cap.close'))}">✕</button>
+                </div>
+                <div class="cor3-lp-chooser-list">${rows}</div>`;
+            if (!el) {
+                el = document.createElement('div');
+                el.className = 'cor3-lp-chooser';
+                el.setAttribute('data-role', 'chooser');
+                el.addEventListener('click', (e) => {
+                    if (e.target.closest('[data-role="chooser-close"]')) { this._closeCapChooser(); return; }
+                    const row = e.target.closest('[data-role="chooser-row"]');
+                    if (row) { this._toggleSoftware(row.getAttribute('data-sw')); /* snapshot re-render refreshes rows */ }
+                });
+                panel.appendChild(el);
+            }
+            el.innerHTML = html;
+        }
+
         // ─── Toasts ───────────────────────────────────────────────────
         _showToast(title, severity, text) {
             const wrap = document.querySelector(`#${HOST_ID} [data-role="toasts"]`);
@@ -970,6 +1228,11 @@
 
         // ─── Event delegation ─────────────────────────────────────────
         _onBodyClick(e) {
+            const capTgt = e.target.closest('[data-role="cap-tgt"]');
+            if (capTgt) {
+                this._openCapChooser(capTgt.getAttribute('data-cap'), capTgt.getAttribute('data-tgt'));
+                return;
+            }
             const cap = e.target.closest('[data-role="cap"]');
             if (cap) {
                 const capType = cap.getAttribute('data-cap');
@@ -1094,12 +1357,6 @@
             //   active  — subset currently provided by EQUIPPED software.
             // Rendering paints active green, owned-but-not-active gray.
             const capDetails = {};
-            function specTargets(sp) {
-                if (!sp) return [];
-                if (Array.isArray(sp.fileTypes))   return sp.fileTypes;
-                if (Array.isArray(sp.serverTypes)) return sp.serverTypes;
-                return [];
-            }
             for (const sw of ownedSw) for (const sp of (sw.specs || [])) {
                 if (!sp || !sp.type) continue;
                 if (!capDetails[sp.type]) capDetails[sp.type] = { owned: new Set(), active: new Set() };
@@ -1139,9 +1396,11 @@
             const capLines = [...capsAvailable].sort().map((capType) => {
                 const det = capDetails[capType];
                 if (!det || det.owned.size === 0) return '';
-                const items = [...det.owned].sort().map((t) => {
-                    const cls = det.active.has(t) ? 'on' : 'off';
-                    return `<span class="cor3-lp-cap-tgt ${cls}">${escapeHtml(t)}</span>`;
+                // Each target is clickable → opens a chooser of every owned
+                // software providing it (equip / swap). Active (equipped) = green.
+                const items = [...det.owned].sort().map((tg) => {
+                    const cls = det.active.has(tg) ? 'on' : 'off';
+                    return `<span class="cor3-lp-cap-tgt ${cls}" data-role="cap-tgt" data-cap="${escapeHtml(capType)}" data-tgt="${escapeHtml(tg)}" title="${escapeHtml(t('loadout.cap.chooseTip', { tgt: tg }))}">${escapeHtml(tg)}</span>`;
                 }).join(' ');
                 return `<div class="cor3-lp-cap-line"><span class="cor3-lp-cap-line-label">${escapeHtml(capType)}:</span> ${items}</div>`;
             }).filter(Boolean).join('');
@@ -1190,6 +1449,9 @@
             `;
             this._setUpdated();
             this._refreshPowerBtn();
+            // Keep an open capability-target chooser in sync with the fresh
+            // snapshot (equip/unequip results show immediately).
+            this._renderChooser();
         }
 
         // Only the bars block re-renders on hover — saves a full re-render
@@ -1301,14 +1563,25 @@
         _programHtml(sw, isEquipped, softwarePower) {
             const specs = Array.isArray(sw.specs) ? sw.specs : [];
             const power = (softwarePower || []).find((p) => p && p.moduleId === sw.id);
+            // One line per capability spec: TYPE · power (computed/max when
+            // equipped, else the min–max band) · the targets it covers
+            // (file extensions for DECRYPT, server types for HACK/SEARCH).
             const caps = specs.map((sp) => {
                 if (!sp || !sp.type) return '';
-                const max = Array.isArray(sp.power) ? sp.power[sp.power.length - 1] : '?';
+                const max = Array.isArray(sp.power) && sp.power.length ? sp.power[sp.power.length - 1] : null;
                 const eff = isEquipped && power && Array.isArray(power.abilities)
                     ? (power.abilities.find((a) => a.type === sp.type) || {}).computedPower
                     : null;
-                return `<span style="color:#76C1D1;">${sp.type}${eff != null ? ` ${eff}/${max}` : ` /${max}`}</span>${sp.remote ? ' R' : ''}`;
-            }).filter(Boolean).join(' &nbsp; ');
+                const powTxt = (eff != null && max != null) ? `${eff}/${max}` : powerBand(sp);
+                const tgts = specTargets(sp);
+                const tgtTxt = tgts.length ? tgts.map((x) => escapeHtml(x)).join(' ') : '';
+                return `<div class="cor3-lp-prog-cap">`
+                    + `<span class="cor3-lp-prog-cap-type">${escapeHtml(sp.type)}</span>`
+                    + (powTxt ? `<span class="cor3-lp-prog-cap-pow">${escapeHtml(String(powTxt))}</span>` : '')
+                    + (sp.remote ? `<span class="cor3-lp-prog-cap-r" title="${escapeHtml(t('loadout.cap.remote'))}">R</span>` : '')
+                    + (tgtTxt ? `<span class="cor3-lp-prog-cap-tgts">${tgtTxt}</span>` : '')
+                    + `</div>`;
+            }).filter(Boolean).join('');
             const toggleClass = isEquipped ? 'uninstall' : 'install';
             const toggleSym   = isEquipped ? '−' : '+';
             // Reuse the verb translations from the watchdog toast,
@@ -1340,6 +1613,23 @@
         const t = Number(tier) || 1;
         return `<span class="cor3-lp-tier t${t}">T${t}</span>`;
     }
+    // A capability spec's targets — file extensions (DECRYPT) or server types
+    // (HACK / SEARCH), whichever array the cor3.gg WS payload uses for this spec.
+    function specTargets(sp) {
+        if (!sp) return [];
+        if (Array.isArray(sp.fileTypes))   return sp.fileTypes;
+        if (Array.isArray(sp.serverTypes)) return sp.serverTypes;
+        return [];
+    }
+    // [min,max] power band of a spec → "min–max" (or "/max" / "" when partial).
+    function powerBand(sp) {
+        const arr = Array.isArray(sp && sp.power) ? sp.power : [];
+        if (!arr.length) return '';
+        const lo = Number(arr[0]);
+        const hi = Number(arr[arr.length - 1]);
+        if (Number.isFinite(lo) && Number.isFinite(hi) && lo !== hi) return `${fmt(lo)}–${fmt(hi)}`;
+        return Number.isFinite(hi) ? `/${fmt(hi)}` : '';
+    }
     function hwSummary(hw) {
         if (!hw || !hw.specs) return '';
         const s = hw.specs;
@@ -1367,8 +1657,8 @@
     root.COR3.game.loadout = {
         getSnapshot: () => loadoutPanel._snapshot,
         decryptExtensions: () => [...loadoutPanel._equippedDecryptExts()],
-        planDecrypt: (ext) => loadoutPanel.apiPlanDecrypt(ext),
-        ensureDecrypt: (ext, log) => loadoutPanel.apiEnsureDecrypt(ext, log),
+        planDecrypt: (ext, requiredPower) => loadoutPanel.apiPlanDecrypt(ext, requiredPower),
+        ensureDecrypt: (ext, requiredPower, log) => loadoutPanel.apiEnsureDecrypt(ext, requiredPower, log),
         hackServerTypes: () => [...loadoutPanel._equippedHackTypes()],
         planHack: (serverType) => loadoutPanel.apiPlanHack(serverType),
         ensureHack: (serverType, log) => loadoutPanel.apiEnsureHack(serverType, log),

@@ -288,6 +288,12 @@
         USOL_MARKET_AVAILABLE: 'usolMarketAvailable',
         MERCENARIES: 'mercenariesData',
         MERCENARIES_AT: 'mercenariesUpdatedAt',
+        // Per-market mercenary/elite/reputation map, keyed by marketId. Each
+        // market is its own faction (distinct reputation + elite mercs); the
+        // multi-market Expeditions UI reads this. MERCENARIES (above) still
+        // mirrors the HOME market for auto-send + back-compat.
+        MERC_MARKETS: 'mercMarketsData',
+        MERC_MARKETS_AT: 'mercMarketsUpdatedAt',
         EXPEDITION_CONFIG: 'expeditionConfigData',
         EXPEDITION_CONFIG_AT: 'expeditionConfigUpdatedAt',
         MERC_CONFIG: 'mercConfigData',
@@ -595,5 +601,24 @@
         },
     };
 
-    root.COR3.constants = { MSG, STORAGE_LOCAL, STORAGE_SYNC, FLOW, LOG_LEVEL, CATEGORY, LIMITS, NO_LOGS_SERVERS, AJ };
+    // ──────────────────────────────────────────────────────────────────────
+    // Market registry — the SINGLE source of truth for the game's markets,
+    // shared across every context (MAIN interceptor routing, isolated data
+    // modules, popup UI). Previously each market id was hardcoded in 5+ files.
+    //   id       — market id (market.get.jobs / get.mercenaries / get.config use it)
+    //   serverId — the market's home server (endpoint preflight + revert-to-home)
+    //   key      — short slug; the WS bus channel is MARKET (home) or <KEY>_MARKET
+    //   label    — display name (the in-game server name; a proper noun, not i18n'd)
+    // Order is the display order in the UI.
+    // ──────────────────────────────────────────────────────────────────────
+    const MARKETS = [
+        { id: '019d3ea4-85bd-7389-904d-8f7c85841134', serverId: '019c0a5b-eeeb-7d3e-b9c9-fd5c2ba7d399', key: 'home', label: 'Home Server' },
+        { id: '019d3ea4-85bd-7389-904d-908ba9194aa0', serverId: '019d29c5-4b37-79bf-b23e-304d8ea03c15', key: 'dark', label: 'D4RK RM7MI' },
+        { id: '019da731-2db5-7d76-9447-1ea3b9b78001', serverId: '019da6f1-16f7-75a6-b6d3-0b1d5f92a108', key: 'srm',  label: 'SRM7-M' },
+        { id: '019e4065-6ae8-760d-8724-58ab4f2cf7d7', serverId: '019e4052-c317-7388-9d71-883ffb1560cd', key: 'usol', label: 'URM7-M' },
+    ];
+    const HOME_MARKET_ID = MARKETS[0].id;
+    const HOME_SERVER_ID = MARKETS[0].serverId;
+
+    root.COR3.constants = { MSG, STORAGE_LOCAL, STORAGE_SYNC, FLOW, LOG_LEVEL, CATEGORY, LIMITS, NO_LOGS_SERVERS, AJ, MARKETS, HOME_MARKET_ID, HOME_SERVER_ID };
 })();

@@ -27,9 +27,9 @@ modules (auto-jobs, auto-send-merc).
 | `WS.SRM_MARKET` / `WS.SRM_MARKET_UNREACHABLE` | `COR3_WS_SRM_MARKET` / `COR3_WS_SRM_MARKET_UNREACHABLE` | `{ market: same shape }` / `{ error, serverId }` | SRM7-M market (id `019da731-…-1ea3b9b78001`, server `019da6f1-…`). Behaves like dark — `set.endpoint` preflight then `get.jobs`. |
 | `WS.USOL_MARKET` / `WS.USOL_MARKET_UNREACHABLE` | `COR3_WS_USOL_MARKET` / `COR3_WS_USOL_MARKET_UNREACHABLE` | `{ market: same shape }` / `{ error, serverId }` | URM7-M market — USOL faction (market id `019e4065-…-58ab4f2cf7d7`, server `019e4052-…-883ffb1560cd`). Behaves like dark/srm. |
 | `WS.STASH` | `COR3_WS_STASH` | `{ stash: { items, currentUsage, maxCapacity } }` | inventory snapshot. |
-| `WS.MERCENARIES` | `COR3_WS_MERCENARIES` | `{ data: { mercenaries: Merc[] } | Merc[] }` | array OR `{mercenaries: [...]}` shape — handle both. |
+| `WS.MERCENARIES` | `COR3_WS_MERCENARIES` | `{ data: get.mercenaries-payload, marketId }` | per-faction mercenary roster (see shape below). The interceptor **tags each reply with its `marketId`** by matching it to the single in-flight `get.mercenaries` request (requests are serialized — replies carry no marketId of their own); UNSOLICITED replies (post-launch merc→CONTRACTED push, in-game Expeditions open) are dropped, never posted. `data.mercenaries` may be the array OR the wrapping object. |
 | `WS.MERC_CONFIGURE` | `COR3_WS_MERC_CONFIGURE` | `{ mercenaryId, data: { totalCost, riskScore, … } }` | per-merc cost/risk. Multiple events for one fetch (one per merc). |
-| `WS.EXPEDITION_CONFIG` | `COR3_WS_EXPEDITION_CONFIG` | `{ data: { locations: [...] } }` | location/zone/objective IDs. Cached so launch can build the right config. |
+| `WS.EXPEDITION_CONFIG` | `COR3_WS_EXPEDITION_CONFIG` | `{ data: { locations: [...] } }` | location/zone/goal IDs (zones carry `goals[]`, post-patch — was `objectives[]`). Cached as `__cor3ExpConfigIds = {locationConfigId, zoneConfigId, goalId}` so launch can build the right config. |
 | `WS.JOB_ACCEPTED` | `COR3_WS_JOB_ACCEPTED` | `{ data: { recentJobs: Job[] }, error: Error \| null }` | response to `COR3_ACCEPT_JOB`. `error.message` may indicate failure. |
 | `WS.JOB_COMPLETED` | `COR3_WS_JOB_COMPLETED` | `{ data, error }` | response to `COR3_COMPLETE_JOB`. |
 | `WS.CONTAINER_OPENED` | `COR3_WS_CONTAINER_OPENED` | `{ data: { items \| containerItems: [...] } }` | reward container content count drives the stash-space check. |
@@ -39,6 +39,14 @@ modules (auto-jobs, auto-send-merc).
 | `WS.EXPEDITION_RETRY_LAUNCH` | `COR3_WS_EXPEDITION_RETRY_LAUNCH` | `{ retryData: requestId }` | fired by the WS interceptor 2 min after a launch error; auto-send-merc relays it as `COR3_RELAUNCH_EXPEDITION`. |
 | `WS.INSUFFICIENT_CREDITS` | `COR3_WS_INSUFFICIENT_CREDITS` | `{ error: 'insufficient-credits' }` | auto-send disables itself with `disabledReason: 'insufficient_credits'`. |
 | `WS.LOG` | `COR3_WS_LOG` | `{ direction: 'sent'\|'received', message: string }` | **deprecated** — superseded by Logger; not currently consumed. Safe to remove later. |
+
+> **Market id registry.** The market/server ids above are no longer hardcoded
+> per file. `constants.js` exports a single source of truth `C.MARKETS =
+> [{ id, serverId, key, label }]` for `home`/`dark`/`srm`/`usol`, plus
+> `C.HOME_MARKET_ID` (= `MARKETS[0].id`) and `C.HOME_SERVER_ID`. The ws-interceptor
+> derives its market-id/server consts and `MARKET_BY_ID` lookup (incl. the
+> main/unreachable Bus-channel names) from `C.MARKETS`; mercenaries, runtime-bridge,
+> auto-send-merc and the Expeditions UI all reference `C.MARKETS` / `C.HOME_MARKET_ID`.
 
 ### Off-enum WS-related types still used
 
@@ -76,7 +84,7 @@ the game-module helpers.
 |---|---|---|---|
 | `GAME.REQUEST_EXPEDITIONS` | `COR3_REQUEST_EXPEDITIONS` | `null` | join `expeditions` room and `get.active`. |
 | `GAME.REFRESH_MARKET` | `COR3_REFRESH_MARKET` | `null` | re-send `market.get.jobs` for the home market. |
-| `GAME.LAUNCH_EXPEDITION` | `COR3_LAUNCH_EXPEDITION` | `{ config: {mercenaryId, marketId, locationConfigId, zoneConfigId, objectiveId, hasInsurance} }` | `expeditions.configure` then `expeditions.launch`. |
+| `GAME.LAUNCH_EXPEDITION` | `COR3_LAUNCH_EXPEDITION` | `{ config: {mercenaryId, marketId, locationConfigId, zoneConfigId, goalId, hasInsurance} }` | `expeditions.configure` then `expeditions.launch`. The DTO field is `goalId` (post-patch — the server rejects `objectiveId`: "property objectiveId should not exist; goalId must be a string"). |
 | `GAME.OPEN_CONTAINER` | `COR3_OPEN_CONTAINER` | `{ expeditionId }` | `expeditions.open.container`. |
 | `GAME.COLLECT_ALL` | `COR3_COLLECT_ALL` | `{ expeditionId }` | `expeditions.collect.all`. |
 | `GAME.ACCEPT_JOB` | `COR3_ACCEPT_JOB` | `{ jobId, marketId }` | `market.job.take` (endpoint-preflight in the interceptor). |
@@ -95,8 +103,9 @@ the game-module helpers.
 - `COR3_REQUEST_STASH` — joins `stash` room (which triggers a stash push).
 - `COR3_REQUEST_MARKET` — sends `market.get.jobs` for home.
 - `COR3_REQUEST_DARK_MARKET` — sets dark endpoint then `get.jobs`.
-- `COR3_REQUEST_MERCENARIES` — `expeditions.get.mercenaries`.
-- `COR3_REQUEST_EXPEDITION_CONFIG` — `expeditions.get.config`.
+- `COR3_REQUEST_MERCENARIES` — `expeditions.get.mercenaries` for one market (defaults to the last-opened / HOME market). Requests are serialized (`mercFetchChain`, one in-flight slot `mercInflight`, 12 s timeout) so each reply can be correlated to its market.
+- `COR3_REQUEST_ALL_MERCENARIES` — fans out `get.mercenaries` for EVERY market in `C.MARKETS` (each market is its own faction; works by `marketId` without connecting to the server). Posted by the Expeditions UI's `requestAllMercenaries` runtime action (via runtime-bridge).
+- `COR3_REQUEST_EXPEDITION_CONFIG` — `expeditions.get.config`. Post-patch the server REQUIRES a `marketId` ("Validation failed: marketId must be a string") — `__cor3RequestExpeditionConfig(marketId)` defaults to the last-opened / HOME market.
 - `MSG.GAME.REQUEST_ARCHIVED_EXPEDITIONS` (`COR3_REQUEST_ARCHIVED_EXPEDITIONS`) — re-fetch archived expedition list; popup's "Refresh" button on the Recent runs block triggers this via runtime-bridge.
 - `COR3_LEAVE_STASH` — leaves the stash room.
 - `COR3_SELL_ITEM` — `{itemId, quantity}` → `stash.sell.item`.
@@ -190,7 +199,8 @@ the market board's `jobs[]` and reappears in `recentJobs[]` with
 | `usolMarketAvailable` | `boolean` | `data/usol-market.js` | reachability flag (mirrors dark). |
 | `loadoutData` | `{ …snapshot, _derived:{decryptExtensions, capabilities, canBoot} }` | `data/loadout.js` | from `loadout/get.options`. `_derived` is computed up-front so Auto Jobs doesn't recompute each cycle. |
 | `stashData` | `{items, currentUsage, maxCapacity}` | `data/stash.js` | + `stashDataUpdatedAt`. |
-| `mercenariesData` | `Merc[] \| {mercenaries: Merc[]}` | `data/mercenaries.js` | + `mercenariesUpdatedAt`. |
+| `mercenariesData` | `Merc[] \| {mercenaries: Merc[]}` | `data/mercenaries.js` | + `mercenariesUpdatedAt`. Mirrors ONLY the HOME market's `get.mercenaries` payload (auto-send + legacy roster). |
+| `mercMarketsData` | `{ [marketId]: get.mercenaries-payload }` | `data/mercenaries.js` | + `mercMarketsUpdatedAt`. Per-market faction map — each market is its own faction (distinct reputation + elite mercs). Written via a serialized read-modify-write chain keyed by the frame's `marketId` (untagged frames are dropped). Read by the multi-market "Markets & mercenaries" Expeditions UI block. |
 | `mercConfigData` | `{[mercId]: {totalCost, riskScore, ...}}` | `data/merc-config.js` | merged per-merc; + `mercConfigUpdatedAt`. |
 | `expeditionConfigData` | `{locations: [...]}` | `data/expedition-config.js` | + `expeditionConfigUpdatedAt`. |
 | `dailyOpsData` | `{nextTaskTime, currentStreak, hasClaimedToday, difficulty, streakBonus, currentGameId}` | `automation/daily-ops.js` | + `dailyOpsUpdatedAt`. Field name is `currentStreak`, not `streak`. |
@@ -371,8 +381,9 @@ type Job = {
 type ConditionDetails = {
     fileNames?: string[];
     fileName?: string;
-    files?: { name: string }[];
-    extensions?: { ext: string }[];
+    files?: { id?: string; name: string }[];        // id stable across the 3 name variants
+    extensions?: { ext: string; encryptionLevel?: [number, number] }[];
+    encryptionLevel?: [number, number];             // decrypt CRYPT RATE = upper bound (hi)
     ipAddresses?: string[];
     ips?: string[];
     ipAddress?: string;
@@ -381,6 +392,14 @@ type ConditionDetails = {
     logName?: string;
     logSeqs?: number[];
 };
+// Decrypt jobs (DecryptFile / DecryptDownloadedFile) carry per-extension and/or
+// item-level `encryptionLevel: [lo, hi]`. The file's CRYPT RATE — the bar the
+// equipped DECRYPT software's computedPower must clear — is the UPPER bound `hi`.
+// pipeline.js `requiredPowerForDecrypt(rawJob)` returns the MAX hi across the
+// decrypt items (0 = no band = no power gate). The authoritative live readout is
+// the in-game File Analysis window (WS `desktop.get.file.analysis` →
+// FileAnalysisProtocol, showing CRYPT RATE + DECRYPT POWER); the Downloads
+// `open.folder` file object carries neither the rate nor (post-patch) `sizeMb`.
 
 type Expedition = {
     id: string;
@@ -410,7 +429,34 @@ type Merc = {
     id: string;
     callsign: string;
     status: 'AVAILABLE' | 'RESTING' | 'ACTIVE' | …;
+    faction?: { key: string; name: string; icon: string };
+    reputationRequirement?: number;
     ...
+};
+
+// The `WS.MERCENARIES` payload's `data` (one per market / faction):
+type GetMercenariesPayload = {
+    mercenaries: Merc[];
+    userReputation: { level: number; progress: number; score: number };
+    mercenaryReputation: {
+        score: number; level: number; trustLevel: string;
+        successfulRuns: number; deadMercs: number; hireCostMultiplier: number;
+        breakdown: { factionReputationComponent, successfulRunsBonus, deathPenalty, peakScore, floor, … };
+    };
+    hireSlots: { baseSlots: number; purchasedSlots: number; maxMercenaries: number; pools: [...] };
+    eliteSlots: EliteSlot[];
+};
+
+type EliteSlot = {
+    eliteConfigId: string;
+    callsign: string;
+    specialization: string;
+    trait: string;
+    avatarSeed: string;
+    state: 'QUEST_IN_PROGRESS' | 'AVAILABLE' | …;
+    unlock: { requiredFactionReputationLevel: number; sideQuestId: string };
+    progress: { factionReputationLevel: number; sideQuestCompleted: boolean };
+    info: { specializationName, specializationDescription, traitName, traitDescription };
 };
 
 type Decision = {

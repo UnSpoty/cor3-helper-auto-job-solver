@@ -70,21 +70,50 @@
     // file-decryption. Used by data_upload (source file to push: needs name +
     // sizeMb for the upload DTO) and decrypt_extract (the SAI-downloaded file to
     // open: needs the id). Returns the raw file object {id, name, sizeMb, …} or null.
-    async function findDownloadsFile(match, ms) {
+    // Raw Downloads file list (over WS, no DOM scrape). Returns the files[] array
+    // (each {id, name, …}) or []. Callers do their own matching (decrypt_extract
+    // needs id/name/stem resolution because cor3.gg's file names are inconsistent).
+    async function listDownloads(ms) {
         let folderId = root.__cor3DownloadFolderId;
         if (!folderId) {
-            if (typeof root.__cor3DesktopGetOptions !== 'function') return null;
+            if (typeof root.__cor3DesktopGetOptions !== 'function') return [];
             await awaitBus(MSG.WS.DESKTOP_OPTIONS, 8000, () => root.__cor3DesktopGetOptions());
             folderId = root.__cor3DownloadFolderId;
         }
-        if (!folderId || typeof root.__cor3DesktopOpenFolder !== 'function') return null;
+        if (!folderId || typeof root.__cor3DesktopOpenFolder !== 'function') return [];
         const resp = await awaitBus(MSG.WS.DESKTOP_FOLDER, ms || 60000, () => root.__cor3DesktopOpenFolder(folderId));
-        const files = (resp && resp.data && Array.isArray(resp.data.files)) ? resp.data.files : [];
+        return (resp && resp.data && Array.isArray(resp.data.files)) ? resp.data.files : [];
+    }
+    async function findDownloadsFile(match, ms) {
+        const files = await listDownloads(ms);
         const raw = String(match || '').trim().toLowerCase();
         const isExt = raw.startsWith('.');
         return files.find((x) => { const n = String((x && x.name) || '').toLowerCase(); return isExt ? n.endsWith(raw) : n === raw; }) || null;
     }
     async function findDownloadsFileId(match, ms) { const f = await findDownloadsFile(match, ms); return f ? f.id : null; }
+
+    // ── File-name resolution (shared by decrypt_extract + data_upload) ───────
+    // cor3.gg names the SAME file three different ways — the job condition NAME
+    // ("db_8914.dat"), the server get.files NAME ("db_8914.bin"), and the local
+    // Downloads NAME ("db_8914.eb54x"). Only the fileId and the base name (stem,
+    // text before the first dot) are stable. resolveFile() matches a list (server
+    // files OR Downloads files) to a {id,name,ext} descriptor by id → exact name
+    // → stem(+declared ext) → stem. `idKey` is the id field on the list's objects
+    // ('fileId' on server files, 'id' on Downloads files).
+    function parseExt(name) { const s = String(name || '').trim().toLowerCase(); const i = s.lastIndexOf('.'); return i >= 0 ? s.slice(i) : ''; }
+    function stemOf(name) { const s = String(name || '').trim().toLowerCase(); const i = s.indexOf('.'); return i >= 0 ? s.slice(0, i) : s; }
+    function normExt(ext) { const e = String(ext || '').trim().toLowerCase(); return e ? (e.startsWith('.') ? e : '.' + e) : ''; }
+    function resolveFile(files, desc, idKey) {
+        if (!Array.isArray(files) || !files.length || !desc) return null;
+        if (desc.id) { const f = files.find((x) => x && x[idKey] === desc.id); if (f) return f; }
+        const nameL = String(desc.name || '').toLowerCase();
+        let f = files.find((x) => String((x && x.name) || '').toLowerCase() === nameL); if (f) return f;
+        const st = stemOf(desc.name);
+        if (!st) return null;
+        const ext = normExt(desc.ext);
+        if (ext) { f = files.find((x) => stemOf(x && x.name) === st && parseExt(x && x.name) === ext); if (f) return f; }
+        return files.find((x) => stemOf(x && x.name) === st) || null;
+    }
 
     // ── Server access ──────────────────────────────────────────────────────
     const pickGrant = (s) => ((s && s.activeAccesses) || []).find((g) => g.sourceType === 'task_access') || ((s && s.activeAccesses) || [])[0] || null;
@@ -318,7 +347,8 @@
                         // lastNode (the *_ACCESS step the flow just emitted) lets
                         // ensureAccess light SAI_HACK then return to that ACCESS node.
                         ensureAccess: (sid, stype, sname) => ensureAccess(sid, stype, sname, say, env.batchKey, step, lastNode),
-                        awaitBus, awaitAction, getTransit, getFiles, getLogs, findDownloadsFileId, findDownloadsFile,
+                        awaitBus, awaitAction, getTransit, getFiles, getLogs, findDownloadsFileId, findDownloadsFile, listDownloads,
+                        resolveFile, parseExt, stemOf, normExt,
                         startSolvers, stopSolvers, findMinigame,
                         complete: () => {
                             // In a multi-job SAI batch the orchestrator defers every
@@ -363,7 +393,7 @@
 
     root.COR3.autoJobs = root.COR3.autoJobs || {};
     root.COR3.autoJobs.saiFlow = {
-        awaitBus, awaitAction, getTransit, getFiles, getLogs, findDownloadsFileId, findDownloadsFile, ensureAccess, defineFlow,
+        awaitBus, awaitAction, getTransit, getFiles, getLogs, findDownloadsFileId, findDownloadsFile, listDownloads, resolveFile, parseExt, stemOf, normExt, ensureAccess, defineFlow,
         startSolvers, stopSolvers, findMinigame,
     };
 })();

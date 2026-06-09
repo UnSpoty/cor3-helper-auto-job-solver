@@ -80,7 +80,7 @@ The order matters: core primitives must exist before modules use them.
 
 ```
 1.  src/shared/platform.js           ← isFirefox / isChromium runtime detect
-2.  src/shared/constants.js          ← MSG, STORAGE_*, FLOW, CATEGORY, AJ enums
+2.  src/shared/constants.js          ← MSG, STORAGE_*, FLOW, CATEGORY, AJ enums + MARKETS registry
 3.  src/shared/build-info.js         ← commit/date stamp
 4.  src/shared/dom.js                ← sleep, waitForEl, click, react-input
 5.  src/shared/ws-frames.js          ← Socket.IO v4 parser
@@ -299,6 +299,20 @@ User preferences live in `chrome.storage.sync` under fixed keys (see
 by the relevant module via `Store.sync.onChanged()`.
 
 The full storage key catalog is in [messaging.md](messaging.md).
+
+## Shared market registry
+
+`COR3.constants.MARKETS` (`src/shared/constants.js`) is the **single source of
+truth** for the four markets — each entry is `{ id, serverId, key, label }`
+for `home`/`dark`/`srm`/`usol`, plus the derived `HOME_MARKET_ID` /
+`HOME_SERVER_ID`. Because `constants.js` is in every context's prelude, the
+same registry is read across **all three worlds** that touch markets: MAIN
+(`src/interceptors/ws-interceptor.js` derives the per-market bus-channel names
+and iterates every market for `__cor3RequestAllMercenaries`), isolated
+(`src/modules/data/mercenaries.js`, `auto-send-merc.js`, `runtime-bridge.js`),
+and the popup (`src/ui/sections/expeditions.js` renders one block per market).
+The market ids were previously hardcoded in five files; they now all reference
+`C.MARKETS` / `C.HOME_MARKET_ID`.
 
 ## Cross-world Module Manager: known limitation
 

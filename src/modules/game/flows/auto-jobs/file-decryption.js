@@ -131,18 +131,27 @@
         if (!LO || typeof LO.ensureDecrypt !== 'function') return { success: false, retryable: true, reason: 'loadout-api-missing' };
 
         // ── MODULE:FD_CHECK_LOADOUT (decision) ──
+        // requiredPower = the file's CRYPT RATE (encryptionLevel hi). The loadout
+        // API equips a tool whose DECRYPT power clears it (swapping hardware if
+        // the software alone falls short).
         step(NODE.FD_CHECK_LOADOUT);
-        const plan = LO.planDecrypt(ext);
-        say('info', `decrypt capability for ${ext}: ${plan.status}`);
+        const required = Number(job.requiredPower) || 0;
+        // No encryptionLevel band on the job → no power gate. Surface it (don't
+        // silently let an underpowered tool through): any covering software is
+        // accepted, which can fail the minigame if the file outranks it.
+        if (required <= 0) say('warn', `no decrypt-power band for ${ext} — proceeding without a power gate`);
+        const plan = LO.planDecrypt(ext, required);
+        say('info', `decrypt capability for ${ext}${required ? ` @power ${required}` : ''}: ${plan.status}`);
         if (plan.status === 'install' || plan.status === 'swap') {
             // ── MODULE:FD_INSTALL_SW ──
             step(NODE.FD_INSTALL_SW);
         }
-        const cap = await LO.ensureDecrypt(ext, say);
+        const cap = await LO.ensureDecrypt(ext, required, say);
         if (!cap.ok) {
             // Split transient vs permanent: 'unknown' (loadout snapshot not in
             // yet) and 'no-helper' (WS equip helper not ready) are timing races
-            // → retry next cycle. 'none' (no owned software covers this ext) and
+            // → retry next cycle. 'none' (no owned software covers this ext),
+            // 'underpower' (no owned SW+HW reaches the CRYPT RATE) and
             // 'install-failed' are genuinely undoable → orchestrator bugs it.
             const retryable = cap.status === 'unknown' || cap.status === 'no-helper';
             say('warn', `cannot gain decrypt capability for ${ext} (${cap.status})`);

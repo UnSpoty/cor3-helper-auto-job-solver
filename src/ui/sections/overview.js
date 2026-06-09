@@ -69,13 +69,29 @@
         panel = null;
     }
 
+    function toMs(target) {
+        if (target == null) return null;
+        if (typeof target === 'number') return target;
+        if (target instanceof Date) return target.getTime();
+        const t = new Date(target).getTime();
+        return Number.isFinite(t) ? t : null;
+    }
+
     // Stable timer placement: each holder span owns at most one timer
-    // instance, attached via `_cor3Timer`. Updating swaps the instance
-    // without disturbing the surrounding DOM. Passing target=null clears
-    // the holder.
-    function placeTimer(holder, target) {
+    // instance, attached via `_cor3Timer`. IDEMPOTENT — if the holder already
+    // runs a timer for the SAME target, we leave it ticking instead of
+    // destroying + recreating it. This stops the market timers from visibly
+    // resetting every time a background market write lands (the Auto Jobs
+    // orchestrator rewrites market data each cycle with the SAME
+    // nextJobsResetAt) regardless of the Overview Auto-refresh toggle. Passing
+    // target=null clears the holder. `opts` (e.g. onExpire) is forwarded to the
+    // timer component on (re)create.
+    function placeTimer(holder, target, opts) {
         if (!holder) return;
+        const ms = toMs(target);
         const old = holder._cor3Timer;
+        // Already running for this exact target → keep it (no churn / flicker).
+        if (old && holder._cor3Target === ms) return;
         if (old) {
             try { old.stop(); } catch (_) {}
             const i = panel.timers.indexOf(old);
@@ -83,8 +99,9 @@
             holder._cor3Timer = null;
         }
         while (holder.firstChild) holder.removeChild(holder.firstChild);
+        holder._cor3Target = ms;
         if (!target) return;
-        const inst = uiComponents.timer.create(target);
+        const inst = uiComponents.timer.create(target, opts || {});
         holder._cor3Timer = inst;
         panel.timers.push(inst);
         holder.appendChild(inst.el);
@@ -593,26 +610,43 @@
             Store.local.getOne(C.STORAGE_LOCAL.DAILY_HACK_LOG),
         ]);
         const n = panel.daily;
-        if (daily && daily.nextTaskTime) {
+        const resetMs = (daily && daily.nextTaskTime) ? new Date(daily.nextTaskTime).getTime() : NaN;
+        // Once nextTaskTime passes, the stored snapshot (streak / hasClaimedToday)
+        // AND the solver log line ("which puzzle …") are from the PREVIOUS day.
+        const rolledOver = Number.isFinite(resetMs) && resetMs <= Date.now();
+
+        if (daily && daily.nextTaskTime && !rolledOver) {
             n.headLabel.textContent = t('overview.nextReset');
             n.headLabel.style.display = '';
-            placeTimer(n.timerHolder, daily.nextTaskTime);
+            // onExpire: when the countdown crosses 00:00 while the popup is open,
+            // re-run refreshDaily so the now-stale puzzle/claim info is cleared
+            // live (refreshDaily otherwise only fires on a storage change).
+            placeTimer(n.timerHolder, daily.nextTaskTime, { onExpire: () => refreshDaily() });
             n.headDash.style.display = 'none';
             const streak = daily.currentStreak ?? daily.streak ?? 0;
             const claimed = daily.hasClaimedToday ? t('overview.claimed') : t('overview.pending');
             n.metaLine.textContent = `${t('overview.streak')} ${streak} · ${claimed}`;
             n.metaLine.style.display = '';
+            if (dailyLog) { n.logLine.textContent = String(dailyLog); n.logLine.style.display = ''; }
+            else { n.logLine.textContent = ''; n.logLine.style.display = 'none'; }
+        } else if (daily && daily.nextTaskTime && rolledOver) {
+            // Day rolled over — clear the stale puzzle log + claim/streak rather
+            // than showing yesterday's. No auto re-fetch here: the Daily Ops
+            // "Auto" toggle / "Solve" button refresh it (matches "don't
+            // auto-refresh when it's off").
+            n.headLabel.style.display = 'none';
+            placeTimer(n.timerHolder, null);
+            n.headDash.style.display = 'none';
+            n.metaLine.textContent = t('overview.dailyNewDay');
+            n.metaLine.style.display = '';
+            n.logLine.textContent = '';
+            n.logLine.style.display = 'none';
         } else {
             n.headLabel.style.display = 'none';
             placeTimer(n.timerHolder, null);
             n.headDash.style.display = 'none';
             n.metaLine.textContent = t('overview.noDaily');
             n.metaLine.style.display = '';
-        }
-        if (dailyLog) {
-            n.logLine.textContent = String(dailyLog);
-            n.logLine.style.display = '';
-        } else {
             n.logLine.textContent = '';
             n.logLine.style.display = 'none';
         }

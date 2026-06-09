@@ -796,7 +796,11 @@
 
             if (job.type === C.FLOW.FILE_DECRYPTION) {
                 const fileCondition = p.fileConditionForDecrypt(job.raw);
-                return fileCondition ? Object.assign(base, { fileCondition }) : null;
+                if (!fileCondition) return null;
+                // requiredPower = the file's CRYPT RATE (encryptionLevel hi). The
+                // flow makes the loadout reach it (stronger SW + HW) before opening.
+                const requiredPower = p.requiredPowerForDecrypt(job.raw);
+                return Object.assign(base, { fileCondition, requiredPower });
             }
 
             // SAI flows — resolve the target server (serverId + type/name).
@@ -825,7 +829,15 @@
                 case C.FLOW.DATA_UPLOAD:
                 case C.FLOW.DECRYPT_EXTRACT: {
                     const fileNames = p.fileNamesForJob(job.raw);
-                    return fileNames.length ? Object.assign(base, sai, { fileNames }) : null;
+                    // {id,name,ext} descriptors — the flow resolves the server +
+                    // local file by id → name → stem (cor3.gg names the same file
+                    // 3 different ways across condition/server/Downloads).
+                    const files = p.fileDescriptorsForJob(job.raw);
+                    // Same decrypt-power gate as file_decryption: the extract
+                    // half opens the downloaded file's minigame, so the loadout
+                    // must clear the file's CRYPT RATE first.
+                    const requiredPower = p.requiredPowerForDecrypt(job.raw);
+                    return fileNames.length ? Object.assign(base, sai, { fileNames, files, requiredPower }) : null;
                 }
                 case C.FLOW.LOG_DELETION:
                 case C.FLOW.LOG_DOWNLOAD: {
@@ -843,6 +855,7 @@
         _payloadSummary(payload) {
             const s = { server: payload.serverName || null };
             if (payload.fileCondition) s.fileCondition = payload.fileCondition;
+            if (payload.requiredPower) s.requiredPower = payload.requiredPower;
             if (Array.isArray(payload.ips)) s.ips = payload.ips.length;
             if (Array.isArray(payload.fileNames)) s.fileNames = payload.fileNames;
             if (Array.isArray(payload.logSeqs)) s.logSeqs = payload.logSeqs;

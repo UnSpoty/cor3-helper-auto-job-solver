@@ -10,15 +10,9 @@
     const NODE = C.AJ.NODE;
     const SF = root.COR3.autoJobs.saiFlow;
 
-    function parseExt(name) {
-        const s = String(name || '').trim().toLowerCase();
-        const i = s.lastIndexOf('.');
-        return i >= 0 ? s.slice(i) : '';
-    }
-    const findFile = (files, name) => {
-        const n = String(name || '').toLowerCase();
-        return files.find((f) => String((f && f.name) || '').toLowerCase() === n) || null;
-    };
+    // File-name resolution (resolveFile / parseExt / stemOf / normExt) is shared
+    // via the SAI-flow helpers (h.*) — see _sai-flow.js — so data_upload and
+    // decrypt_extract resolve cor3.gg's inconsistent file names the same way.
 
     // Open the local Downloads file's minigame and wait for the solver to close
     // it. Returns 'solved' | 'no-minigame' | 'aborted'.
@@ -53,47 +47,56 @@
             const LO = (root.COR3.game || {}).loadout;
             if (!LO || typeof LO.ensureDecrypt !== 'function') return { success: false, retryable: true, reason: 'loadout-api-missing' };
 
-            // Read the server's file list once (to map name→fileId for the download).
+            // Read the server's file list once (to resolve the download target).
             h.step(NODE.DE_DOWNLOAD);
             const data = await h.getFiles(job.serverId);
             const serverFiles = (data && Array.isArray(data.files)) ? data.files : [];
 
+            // {id,name,ext} descriptors (back-compat: derive from fileNames if the
+            // orchestrator didn't send the richer `files`).
+            const descriptors = (Array.isArray(job.files) && job.files.length)
+                ? job.files
+                : (job.fileNames || []).map((n) => ({ id: null, name: n, ext: null }));
+
             let solved = 0;
-            for (const name of job.fileNames) {
+            for (const desc of descriptors) {
                 if (h.abort()) return { success: false, retryable: true, reason: 'aborted' };
 
-                // Already in Downloads? else download it from the server (SAI front-half).
-                let fileId = await h.findDownloadsFileId(name);
-                if (!fileId) {
-                    const sf = findFile(serverFiles, name);
+                // Locate the LOCAL file (by id/name/stem). Not there yet? resolve the
+                // SERVER file the same way and download it (SAI front-half). cor3.gg
+                // names the same file differently in the condition / on the server /
+                // in Downloads, so we match by id → name → stem, never assuming the
+                // condition's name is the real one.
+                let local = h.resolveFile(await h.listDownloads(), desc, 'id');
+                if (!local) {
+                    const sf = h.resolveFile(serverFiles, desc, 'fileId');
                     if (sf) {
+                        h.say('info', `downloading "${sf.name}" (${sf.fileId}) for "${desc.name}"`);
                         await h.awaitAction(15000, () => root.__cor3SaiFileDownload(job.serverId, sf.fileId));
                         await h.sleep(900);
-                        fileId = await h.findDownloadsFileId(name);
+                        local = h.resolveFile(await h.listDownloads(), desc, 'id');
                     }
                 }
-                if (!fileId) { h.say('warn', `"${name}" not available locally or on server`); continue; }
+                if (!local) { h.say('warn', `"${desc.name}" not found locally or on server (by id/name/stem)`); continue; }
 
-                // Gain the decrypt capability for this extension. A failure here is
-                // per-FILE: skip this one and try the rest (different extensions may
-                // be decryptable) rather than abandoning the whole job on the first.
-                const ext = parseExt(name);
-                if (!ext) { h.say('warn', `no extension in "${name}"`); continue; }
-                // SW per file: surface INSTALL/SWAP SW only when a swap is actually
-                // needed for THIS file. planDecrypt is warm once the first ensureDecrypt
-                // has run, so this reflects the real swap rather than a cold-snapshot
-                // pre-scan guess; "ready" files go straight to SOLVE.
-                const plan = LO.planDecrypt(ext);
+                // Decrypt by the LOCAL file's REAL extension (the encrypted ext the
+                // server actually wrote, e.g. ".eb54x" — NOT the condition's ".dat").
+                // A failure here is per-FILE: skip and try the rest.
+                const ext = h.parseExt(local.name) || h.normExt(desc.ext);
+                if (!ext) { h.say('warn', `no extension on "${local.name}"`); continue; }
+                const required = Number(job.requiredPower) || 0;
+                if (required <= 0) h.say('warn', `no decrypt-power band for ${ext} — proceeding without a power gate`);
+                const plan = LO.planDecrypt(ext, required);
                 if (plan && (plan.status === 'install' || plan.status === 'swap')) h.step(NODE.DE_INSTALL_SW);
-                const cap = await LO.ensureDecrypt(ext, h.say);
-                if (!cap.ok) { h.say('warn', `cannot decrypt ${ext} (${cap.status}) — skipping "${name}"`); continue; }
+                const cap = await LO.ensureDecrypt(ext, required, h.say);
+                if (!cap.ok) { h.say('warn', `cannot decrypt ${ext} (${cap.status}) — skipping "${local.name}"`); continue; }
 
                 h.step(NODE.DE_SOLVE);
-                const res = await solveLocalFile(fileId, h);
+                const res = await solveLocalFile(local.id, h);
                 if (res === 'aborted') return { success: false, retryable: true, reason: 'aborted' };
-                if (res === 'no-minigame') { h.say('warn', `minigame did not mount for "${name}"`); continue; }
+                if (res === 'no-minigame') { h.say('warn', `minigame did not mount for "${local.name}"`); continue; }
                 solved++;
-                h.say('info', `decrypted "${name}"`);
+                h.say('info', `decrypted "${local.name}"`);
             }
 
             if (solved === 0) return { success: true, didWork: false, retryable: true, reason: 'no file decrypted this cycle' };

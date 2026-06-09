@@ -295,26 +295,27 @@
             const action = payload && payload.event && payload.event.action;
 
             if (action === 'get.mercenaries') {
-                if (payload.data && payload.data.mercenaries) {
-                    root.__cor3CachedMercIds = payload.data.mercenaries.map((m) => m.id);
-                }
-                post(MSG.WS.MERCENARIES, { data: payload.data });
-                if (!root.__cor3ExpConfigIds) {
-                    setTimeout(() => root.__cor3RequestExpeditionConfig(), 500);
-                } else if (root.__cor3CachedMercIds) {
-                    cascadeMercConfigure();
-                }
+                // The reply carries no marketId. We match it to the single
+                // in-flight request (requests are serialized — see
+                // __cor3RequestMercenaries). A reply with NO in-flight request is
+                // UNSOLICITED (post-launch merc→CONTRACTED push, or the user
+                // opening Expeditions in-game) — drop it rather than tag it with
+                // the wrong market and corrupt a stored roster.
+                if (mercInflight) mercInflight.settle(payload.data);
                 return;
             }
 
             if (action === 'get.config') {
                 if (payload.data && payload.data.locations && payload.data.locations.length > 0) {
                     const loc = payload.data.locations[0];
+                    // Post-patch: zones carry `goals` (was `objectives`), and the
+                    // configure/launch DTO field is `goalId` (was `objectiveId`).
+                    const zone = loc.zones && loc.zones[0];
+                    const goal = zone && zone.goals && zone.goals[0];
                     root.__cor3ExpConfigIds = {
                         locationConfigId: loc.id,
-                        zoneConfigId: loc.zones && loc.zones[0] ? loc.zones[0].id : null,
-                        objectiveId: loc.zones && loc.zones[0] && loc.zones[0].objectives && loc.zones[0].objectives[0]
-                            ? loc.zones[0].objectives[0].id : null,
+                        zoneConfigId: zone ? zone.id : null,
+                        goalId: goal ? goal.id : null,
                     };
                 }
                 post(MSG.WS.EXPEDITION_CONFIG, { data: payload.data });
@@ -810,7 +811,7 @@
         (function next(i) {
             if (i >= mercIds.length) return;
             setTimeout(() => {
-                root.__cor3RequestMercConfigure(mercIds[i], null, ids.locationConfigId, ids.zoneConfigId, ids.objectiveId);
+                root.__cor3RequestMercConfigure(mercIds[i], null, ids.locationConfigId, ids.zoneConfigId, ids.goalId);
                 next(i + 1);
             }, humanDelay() + 400);
         })(0);
@@ -1022,21 +1023,73 @@
         return ends;
     };
 
+    // get.mercenaries request↔reply correlation. The reply carries no marketId,
+    // so instead of a positional FIFO (which desynced on dropped/unsolicited
+    // replies and corrupted the per-market store), we SERIALIZE requests through
+    // one chain so at most ONE is outstanding at a time, and match each reply to
+    // that single in-flight request. Robust against the all-market burst,
+    // auto-send's concurrent HOME fetch, dropped/429 replies (bounded by a
+    // timeout), and unsolicited server pushes (dropped — see the handler).
+    let mercFetchChain = Promise.resolve();
+    let mercInflight = null;   // { marketId, settle } while one request awaits its reply
+
+    function deliverMercenaries(mid, data) {
+        post(MSG.WS.MERCENARIES, { data, marketId: mid });
+        // The per-merc configure-preview cascade is HOME-only: __cor3ExpConfigIds
+        // holds HOME's location/zone/goal, and HOME is the only market with
+        // hireable regular mercs.
+        if (mid === HOME_MARKET_ID && data && data.mercenaries) {
+            root.__cor3CachedMercIds = data.mercenaries.map((m) => m.id);
+            if (!root.__cor3ExpConfigIds) setTimeout(() => root.__cor3RequestExpeditionConfig(), 500);
+            else cascadeMercConfigure();
+        }
+    }
+
     root.__cor3RequestMercenaries = function (marketId) {
+        const mid = marketId || root.__cor3LastMarketId || HOME_MARKET_ID;
+        mercFetchChain = mercFetchChain.then(() => new Promise((resolve) => {
+            let done = false;
+            const settle = (data) => {
+                if (done) return;
+                done = true;
+                mercInflight = null;
+                clearTimeout(timer);
+                if (data !== undefined) deliverMercenaries(mid, data);
+                resolve();
+            };
+            mercInflight = { marketId: mid, settle };
+            // No reply (dropped / rate-limited) → advance the chain without
+            // posting, so one stuck request can't wedge later markets.
+            const timer = setTimeout(() => settle(undefined), 12000);
+            wsSendRpc('expeditions', 'get.mercenaries', { marketId: mid });
+        }));
+        return true;
+    };
+
+    // Fetch mercenaries from EVERY market — each market is its own faction with
+    // distinct mercs / elite mercs / reputation, and get.mercenaries works by
+    // marketId without connecting to the server (verified live). They serialize
+    // through mercFetchChain (one reply at a time), keeping the tagging correct.
+    root.__cor3RequestAllMercenaries = function () {
+        for (const m of (C.MARKETS || [])) root.__cor3RequestMercenaries(m.id);
+        return true;
+    };
+
+    root.__cor3RequestExpeditionConfig = function (marketId) {
+        // Post-patch the server REQUIRES a marketId on get.config ("Validation
+        // failed: marketId must be a string") — same as get.mercenaries. Default
+        // to the last-opened market / HOME, mirroring __cor3RequestMercenaries.
         const mid = marketId || root.__cor3LastMarketId || '019d3ea4-85bd-7389-904d-8f7c85841134';
-        wsSendRpc('expeditions', 'get.mercenaries', { marketId: mid });
+        wsSendRpc('expeditions', 'get.config', { marketId: mid });
         return true;
     };
 
-    root.__cor3RequestExpeditionConfig = function () {
-        wsSendRpc('expeditions', 'get.config', {});
-        return true;
-    };
-
-    root.__cor3RequestMercConfigure = function (mercenaryId, marketId, locationConfigId, zoneConfigId, objectiveId) {
+    root.__cor3RequestMercConfigure = function (mercenaryId, marketId, locationConfigId, zoneConfigId, goalId) {
         const mid = marketId || root.__cor3LastMarketId || '019d3ea4-85bd-7389-904d-8f7c85841134';
         root.__cor3PendingMercConfigures.push(mercenaryId);
-        const data = { mercenaryId, marketId: mid, locationConfigId, zoneConfigId, objectiveId, hasInsurance: false };
+        // Post-patch DTO uses `goalId` — the server rejects `objectiveId`
+        // ("property objectiveId should not exist; goalId must be a string").
+        const data = { mercenaryId, marketId: mid, locationConfigId, zoneConfigId, goalId, hasInsurance: false };
         wsSendRpc('expeditions', 'configure', data);
         return true;
     };
@@ -1390,32 +1443,35 @@
         return true;
     };
 
-    // Market UUIDs are static per cor3.gg deployment. Captured by inspecting
-    // the WS frames the site sends when the user opens Market manually.
-    const HOME_MARKET_ID = '019d3ea4-85bd-7389-904d-8f7c85841134';
-    const HOME_SERVER_ID = '019c0a5b-eeeb-7d3e-b9c9-fd5c2ba7d399';
-    const DARK_MARKET_ID = '019d3ea4-85bd-7389-904d-908ba9194aa0';
-    const DARK_SERVER_ID = '019d29c5-4b37-79bf-b23e-304d8ea03c15';
-    const SRM_MARKET_ID  = '019da731-2db5-7d76-9447-1ea3b9b78001';
-    const SRM_SERVER_ID  = '019da6f1-16f7-75a6-b6d3-0b1d5f92a108';
-    // URM7-M — USOL-faction public server (cluster "USOL RM7 South").
-    // Captured from network-map.get.map (server.marketId + server.id).
-    const USOL_MARKET_ID = '019e4065-6ae8-760d-8724-58ab4f2cf7d7';
-    const USOL_SERVER_ID = '019e4052-c317-7388-9d71-883ffb1560cd';
+    // Market UUIDs come from the shared registry (constants.js → C.MARKETS) —
+    // the single source of truth across MAIN / isolated / popup. These named
+    // consts are just convenience aliases the rest of the file already uses.
+    const MKT = {};
+    for (const m of (C.MARKETS || [])) MKT[m.key] = m;
+    const HOME_MARKET_ID = MKT.home.id;
+    const HOME_SERVER_ID = MKT.home.serverId;
+    const DARK_MARKET_ID = MKT.dark.id;
+    const DARK_SERVER_ID = MKT.dark.serverId;
+    const SRM_MARKET_ID  = MKT.srm.id;
+    const SRM_SERVER_ID  = MKT.srm.serverId;
+    const USOL_MARKET_ID = MKT.usol.id;
+    const USOL_SERVER_ID = MKT.usol.serverId;
 
-    // Map marketId → { name (for logs), unreachable (Bus type), main (Bus type) }
-    // Lets the get.jobs response handler post to the right Bus channel without
-    // an if/else cascade, and lets fetchRemoteMarketSequence find the server
-    // for any given marketId.
-    // Values reference MSG.WS.* by KEY name (e.g. main:'MARKET' resolves at
-    // dispatch time to MSG.WS.MARKET). Keeps the table compact and decoupled
-    // from the actual envelope-string format.
-    const MARKET_BY_ID = {
-        [HOME_MARKET_ID]: { serverId: HOME_SERVER_ID, name: 'home', main: 'MARKET',      unreachable: null },
-        [DARK_MARKET_ID]: { serverId: DARK_SERVER_ID, name: 'dark', main: 'DARK_MARKET', unreachable: 'DARK_MARKET_UNREACHABLE' },
-        [SRM_MARKET_ID]:  { serverId: SRM_SERVER_ID,  name: 'srm',  main: 'SRM_MARKET',  unreachable: 'SRM_MARKET_UNREACHABLE' },
-        [USOL_MARKET_ID]: { serverId: USOL_SERVER_ID, name: 'usol', main: 'USOL_MARKET', unreachable: 'USOL_MARKET_UNREACHABLE' },
-    };
+    // Map marketId → { name (for logs), serverId, unreachable (Bus type), main
+    // (Bus type) }, built from C.MARKETS. Lets the get.jobs response handler post
+    // to the right Bus channel without an if/else cascade, and lets
+    // fetchRemoteMarketSequence find the server for any given marketId. `main` /
+    // `unreachable` reference MSG.WS.* by KEY name (home → MARKET, no unreachable;
+    // others → <KEY>_MARKET / <KEY>_MARKET_UNREACHABLE), resolved at dispatch time.
+    const MARKET_BY_ID = {};
+    for (const m of (C.MARKETS || [])) {
+        MARKET_BY_ID[m.id] = {
+            serverId: m.serverId,
+            name: m.key,
+            main: m.key === 'home' ? 'MARKET' : m.key.toUpperCase() + '_MARKET',
+            unreachable: m.key === 'home' ? null : m.key.toUpperCase() + '_MARKET_UNREACHABLE',
+        };
+    }
 
     // Tracks the user's current network-map endpoint server. Initial value is
     // HOME (the default after login). Updated by:
@@ -1746,6 +1802,7 @@
         [MSG.GAME.RESPOND_DECISION]: (e) => root.__cor3RespondDecision(e.expeditionId, e.messageId, e.selectedOption),
         'COR3_REQUEST_ARCHIVED_EXPEDITIONS': () => root.__cor3RequestArchivedExpeditions(),
         'COR3_REQUEST_MERCENARIES': () => root.__cor3RequestMercenaries(),
+        'COR3_REQUEST_ALL_MERCENARIES': () => root.__cor3RequestAllMercenaries(),
         'COR3_REQUEST_EXPEDITION_CONFIG': () => root.__cor3RequestExpeditionConfig(),
         [MSG.GAME.LAUNCH_EXPEDITION]: (e) => root.__cor3LaunchExpedition(e.config),
         'COR3_RELAUNCH_EXPEDITION': (e) => root.__cor3LaunchExpedition(e.data),

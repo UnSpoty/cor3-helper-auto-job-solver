@@ -3,9 +3,9 @@
 Chrome MV3 / Firefox extension that augments [cor3.gg](https://cor3.gg) with
 markets, expeditions, alarms, minigame solvers and a full auto-jobs pipeline.
 
-**Compatibility:** cor3.gg `v1.19.43` and newer. Communicates with the game
-over the site's Socket.IO connection using its MessagePack-encoded binary
-wire format.
+**Compatibility:** cor3.gg `v1.19.43` and newer (tested against `v1.20.35`).
+Communicates with the game over the site's Socket.IO connection using its
+MessagePack-encoded binary wire format.
 
 ## Features
 
@@ -14,10 +14,15 @@ wire format.
   reset timers and reachability flags.
 - **Expeditions** — active expedition tracker, container-open + collect-all
   workflow, archived-runs history with loot / cost / risk per run.
+- **Markets & mercenaries** — one block per faction market (Home / Dark / SRM /
+  USOL) with faction reputation, mercenary trust + score breakdown, hire slots,
+  regular merc cards and elite-merc cards with unlock progress.
 - **Pending decisions** — option list per expedition with risk score, deadline
   countdown, and the bundle's own riskScore for context.
 - **Stash** — capacity bar and item list.
-- **Mercs** — roster with cost / risk badges and per-merc Auto-send toggles.
+- **Mercs** — per-market rosters with cost / risk badges and per-merc Auto-send
+  toggles; fetched for every faction market (each works by market id without
+  connecting to the server).
 - **Network Map** — BFS-depth-tagged server graph (used by the auto-jobs
   planner to prioritise leaves and avoid breaking hubs).
 - **Daily Ops** — countdown to next reset, streak/level info.
@@ -34,6 +39,11 @@ wire format.
     graph and **postponed** (never failed); FAILED jobs are surfaced in the
     Job List with an opt-in auto-dismiss; every job's skip reason is shown
     live in the popup.
+  - **Decrypt-power aware** — for `file_decryption` / `decrypt_extract` it reads
+    the job's required CRYPT RATE, then installs / swaps owned software (and,
+    if still short, the best owned hardware per slot) to clear that power bar
+    before opening the file; a job whose required power can't be reached with
+    any owned gear is bugged as `underpower` instead of being attempted.
 - **Auto-send mercenary** — when an expedition completes, opens the container,
   collects rewards, then re-launches with the cheapest available mercenary
   (configurable per merc, re-enabled when stash recovers from full).
@@ -69,6 +79,13 @@ wire format.
   module) streamed in the popup with module + level filters.
 - **Pop-out window mode** — open the popup as a standalone window
   (`?mode=popout`).
+- **Loadout panel** — a pill embedded next to cor3.gg's own Notifications
+  widget that pops a panel of equipped / owned hardware + software with live
+  resource-usage bars. Each software card shows its capability as
+  *TYPE · power · targets*, and every capability target (a file extension for
+  DECRYPT, a server type for HACK / SEARCH) is **clickable** — it opens a
+  chooser listing every owned program that covers that target (callsign / tier /
+  power band) so you can equip / unequip in one click.
 
 ## Install
 
@@ -88,7 +105,7 @@ The popup has **5 tabs** (see `TABS` in `src/ui/shell.js`):
 | Tab | What's there |
 |---|---|
 | **Overview** | Daily Ops timer (+ Solve + Auto), Home / Dark / SRM / USOL market resets with per-market auto-refresh, auto-solver toggles (decrypt / ICE WALL / simple-decrypt), theme picker + appearance toggles, alarms (add + Test/Stop-all) |
-| **Expeditions** | Active expeditions, recent runs (archived), pending decisions, auto-choose decision + risk threshold, auto-send mercenary, mercenary roster, stash |
+| **Expeditions** | Active expeditions, recent runs (archived), pending decisions, auto-choose decision + risk threshold, auto-send mercenary, per-market Markets & mercenaries (faction reputation + trust + regular/elite mercs + hire slots), stash |
 | **Auto Jobs** | START/STOP, Master Switches panel (per-market + per-type + behaviour), Network Map (context menu: Open SAI / Open Market / per-server skips), grouped Job List (Locate + Details + bugged/skip pills), compact pipeline status, activity log |
 | **Modules** | Every registered module with on/off + log toggle, grouped by category |
 | **Logs** | Live stream from all modules with module + level filters |
