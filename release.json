@@ -1,19 +1,13 @@
 {
-  "version": "1.4.1",
+  "version": "1.4.2",
   "changes": [
-    "Auto Jobs: complete rewrite — a single orchestrator runs the accept→complete pipeline over pure WebSocket, with the old DOM-driven flows removed. SAI jobs (ip injection/cleanup, file elimination, log deletion/download, data download/upload, decrypt extract) and file decryption now run headless.",
-    "Auto Jobs: accepts and works one server at a time (sequential), holding while a server's batch is still in flight so a stuck or inaccessible server can't block the others.",
-    "Auto Jobs: hacks not-accessible servers automatically over WebSocket when there is no Active Access grant, installing covering HACK software via the headless loadout API.",
-    "Auto Jobs: file decryption opens files directly over WebSocket (desktop.open.file) and auto-installs/swaps the matching DECRYPT software for the file type.",
-    "Auto Jobs: new Master Switches panel — global market and job-type toggles, plus an opt-in auto-dismiss of FAILED jobs (default off).",
-    "Auto Jobs: Job List now surfaces FAILED and 'ready to complete' jobs, adds a manual ✓ complete button, and a Job details panel showing the raw WebSocket payload.",
-    "Auto Jobs: added USOL (URM7-M) market support across all modules.",
-    "Network Map: rebuilt the popup map to match the in-game cor3.gg look, with pan/zoom; K/D servers dominate the hack indication and block Open SAI.",
-    "Expeditions: full tab rework — master switch, min/max auto-send latch, a rich roster/stash/runs view, and a profile/credits tracker.",
-    "Expeditions: EVENT-pause-aware active timer that matches the in-game countdown — starts at departure, accrues pauses, and snaps to the game's end time.",
-    "Expeditions: auto-opens the loot container on a full-success run (master-gated), with retry-safe open/collect.",
-    "ICE WALL solver: multi-anchor matching, flicker-free diff overlay, anchor-lock commit priority to stop wrong partial clicks, and an overlay-exclusion fix so the solver no longer mis-reads its own markers.",
-    "Theme: new Neon (synthwave) theme with a fixed, readable theme selector.",
-    "UI: popup now stretches to full width in the Chrome side panel and shows the build commit hash in the header."
+    "Auto Jobs: decrypt jobs now read the file's required decryption power (CRYPT RATE) and automatically install/swap the right software — and, when needed, the strongest owned hardware — to meet it. A job no owned gear can power is bugged instead of failing the minigame.",
+    "Auto Jobs: Decrypt & Extract and Data Upload now locate their target file even when cor3.gg names it differently in the job, on the server, and in your Downloads (matched by file id and base name) — fixing jobs that previously couldn't find the file.",
+    "Loadout panel: each software card now lists its capabilities (type · power · the file types / server types it covers), and every capability target is clickable to install or remove the software that provides it.",
+    "Expeditions: new per-market \"Markets & mercenaries\" view — each faction market's mercenaries (regular and elite, with unlock progress), your faction reputation, mercenary trust and hire slots, all in one place.",
+    "Expeditions: fixed launching expeditions after the latest cor3.gg content patch (objective→goal rename, market-scoped config) and restored the per-mercenary cost/risk/outcome preview.",
+    "Expeditions: the whole tab is now translated and follows your chosen language.",
+    "Overview: market countdown timers no longer flicker or reset when market data refreshes in the background; Daily Ops clears the previous day's puzzle info when the timer rolls over to a new day.",
+    "Internal: a single market registry is the source of truth for market/faction ids (home/dark/srm/usol), and the expeditions mercenary fetch is hardened against mis-tagged data. Tested against cor3.gg web version 1.20.35."
   ]
 }
