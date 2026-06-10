@@ -770,14 +770,318 @@
             }
             return exts;
         }
-        _ownedDecryptSwFor(ext) {
-            const e = String(ext || '').toLowerCase();
-            const equipped = new Set(((this._snapshot && this._snapshot.equippedSoftware) || []).map((s) => s.id));
-            return ((this._snapshot && this._snapshot.ownedSoftware) || [])
-                .filter((sw) => !equipped.has(sw.id))
-                .filter((sw) => (sw.specs || []).some((sp) => sp && sp.type === 'DECRYPT'
-                    && Array.isArray(sp.fileTypes) && sp.fileTypes.some((t) => String(t).toLowerCase() === e)))
-                .sort((a, b) => (Number(a.price) || 0) - (Number(b.price) || 0));
+        // ─── Loadout capability optimizer (headless, for Auto Jobs) ────────
+        // VERIFIED-LIVE power model (reference_hack_power_model /
+        // reference_decrypt_power_model, captured 2026-06-10):
+        //   • a capability spec is { type, <matchKey>:[targets], power:[pmin,pmax] }
+        //     (matchKey = fileTypes for DECRYPT, serverTypes for HACK/SEARCH).
+        //   • software.consuming[res] is a band array. 2-elt [lo,hi]; 3-elt
+        //     [floor,lo,hi]. BOOT floor (min supply to install) = arr[0]; the ratio
+        //     band is (2-elt) [arr0,arr1] / (3-elt) [arr1,arr2].
+        //   • per-resource ratio = clamp01((supply−lo)/(hi−lo)); the OVERALL ratio
+        //     = MIN across the consuming resources (validated: not product/avg).
+        //     supply for a resource comes from exactly ONE hardware slot
+        //     (SLOT_SUPPLY); PSU is never a ratio input.
+        //   • computedPower = floor(pmin + ratio·(pmax−pmin)) — the SAME ratio
+        //     drives every ability; equals live softwarePower[].computedPower and
+        //     sai hackTools[].hackPower (validated to the integer across configs).
+        //   • canBoot needs every consuming res supply ≥ its floor AND the PSU to
+        //     cover the draw: Σ(cpuConsuming+gpuConsuming) ≤ psu.psuPower.
+        // _optimize enumerates owned software × cpu × gpu × ram × psu (a few hundred
+        // combos) → provably optimal for the cost (fewest swaps from the current
+        // rig → lowest tier → lowest vulnerability → most power). No tier-first
+        // heuristics, no blind maxing.
+        _consumingBands(sw) {
+            const out = {};
+            for (const [k, a] of Object.entries((sw && sw.consuming) || {})) {
+                if (!Array.isArray(a) || !a.length) continue;
+                if (a.length === 2)     out[k] = { floor: +a[0], lo: +a[0], hi: +a[1] };
+                else if (a.length >= 3) out[k] = { floor: +a[0], lo: +a[1], hi: +a[2] };
+                else                    out[k] = { floor: +a[0], lo: +a[0], hi: +a[0] };
+            }
+            return out;
+        }
+        // Supply per consuming-resource from a {cpu,gpu,ram,psu} hardware pick.
+        _supplyOf(hw) {
+            const s = {};
+            for (const slot of Object.keys(SLOT_SUPPLY)) {
+                const piece = hw[slot];
+                for (const { supplyKey, specKey } of SLOT_SUPPLY[slot]) {
+                    s[supplyKey] = piece && piece.specs ? (Number(piece.specs[specKey]) || 0) : 0;
+                }
+            }
+            return s;
+        }
+        // PSU draw of a hardware pick — derived from SLOT_DEMAND (the single source
+        // of which slot.spec feeds psu_total) so the formula isn't re-encoded here.
+        _psuDraw(hw) {
+            let draw = 0;
+            for (const [slot, { demandKey, specKey }] of Object.entries(SLOT_DEMAND)) {
+                if (demandKey !== 'psu_total') continue;
+                const piece = hw[slot];
+                if (piece && piece.specs) draw += Number(piece.specs[specKey]) || 0;
+            }
+            return draw;
+        }
+        // Overall feed ratio on `supply` = min component ratio (clamped). `bands` is
+        // the precomputed _consumingBands(sw) (hoisted out of the hw loop by callers).
+        _ratioFor(bands, supply) {
+            let r = 1;
+            for (const [res, b] of Object.entries(bands)) {
+                const sup = supply[res];
+                if (sup === undefined) continue;   // resource not fed by any known slot
+                const span = b.hi - b.lo;
+                const cr = span <= 0 ? (sup >= b.floor ? 1 : 0) : Math.max(0, Math.min(1, (sup - b.lo) / span));
+                if (cr < r) r = cr;
+            }
+            return r;
+        }
+        // Does a tool with these consuming `bands` boot on `supply` (every res ≥ floor)?
+        _bootableOn(bands, supply) {
+            for (const [res, b] of Object.entries(bands)) {
+                const sup = supply[res];
+                if (sup !== undefined && sup < b.floor) return false;
+            }
+            return true;
+        }
+        // Does a spec provide `capType` covering `target` (by its matchKey list)?
+        _specCovers(spec, capType, matchKey, target) {
+            const t = String(target || '').toLowerCase();
+            return !!spec && spec.type === capType && Array.isArray(spec[matchKey])
+                && spec[matchKey].some((x) => String(x).toLowerCase() === t);
+        }
+        // The spec on `sw` that provides `capType` for `target`, or null.
+        _coveringSpec(sw, capType, matchKey, target) {
+            return (sw.specs || []).find((sp) => this._specCovers(sp, capType, matchKey, target)) || null;
+        }
+        // computedPower a spec yields at `ratio`. null if the spec carries no band.
+        _powerFromSpec(spec, ratio) {
+            if (!spec || !Array.isArray(spec.power) || spec.power.length < 2) return null;
+            const lo = Number(spec.power[0]), hi = Number(spec.power[spec.power.length - 1]);
+            if (!Number.isFinite(lo) || !Number.isFinite(hi)) return null;
+            return Math.floor(lo + ratio * (hi - lo));
+        }
+        // Owned hardware grouped by slot (includes the currently-equipped pieces —
+        // the snapshot's ownedHardware lists equipped items too).
+        _ownedBySlot() {
+            const cat = { cpu: 'CPU', gpu: 'GPU', ram: 'RAM', psu: 'PSU' };
+            const out = { cpu: [], gpu: [], ram: [], psu: [] };
+            for (const h of ((this._snapshot && this._snapshot.ownedHardware) || [])) {
+                for (const slot of Object.keys(cat)) if (h.category === cat[slot]) out[slot].push(h);
+            }
+            return out;
+        }
+        // Live server-computed power of the currently-equipped covering tool for
+        // `target` (the real number, accounts for whatever else is equipped), or
+        // null if nothing equipped covers it.
+        _equippedPowerFor(capType, matchKey, target) {
+            let best = null;
+            for (const sw of ((this._snapshot && this._snapshot.equippedSoftware) || [])) {
+                if (!this._coveringSpec(sw, capType, matchKey, target)) continue;
+                const cp = this._computedPowerFor(sw.id, capType);
+                if (cp != null) best = Math.max(best == null ? -Infinity : best, cp);
+            }
+            return best;
+        }
+        // Exhaustively find the optimal { sw, hw } to reach `need` power for
+        // `target`, dedicating the rig to ONE tool. Returns:
+        //   { status:'apply', sw, spec, hw, power, swaps }  feasible config reaches need
+        //   { status:'underpower', maxPower, sw, hw }       owns covering SW, none reaches
+        //   { status:'none' }                               no owned SW covers target
+        //   { status:'unknown' }                            no snapshot / incomplete inventory
+        _optimize(capType, matchKey, target, need) {
+            if (!this._snapshot) return { status: 'unknown' };
+            const owned = this._ownedBySlot();
+            if (!owned.cpu.length || !owned.gpu.length || !owned.ram.length || !owned.psu.length) return { status: 'unknown' };
+            const swCands = ((this._snapshot.ownedSoftware) || [])
+                .map((sw) => ({ sw, spec: this._coveringSpec(sw, capType, matchKey, target) }))
+                .filter((c) => c.spec);
+            if (!swCands.length) return { status: 'none' };
+
+            const curHw = this._snapshot.equippedHardware || {};
+            const curSw = new Set(((this._snapshot.equippedSoftware) || []).map((s) => s.id));
+            const swapCount = (sw, hw) => {
+                let n = curSw.has(sw.id) ? 0 : 1;
+                for (const slot of ['cpu', 'gpu', 'ram', 'psu']) if (!curHw[slot] || curHw[slot].id !== hw[slot].id) n++;
+                return n;
+            };
+            const tierSum = (sw, hw) => (Number(sw.tier) || 0)
+                + ['cpu', 'gpu', 'ram', 'psu'].reduce((t, s) => t + (Number(hw[s].tier) || 0), 0);
+            const vulnSum = (hw) => ['cpu', 'gpu', 'ram', 'psu'].reduce((v, s) => v + (Number(hw[s].itemVulnerability) || 0), 0);
+            // Lower cost is better: fewest swaps → lowest tier → lowest vulnerability
+            // → (tie) more power. A band-less tool (power=Infinity sentinel) is treated
+            // as LOWEST preference on the power tie-break — prefer a known-banded tool.
+            const pw = (c) => c.power === Infinity ? -1 : c.power;
+            const better = (a, b) => a.swaps !== b.swaps ? a.swaps < b.swaps
+                : a.tier !== b.tier ? a.tier < b.tier
+                : a.vuln !== b.vuln ? a.vuln < b.vuln
+                : pw(a) > pw(b);
+            // Strongest owned PSU — the most headroom any transition can be given.
+            const maxPsuPower = owned.psu.reduce((m, p) => Math.max(m, Number(p.specs && p.specs.psuPower) || 0), 0);
+            const curCpu = curHw.cpu, curGpu = curHw.gpu;
+
+            let best = null, maxAny = null;
+            for (const { sw, spec } of swCands) {
+                const bands = this._consumingBands(sw);   // invariant across the hw loop
+                for (const cpu of owned.cpu) for (const gpu of owned.gpu) for (const ram of owned.ram) for (const psu of owned.psu) {
+                    const hw = { cpu, gpu, ram, psu };
+                    const supply = this._supplyOf(hw);
+                    if (!this._bootableOn(bands, supply)) continue;
+                    if (this._psuDraw(hw) > (Number(psu.specs && psu.specs.psuPower) || 0) + 1e-9) continue;
+                    // Reject configs whose mid-swap TRANSITION peak no owned PSU can
+                    // power (the server rejects over-draw equips, so such a config can
+                    // never be physically applied — _applyHwConfig would never converge).
+                    const td = this._psuDraw(hw);
+                    const transitionPeak = Math.min(
+                        Math.max(this._psuDraw({ cpu, gpu: curGpu }), td),
+                        Math.max(this._psuDraw({ cpu: curCpu, gpu }), td));
+                    if (transitionPeak > maxPsuPower + 1e-9) continue;
+                    const p = this._powerFromSpec(spec, this._ratioFor(bands, supply));
+                    const cand = { sw, spec, hw, power: p == null ? Infinity : p,
+                        swaps: swapCount(sw, hw), tier: tierSum(sw, hw), vuln: vulnSum(hw) };
+                    // maxAny (the "best achievable" diagnostic) tracks only FINITE
+                    // powers — a band-less Infinity must not shadow a real banded ceiling.
+                    if (p != null && (maxAny == null || p > maxAny.power)) maxAny = { sw, hw, power: p };
+                    const reaches = need <= 0 || (p != null && p >= need);
+                    if (reaches && (best == null || better(cand, best))) best = cand;
+                }
+            }
+            if (best) return { status: 'apply', sw: best.sw, spec: best.spec, hw: best.hw,
+                power: best.power === Infinity ? null : best.power, swaps: best.swaps };
+            return { status: 'underpower', sw: maxAny && maxAny.sw, hw: maxAny && maxAny.hw,
+                maxPower: maxAny ? maxAny.power : null };
+        }
+        // Plan a capability: 'ready' (current rig already clears it — live-checked,
+        // so multi-tool resource sharing is accounted for) else delegate to the
+        // exhaustive optimizer ('apply'/'underpower'/'none'/'unknown').
+        _planCapability(capType, matchKey, target, need) {
+            if (!this._snapshot) return { status: 'unknown' };
+            const livePow = this._equippedPowerFor(capType, matchKey, target);
+            if (livePow != null && (need <= 0 || livePow >= need)) return { status: 'ready', power: livePow };
+            // Cache the (exhaustive) optimizer result keyed by snapshot identity, so a
+            // planX immediately followed by ensureX on the same snapshot runs it ONCE.
+            // The snapshot object is replaced wholesale on every loadout WS frame, so
+            // identity is a sound cache key (the cache auto-invalidates on any change).
+            const key = `${capType}|${String(target || '').toLowerCase()}|${need}`;
+            if (!this._optCache || this._optCache.snap !== this._snapshot) this._optCache = { snap: this._snapshot, map: new Map() };
+            if (this._optCache.map.has(key)) return this._optCache.map.get(key);
+            const r = this._optimize(capType, matchKey, target, need);
+            this._optCache.map.set(key, r);
+            return r;
+        }
+        // Map an optimizer plan onto the legacy { status, sw } shape the flows log /
+        // gate a UI node on (ready | install | swap | underpower | none | unknown).
+        _toLegacyPlan(r) {
+            if (!r || r.status === 'unknown') return { status: 'unknown' };
+            if (r.status === 'ready' || r.status === 'none') return { status: r.status };
+            if (r.status === 'underpower') return { status: 'underpower', maxPower: r.maxPower };
+            // 'swap' = the apply will change hardware OR free other equipped software
+            // (the rig is always dedicated to the chosen tool); 'install' = nothing
+            // else moves. Both light the same UI node — the label is for the log.
+            const cur = this._snapshot.equippedHardware || {};
+            const hwChanges = ['cpu', 'gpu', 'ram', 'psu'].some((s) => !cur[s] || !r.hw || cur[s].id !== r.hw[s].id);
+            const freesOther = ((this._snapshot.equippedSoftware) || []).some((s) => !r.sw || s.id !== r.sw.id);
+            return { status: (hwChanges || freesOther) ? 'swap' : 'install', sw: r.sw, hw: r.hw, power: r.power };
+        }
+        // Apply a hardware config with the MINIMAL number of equips. The server
+        // REJECTS any equip that transiently over-draws the PSU (verified live), so
+        // CPU/GPU are swapped in the lower-draw-first order, and a higher-wattage
+        // PSU is inserted FIRST only when the current one can't cover the transition
+        // (Σ cpuConsuming+gpuConsuming). RAM draws no PSU power → swapped freely. The
+        // target PSU is settled last, once the draw is final.
+        // Returns true iff every target slot is actually equipped afterwards (a
+        // rejected/late equip → false, so the caller can RETRY rather than mistake a
+        // partial rig for a power shortfall).
+        async _applyHwConfig(target, say) {
+            if (typeof root.__cor3LoadoutEquipHardware !== 'function') return false;
+            const eq = () => this._snapshot.equippedHardware || {};
+            const eqId = (slot) => { const h = eq()[slot]; return h && h.id; };
+            const psuP = (p) => Number(p && p.specs && p.specs.psuPower) || 0;
+            const swap = async (slot, want) => {
+                if (!want || eqId(slot) === want.id) return true;
+                say('info', `equipping ${slot.toUpperCase()} → "${want.name}"`);
+                root.__cor3LoadoutEquipHardware(want.id);
+                return this._waitHardwareEquipped(want.id, 6000);
+            };
+            await swap('ram', target.ram);   // no PSU draw — free to move first
+            if ((target.cpu && eqId('cpu') !== target.cpu.id) || (target.gpu && eqId('gpu') !== target.gpu.id)) {
+                const curCpu = eq().cpu, curGpu = eq().gpu;
+                const targetDraw = this._psuDraw(target);
+                const maxCpuFirst = Math.max(this._psuDraw({ cpu: target.cpu, gpu: curGpu }), targetDraw);
+                const maxGpuFirst = Math.max(this._psuDraw({ cpu: curCpu, gpu: target.gpu }), targetDraw);
+                const headroom = Math.min(maxCpuFirst, maxGpuFirst);
+                const seq = maxCpuFirst <= maxGpuFirst ? ['cpu', 'gpu'] : ['gpu', 'cpu'];
+                // Insert PSU headroom ONLY if the current PSU can't cover the swap.
+                if (psuP(eq().psu) + 1e-9 < headroom) {
+                    const owned = this._ownedBySlot();
+                    const pre = (target.psu && psuP(target.psu) + 1e-9 >= headroom) ? target.psu
+                        : owned.psu.slice().sort((a, b) => psuP(b) - psuP(a))[0];
+                    await swap('psu', pre);
+                }
+                // Converge CPU+GPU (idempotent; a couple of passes clear any
+                // transient over-draw rejection in the lower-draw-first order).
+                for (let pass = 0; pass < 3 && ((target.cpu && eqId('cpu') !== target.cpu.id) || (target.gpu && eqId('gpu') !== target.gpu.id)); pass++) {
+                    for (const slot of seq) await swap(slot, target[slot]);
+                }
+            }
+            await swap('psu', target.psu);   // settle the target PSU last
+            return ['cpu', 'gpu', 'ram', 'psu'].every((slot) => !target[slot] || eqId(slot) === target[slot].id);
+        }
+        // Execute an optimizer 'apply' plan: dedicate the rig to the chosen tool,
+        // apply its optimal hardware, equip it, then VERIFY the live power clears
+        // the bar (the predictor is exact, but never trust a write blindly).
+        async _applyOptimized(plan, capType, matchKey, target, need, say) {
+            // Both WS helpers must exist BEFORE we tear the rig down — checked up
+            // front so a missing hardware helper is a clean transient 'no-helper',
+            // not a half-stripped rig + a false permanent verdict.
+            if (typeof root.__cor3LoadoutEquipSoftware !== 'function' || typeof root.__cor3LoadoutEquipHardware !== 'function')
+                return { ok: false, status: 'no-helper', reason: 'equip-helper-missing' };
+            const { sw, hw } = plan;
+            await this._freeAllSoftwareExcept(sw.id, say);
+            // An equip that didn't take effect (transient over-draw rejection, WS /
+            // snapshot lag, or a transition no PSU can power) is RETRYABLE — never let
+            // a partial rig masquerade as a permanent 'underpower'/'install-failed' that
+            // bugs a feasible job. Permanent 'underpower' is the optimizer's pre-apply
+            // verdict (handled in _ensureCapability), not an apply-time miss.
+            if (!await this._applyHwConfig(hw, say)) {
+                say('warn', `hardware for "${sw.name}" did not fully apply — retrying next cycle`);
+                return { ok: false, status: 'apply-incomplete', reason: 'hardware-not-applied' };
+            }
+            if (!this._isEquipped(sw.id)) {
+                root.__cor3LoadoutEquipSoftware(sw.id);
+                if (!await this._waitEquipped(sw.id, true, 8000)) {
+                    say('warn', `install of "${sw.name}" did not take effect — retrying next cycle`);
+                    return { ok: false, status: 'apply-incomplete', reason: 'install-not-applied' };
+                }
+            }
+            if (need <= 0) return { ok: true, status: 'applied', power: this._equippedPowerFor(capType, matchKey, target) };
+            // Poll the live server-computed power: equippedSoftware membership can update
+            // a frame before resources.softwarePower recomputes, so a single read may be
+            // null/stale. Settle before judging.
+            let live = null;
+            const end = Date.now() + 4000;
+            do {
+                live = this._equippedPowerFor(capType, matchKey, target);
+                if (live != null && live >= need) return { ok: true, status: 'applied', power: live };
+                await dom.sleep(300);
+            } while (Date.now() < end);
+            // The optimal config IS fully applied yet power stays short — the prediction
+            // diverged for this exact config, so retrying it is futile → genuine permanent
+            // shortfall (the optimizer already enumerated every alternative).
+            say('warn', `applied "${sw.name}" (optimal config) but live power ${live} < required ${need}`);
+            return { ok: false, status: 'underpower', reason: `power-unreachable:${target}:${need}` };
+        }
+        // Shared ensure: plan → (ready/none/underpower/unknown short-circuit) →
+        // apply the optimal config. Used by apiEnsureDecrypt / apiEnsureHack.
+        async _ensureCapability(capType, matchKey, target, need, say) {
+            const verb = capType === 'HACK' ? 'hack' : capType === 'DECRYPT' ? 'decrypt' : capType.toLowerCase();
+            const plan = this._planCapability(capType, matchKey, target, need);
+            if (plan.status === 'ready')      { say('info', `loadout already ${verb}s ${target}${need ? ` (power ≥ ${need})` : ''}`); return { ok: true, status: 'ready', power: plan.power }; }
+            if (plan.status === 'unknown')    { say('warn', 'loadout snapshot still not loaded after request'); return { ok: false, status: 'unknown', reason: 'no-loadout-snapshot' }; }
+            if (plan.status === 'none')       { say('warn', `no owned software can ${verb} ${target}`); return { ok: false, status: 'none', reason: `no-software:${capType}:${target}` }; }
+            if (plan.status === 'underpower') { say('warn', `no owned software+hardware can ${verb} ${target} at power ${need} (best achievable ${plan.maxPower})`); return { ok: false, status: 'underpower', reason: `power-too-high:${target}:${need}`, maxPower: plan.maxPower }; }
+            say('info', `optimal loadout to ${verb} ${target}${need ? ` (need ${need})` : ''}: "${plan.sw.name}" on [${plan.hw.cpu.name} · ${plan.hw.gpu.name} · ${plan.hw.ram.name} · ${plan.hw.psu.name}] → predicted power ${plan.power} (${plan.swaps} swap${plan.swaps === 1 ? '' : 's'})`);
+            return this._applyOptimized(plan, capType, matchKey, target, need, say);
         }
         // The server-computed DECRYPT/HACK/SEARCH power of an EQUIPPED software,
         // from resources.softwarePower (depends on the equipped hardware feeding
@@ -791,91 +1095,11 @@
             const ab = sp.abilities.find((a) => a && a.type === capType);
             return (ab && Number.isFinite(Number(ab.computedPower))) ? Number(ab.computedPower) : null;
         }
-        // Does this software's DECRYPT spec cover `ext` at all (by fileTypes),
-        // REGARDLESS of whether it carries a power band? Used so a covering tool
-        // whose spec omits `power` (legacy/pre-update data) isn't wrongly judged
-        // "none" when there's no power gate to clear.
-        _swDecryptCovers(sw, ext) {
-            const e = String(ext || '').toLowerCase();
-            return (sw.specs || []).some((sp) => sp && sp.type === 'DECRYPT'
-                && Array.isArray(sp.fileTypes) && sp.fileTypes.some((t) => String(t).toLowerCase() === e));
-        }
-        // Max achievable DECRYPT power a software could reach for `ext` (the
-        // spec's power-band upper bound, hit with ideal hardware). null if the
-        // software doesn't cover `ext` OR its covering spec has no power band.
-        _swDecryptMaxPowerFor(sw, ext) {
-            const e = String(ext || '').toLowerCase();
-            let max = null;
-            for (const sp of (sw.specs || [])) {
-                if (sp && sp.type === 'DECRYPT' && Array.isArray(sp.fileTypes)
-                    && sp.fileTypes.some((t) => String(t).toLowerCase() === e)
-                    && Array.isArray(sp.power) && sp.power.length) {
-                    const hi = Number(sp.power[sp.power.length - 1]);
-                    if (Number.isFinite(hi)) max = Math.max(max == null ? -Infinity : max, hi);
-                }
-            }
-            return max;
-        }
-        // Best CURRENT decrypt power for `ext` among EQUIPPED covering software,
-        // or null if nothing equipped covers `ext`.
-        _equippedDecryptPowerFor(ext) {
-            const e = String(ext || '').toLowerCase();
-            let best = null;
-            for (const sw of (this._snapshot && this._snapshot.equippedSoftware) || []) {
-                const covers = (sw.specs || []).some((sp) => sp && sp.type === 'DECRYPT'
-                    && Array.isArray(sp.fileTypes) && sp.fileTypes.some((t) => String(t).toLowerCase() === e));
-                if (!covers) continue;
-                const cp = this._computedPowerFor(sw.id, 'DECRYPT');
-                if (cp != null) best = Math.max(best == null ? -Infinity : best, cp);
-            }
-            return best;
-        }
-        // Owned decrypt software CAPABLE of reaching `required` power for `ext`
-        // (spec band's max ≥ required), cheapest/lowest-tier first. `required<=0`
-        // ⇒ any covering software qualifies (no power gate).
-        _capableDecryptSwFor(ext, required) {
-            const need = Number(required) || 0;
-            const equipped = new Set(((this._snapshot && this._snapshot.equippedSoftware) || []).map((s) => s.id));
-            return ((this._snapshot && this._snapshot.ownedSoftware) || [])
-                .map((sw) => ({ sw, pmax: this._swDecryptMaxPowerFor(sw, ext), covers: this._swDecryptCovers(sw, ext) }))
-                // need>0 → require a known power band that reaches the bar.
-                // need<=0 (no gate / older job, no encryptionLevel) → ANY covering
-                // software qualifies, even one whose spec omits `power` (don't bug
-                // a job that was completable before the power-aware rewrite).
-                .filter((c) => c.covers && (need <= 0 || (c.pmax != null && c.pmax >= need)))
-                // Prefer a capable tool that's ALREADY equipped (boost its hardware
-                // rather than swap), then lowest tier / cheapest.
-                .sort((a, b) => (equipped.has(b.sw.id) ? 1 : 0) - (equipped.has(a.sw.id) ? 1 : 0)
-                    || (Number(a.sw.tier) || 0) - (Number(b.sw.tier) || 0)
-                    || (Number(a.sw.price) || 0) - (Number(b.sw.price) || 0))
-                .map((c) => c.sw);
-        }
-        // Plan how to become able to decrypt `ext` at `requiredPower`:
-        //   { status:'ready' }            equipped SW covers it AND clears the power bar
-        //   { status:'install', sw }      an owned capable SW covers it and fits as-is
-        //   { status:'swap',    sw }      owned capable SW covers it but needs resources freed / a power boost
-        //   { status:'underpower' }       we own SW covering ext but none can reach requiredPower
-        //   { status:'none' }             no owned SW covers this ext at all
-        //   { status:'unknown' }          loadout snapshot not received yet
+        // ── Public capability API (DECRYPT by fileTypes, HACK by serverTypes) ──
+        // planX → legacy { status, sw } for the flow's log + UI-node gate;
+        // ensureX applies the OPTIMAL owned software+hardware combination.
         apiPlanDecrypt(ext, requiredPower) {
-            const need = Number(requiredPower) || 0;
-            if (!this._snapshot) return { status: 'unknown' };
-            // Already covered AND powerful enough?
-            const curPow = this._equippedDecryptPowerFor(ext);
-            if (curPow != null && (need <= 0 || curPow >= need)) return { status: 'ready' };
-            const candidates = this._capableDecryptSwFor(ext, need);
-            if (candidates.length === 0) {
-                // Distinguish "no covering SW owned at all" from "owned but too
-                // weak to reach the bar". Coverage is by fileTypes (power-band
-                // independent), so a covering-but-bandless tool reads as
-                // 'underpower' under a gate — never a false 'none'.
-                const ownsCovering = ((this._snapshot.ownedSoftware) || [])
-                    .some((sw) => this._swDecryptCovers(sw, ext));
-                return { status: ownsCovering ? 'underpower' : 'none' };
-            }
-            const feasible = candidates.find((sw) => this._checkInstallFeasibility(sw).length === 0);
-            if (feasible) return { status: 'install', sw: feasible };
-            return { status: 'swap', sw: candidates[0] };
+            return this._toLegacyPlan(this._planCapability('DECRYPT', 'fileTypes', ext, Number(requiredPower) || 0));
         }
         _isEquipped(id) {
             return ((this._snapshot && this._snapshot.equippedSoftware) || []).some((s) => s.id === id);
@@ -915,17 +1139,6 @@
                 await this._waitEquipped(sw.id, false, 6000);
             }
         }
-        // The strongest owned hardware for a slot (server category enum, e.g.
-        // "CPU"): highest tier, tie-broken by the sum of the slot's supply
-        // specs. More supply → higher ratio → higher computedPower.
-        _bestOwnedHardwareForSlot(catEnum) {
-            const metrics = (SLOT_SUPPLY[String(catEnum || '').toLowerCase()] || []).map((m) => m.specKey);
-            const score = (h) => metrics.reduce((s, k) => s + (Number(h.specs && h.specs[k]) || 0), 0);
-            const items = ((this._snapshot && this._snapshot.ownedHardware) || []).filter((h) => h.category === catEnum);
-            if (!items.length) return null;
-            return items.slice().sort((a, b) =>
-                (Number(b.tier) || 0) - (Number(a.tier) || 0) || score(b) - score(a))[0];
-        }
         async _waitHardwareEquipped(id, deadlineMs) {
             const isEq = () => Object.values((this._snapshot && this._snapshot.equippedHardware) || {})
                 .some((h) => h && h.id === id);
@@ -933,96 +1146,27 @@
             while (Date.now() < end) { if (isEq()) return true; await dom.sleep(300); }
             return isEq();
         }
-        // Equip the strongest owned hardware in every slot (to lift decrypt
-        // power). Returns true if anything was actually changed.
-        async _maxOutHardwareForDecrypt(say) {
-            if (typeof root.__cor3LoadoutEquipHardware !== 'function') return false;
-            let changed = false;
-            for (const slotKey of Object.keys((this._snapshot && this._snapshot.equippedHardware) || {})) {
-                const cur = this._snapshot.equippedHardware[slotKey];
-                const catEnum = cur && cur.category;
-                if (!catEnum) continue;
-                const best = this._bestOwnedHardwareForSlot(catEnum);
-                if (best && (!cur || best.id !== cur.id)) {
-                    say('info', `boosting ${catEnum} → "${best.name}" for more decrypt power`);
-                    root.__cor3LoadoutEquipHardware(best.id);
-                    await this._waitHardwareEquipped(best.id, 6000);
-                    changed = true;
-                }
-            }
-            return changed;
-        }
         // Make the loadout able to decrypt `ext` at `requiredPower` (the file's
-        // CRYPT RATE). Picks an owned tool whose power band can reach the bar,
-        // dedicates the rig to it, and — if still short — swaps in the best owned
-        // hardware. Resolves to
-        //   { ok:true,  status:'ready'|'installed'|'swapped', power }
+        // CRYPT RATE), OPTIMALLY — the exhaustive optimizer picks the best owned
+        // software + hardware. Resolves to
+        //   { ok:true,  status:'ready'|'applied', power }
         //   { ok:false, status:'none'|'underpower'|'unknown'|'no-helper'|'install-failed', reason }
-        // `underpower` / `none` are PERMANENT (the orchestrator bugs the job).
-        // Back-compat: an old (ext, log) call (log fn in arg 2) ⇒ no power gate.
+        // 'none'/'underpower' are PERMANENT (the orchestrator bugs the job);
+        // 'unknown'/'no-helper' are transient (retry). Back-compat: an old
+        // (ext, log) call (log fn in arg 2) ⇒ no power gate.
         async apiEnsureDecrypt(ext, requiredPower, log) {
             if (typeof requiredPower === 'function' && log === undefined) { log = requiredPower; requiredPower = 0; }
             const say = typeof log === 'function' ? log : () => {};
-            const need = Number(requiredPower) || 0;
-            const e = String(ext || '').toLowerCase();
             await this._ensureSnapshot(8000, say);   // auto-fetch the snapshot if not warmed yet
-            const plan = this.apiPlanDecrypt(ext, need);
-            if (plan.status === 'ready')   { say('info', `loadout already decrypts ${ext}${need ? ` (power ≥ ${need})` : ''}`); return { ok: true, status: 'ready' }; }
-            if (plan.status === 'unknown') { say('warn', 'loadout snapshot still not loaded after request'); return { ok: false, status: 'unknown', reason: 'no-loadout-snapshot' }; }
-            if (plan.status === 'none')    { say('warn', `no owned software can decrypt ${ext}`); return { ok: false, status: 'none', reason: `no-decrypt-software:${ext}` }; }
-            if (plan.status === 'underpower') { say('warn', `owned decrypt software for ${ext} can't reach the required power ${need}`); return { ok: false, status: 'underpower', reason: `decrypt-power-too-high:${ext}:${need}` }; }
-            if (typeof root.__cor3LoadoutEquipSoftware !== 'function') return { ok: false, status: 'no-helper', reason: 'equip-helper-missing' };
-
-            const reached = () => {
-                if (!this._equippedDecryptExts().has(e)) return false;
-                if (need <= 0) return true;
-                const p = this._equippedDecryptPowerFor(ext);
-                return p != null && p >= need;
-            };
-            const candidates = this._capableDecryptSwFor(ext, need);
-            const ok = () => ({ ok: true, power: this._equippedDecryptPowerFor(ext) });
-            for (const cand of candidates) {
-                const wasEquipped = this._isEquipped(cand.id);
-                say('info', `installing "${cand.name}" for ${ext}${need ? ` (need power ${need})` : ''}`);
-                // 1) Install ALONGSIDE the current rig when it fits — don't tear
-                //    down other equipped tools (e.g. a HACK tool the SAI flow just
-                //    equipped) unless we actually need the resources. Skip the
-                //    as-is equip if the floor-check says it can't fit.
-                if (!wasEquipped && this._checkInstallFeasibility(cand).length === 0) {
-                    root.__cor3LoadoutEquipSoftware(cand.id);
-                    await this._waitEquipped(cand.id, true, 8000);
-                }
-                if (this._isEquipped(cand.id) && reached()) return Object.assign(ok(), { status: wasEquipped ? 'ready' : 'installed' });
-                // 2) Didn't fit, or shares resources and fell short on power →
-                //    dedicate the rig to this tool (free the rest) + (re)install.
-                say('info', `freeing resources to fit/boost "${cand.name}"`);
-                await this._freeAllSoftwareExcept(cand.id, say);
-                if (!this._isEquipped(cand.id)) {
-                    root.__cor3LoadoutEquipSoftware(cand.id);
-                    const applied = await this._waitEquipped(cand.id, true, 8000);
-                    if (!applied) { say('error', `install of "${cand.name}" did not take effect`); continue; }
-                }
-                if (reached()) return Object.assign(ok(), { status: wasEquipped ? 'ready' : 'installed' });
-                // 3) Still short on power — swap in the best owned hardware, re-check.
-                if (need > 0) {
-                    say('info', `"${cand.name}" power ${this._equippedDecryptPowerFor(ext)} < ${need} — boosting hardware`);
-                    const boosted = await this._maxOutHardwareForDecrypt(say);
-                    if (boosted && reached()) return Object.assign(ok(), { status: 'swapped', hardwareBoosted: true });
-                }
-                say('warn', `"${cand.name}" still under the power bar ${need} (got ${this._equippedDecryptPowerFor(ext)})`);
-            }
-            // Covered the ext but no owned SW+HW combo reaches the CRYPT RATE.
-            if (this._equippedDecryptExts().has(e)) return { ok: false, status: 'underpower', reason: `decrypt-power-unreachable:${ext}:${need}` };
-            return { ok: false, status: 'install-failed', reason: 'installed-but-ext-not-covered' };
+            return this._ensureCapability('DECRYPT', 'fileTypes', String(ext || '').toLowerCase(), Number(requiredPower) || 0, say);
         }
 
-        // ─── HACK capability API (parallel to DECRYPT above) ──────────────
-        // Same shape, but the capability is HACK and the target is a server
-        // TYPE (e.g. "CEDRT private", from the server's serverTypeName) matched
-        // against spec.serverTypes. Used by the SAI Hack-Tool flow: equip a HACK
-        // software so the server's get.login.status hackTools[] populates.
-        // (hackPower-vs-serverDefenceRate is then resolved by the hack minigame's
-        // difficulty; ensureHack only guarantees a covering tool is equipped.)
+        // _equippedHackTypes — server TYPEs any equipped HACK tool covers (drives
+        // the `hackServerTypes` export used by Auto Jobs eligibility). Power-aware
+        // planning/ensuring for HACK lives in the shared optimizer above; the
+        // target is a server TYPE (e.g. "SOYUZ public") and `requiredPower` is the
+        // server's `serverDefenceRate` (from sai get.login.status) — the bar the
+        // equipped tool's `hackPower` must clear. See reference_hack_power_model.
         _equippedHackTypes() {
             const types = new Set();
             for (const sw of (this._snapshot && this._snapshot.equippedSoftware) || []) {
@@ -1034,55 +1178,17 @@
             }
             return types;
         }
-        _ownedHackSwFor(serverType) {
-            const st = String(serverType || '').toLowerCase();
-            const equipped = new Set(((this._snapshot && this._snapshot.equippedSoftware) || []).map((s) => s.id));
-            return ((this._snapshot && this._snapshot.ownedSoftware) || [])
-                .filter((sw) => !equipped.has(sw.id))
-                .filter((sw) => (sw.specs || []).some((sp) => sp && sp.type === 'HACK'
-                    && Array.isArray(sp.serverTypes) && sp.serverTypes.some((t) => String(t).toLowerCase() === st)))
-                .sort((a, b) => (Number(a.price) || 0) - (Number(b.price) || 0));
+        apiPlanHack(serverType, requiredPower) {
+            return this._toLegacyPlan(this._planCapability('HACK', 'serverTypes', serverType, Number(requiredPower) || 0));
         }
-        // Plan how to become able to hack a server of type `serverType`:
-        //   ready | install | swap | none | unknown  (same as apiPlanDecrypt).
-        apiPlanHack(serverType) {
-            if (!this._snapshot) return { status: 'unknown' };
-            if (this._equippedHackTypes().has(String(serverType || '').toLowerCase())) return { status: 'ready' };
-            const candidates = this._ownedHackSwFor(serverType);
-            if (candidates.length === 0) return { status: 'none' };
-            const feasible = candidates.find((sw) => this._checkInstallFeasibility(sw).length === 0);
-            if (feasible) return { status: 'install', sw: feasible };
-            return { status: 'swap', sw: candidates[0] };
-        }
-        // Make the loadout able to hack `serverType`. Resolves to
-        //   { ok:true,  status:'ready'|'installed'|'swapped' }
-        //   { ok:false, status, reason }
-        async apiEnsureHack(serverType, log) {
+        // Make the loadout able to hack `serverType` at `requiredPower` (the
+        // server's serverDefenceRate), OPTIMALLY. Same result shape as
+        // apiEnsureDecrypt. Back-compat: (serverType, log) ⇒ no gate.
+        async apiEnsureHack(serverType, requiredPower, log) {
+            if (typeof requiredPower === 'function' && log === undefined) { log = requiredPower; requiredPower = 0; }
             const say = typeof log === 'function' ? log : () => {};
             await this._ensureSnapshot(8000, say);   // auto-fetch the snapshot if not warmed yet
-            const plan = this.apiPlanHack(serverType);
-            if (plan.status === 'ready')   { say('info', `loadout already hacks "${serverType}"`); return { ok: true, status: 'ready' }; }
-            if (plan.status === 'unknown') { say('warn', 'loadout snapshot still not loaded after request'); return { ok: false, status: 'unknown', reason: 'no-loadout-snapshot' }; }
-            if (plan.status === 'none')    { say('warn', `no owned software can hack "${serverType}"`); return { ok: false, status: 'none', reason: `no-hack-software:${serverType}` }; }
-            if (typeof root.__cor3LoadoutEquipSoftware !== 'function') return { ok: false, status: 'no-helper', reason: 'equip-helper-missing' };
-
-            if (plan.status === 'swap') {
-                say('info', `freeing resources — unequipping all software to fit "${plan.sw.name}"`);
-                if (typeof root.__cor3LoadoutUnequipSoftware === 'function') {
-                    for (const sw of ((this._snapshot && this._snapshot.equippedSoftware) || []).slice()) {
-                        root.__cor3LoadoutUnequipSoftware(sw.id);
-                        await this._waitEquipped(sw.id, false, 6000);
-                    }
-                }
-            }
-            say('info', `installing "${plan.sw.name}" to hack "${serverType}"`);
-            root.__cor3LoadoutEquipSoftware(plan.sw.id);
-            const equipped = await this._waitEquipped(plan.sw.id, true, 8000);
-            if (!equipped) { say('error', `install of "${plan.sw.name}" did not take effect`); return { ok: false, status: 'install-failed', reason: 'install-not-applied' }; }
-            const ready = this._equippedHackTypes().has(String(serverType).toLowerCase());
-            return ready
-                ? { ok: true, status: plan.status === 'swap' ? 'swapped' : 'installed' }
-                : { ok: false, status: 'install-failed', reason: 'installed-but-type-not-covered' };
+            return this._ensureCapability('HACK', 'serverTypes', serverType, Number(requiredPower) || 0, say);
         }
 
         // ─── Capability chip click: equip cheapest available ──────────
@@ -1660,7 +1766,7 @@
         planDecrypt: (ext, requiredPower) => loadoutPanel.apiPlanDecrypt(ext, requiredPower),
         ensureDecrypt: (ext, requiredPower, log) => loadoutPanel.apiEnsureDecrypt(ext, requiredPower, log),
         hackServerTypes: () => [...loadoutPanel._equippedHackTypes()],
-        planHack: (serverType) => loadoutPanel.apiPlanHack(serverType),
-        ensureHack: (serverType, log) => loadoutPanel.apiEnsureHack(serverType, log),
+        planHack: (serverType, requiredPower) => loadoutPanel.apiPlanHack(serverType, requiredPower),
+        ensureHack: (serverType, requiredPower, log) => loadoutPanel.apiEnsureHack(serverType, requiredPower, log),
     };
 })();

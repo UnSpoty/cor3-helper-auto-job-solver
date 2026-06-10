@@ -149,11 +149,12 @@
         const cap = await LO.ensureDecrypt(ext, required, say);
         if (!cap.ok) {
             // Split transient vs permanent: 'unknown' (loadout snapshot not in
-            // yet) and 'no-helper' (WS equip helper not ready) are timing races
-            // → retry next cycle. 'none' (no owned software covers this ext),
-            // 'underpower' (no owned SW+HW reaches the CRYPT RATE) and
-            // 'install-failed' are genuinely undoable → orchestrator bugs it.
-            const retryable = cap.status === 'unknown' || cap.status === 'no-helper';
+            // yet), 'no-helper' (WS equip helper not ready) and 'apply-incomplete'
+            // (an equip didn't take effect this cycle — over-draw rejection / WS
+            // lag) are timing races → retry next cycle. 'none' (no owned software
+            // covers this ext) and 'underpower' (no owned SW+HW reaches the CRYPT
+            // RATE) are genuinely undoable → orchestrator bugs it.
+            const retryable = cap.status === 'unknown' || cap.status === 'no-helper' || cap.status === 'apply-incomplete';
             say('warn', `cannot gain decrypt capability for ${ext} (${cap.status})`);
             return { success: true, didWork: false, retryable, reason: cap.reason };
         }

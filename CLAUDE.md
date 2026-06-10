@@ -100,7 +100,10 @@ Connect = `__cor3SetEndpoint` (`network-map.set.endpoint`). Open SAI gains
 access via `saiAccess()`: `__cor3SaiGetLoginStatus` reads `activeAccesses[]` +
 `hackTools[]`; with an **Active Access** grant it `__cor3SaiLoginWithAccess`
 (no password/passhack); with **no grant** it HACKS the server —
-`COR3.game.loadout.ensureHack(serverType)` installs covering HACK software,
+`COR3.game.loadout.ensureHack(serverType, serverDefenceRate)` runs the **loadout
+optimizer** — it exhaustively searches owned software × CPU × GPU × RAM × PSU over
+the verified power model and applies the OPTIMAL combination (fewest swaps that
+clears the defence rate; correctly reports `underpower` only when no combo can),
 clicks the hack-tool row (mounts the minigame), the standalone solver wins, and
 the freshly-granted access logs in. The only residual screen interaction is
 selecting a server node (the SVG map exposes no callable selection handler) —
@@ -334,15 +337,24 @@ Quick list of every registered module ID and its world:
   row → solver wins the minigame → use the granted access). Logs under id
   `auto-jobs`. `loadout-panel` also exposes a headless `COR3.game.loadout`
   API — `planDecrypt`/`ensureDecrypt(ext, requiredPower)` (DECRYPT, matched by
-  `fileTypes`, now **power-aware**: picks owned software whose DECRYPT power band
-  max ≥ `requiredPower`, installs alongside the current rig if it fits else frees
-  other software, and maxes out hardware per slot to raise `computedPower`; plan
-  statuses `ready`/`install`/`swap`/`none`/`underpower`/`unknown`, ensure results
-  `ready`/`installed`/`swapped`/`none`/`underpower`/`unknown`/`no-helper`/`install-failed`
-  — `none`/`underpower` are PERMANENT so the orchestrator bugs the job;
-  `requiredPower<=0` = no gate, any covering software qualifies), and
-  `planHack`/`ensureHack(serverType)` (HACK, matched by `serverTypes`) for the
-  Open-SAI hack path — both doing install/swap with the same resource-fit logic.
+  `fileTypes`) and `planHack`/`ensureHack(serverType, requiredPower)` (HACK,
+  matched by `serverTypes`; `requiredPower` = `serverDefenceRate` from `sai
+  get.login.status`). Both are thin wrappers over ONE shared **loadout optimizer**
+  (`_optimize`/`_planCapability`/`_applyOptimized`) built on the verified-live
+  power model: `computedPower = floor(pmin + ratio·(pmax−pmin))`, `ratio =
+  min` over the software's `consuming` resources of `clamp01((supply−lo)/(hi−lo))`
+  (2-elt band `[lo,hi]`, 3-elt `[floor,lo,hi]`; supply from ONE hardware slot),
+  PSU gates feasibility only (`Σ cpuConsuming+gpuConsuming ≤ psuPower`). The
+  optimizer **exhaustively searches owned software × cpu × gpu × ram × psu** and
+  applies the OPTIMAL combination (cost = fewest swaps → lowest tier → lowest
+  vulnerability → most power), then verifies the live power. `_applyHwConfig`
+  applies the MINIMAL equip sequence (lower-draw-first CPU/GPU order, PSU headroom
+  inserted only when a transition would over-draw — the server rejects over-draw
+  equips). Plan statuses `ready`/`install`/`swap`/`underpower`/`none`/`unknown`;
+  ensure resolves `{ok:true, status:'ready'|'applied', power}` or `{ok:false,
+  status:'none'|'underpower'|'unknown'|'no-helper'|'install-failed'}` —
+  `none`/`underpower` are PERMANENT (the flow bugs the job), `unknown`/`no-helper`
+  are transient. See `reference_hack_power_model` / `reference_decrypt_power_model`.
 
 **Isolated content_scripts:**
 - `auth`, `expeditions`, `archived-expeditions`, `decisions`, `market`,

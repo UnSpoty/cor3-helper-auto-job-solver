@@ -165,18 +165,24 @@
         if (typeof root.__cor3SaiHackStart !== 'function' || typeof root.__cor3SetEndpoint !== 'function') {
             say('error', 'hack: SAI hack WS helpers missing'); return RETRY('hack-ws-helpers-missing');
         }
-        // 1. Ensure a covering HACK tool is equipped — install owned software
-        //    (ensureHack swaps everything out to fit if needed) when none is.
-        if (!(status.hackTools && status.hackTools.length)) {
+        // 1. Ensure a SUFFICIENT covering HACK tool is equipped. ensureHack itself
+        //    decides whether anything is needed (it no-ops to 'ready' when the
+        //    equipped tool already clears serverDefenceRate) and maxes hardware to
+        //    clear the defence rate AND the CPU-freq boot floor otherwise — so we
+        //    call it unconditionally rather than re-deriving the sufficiency check
+        //    here. See [[reference_hack_power_model]].
+        {
             const LO = (root.COR3.game || {}).loadout;
             if (!LO || typeof LO.ensureHack !== 'function') { say('warn', 'hack: loadout API missing'); return RETRY('loadout-api-missing'); }
             if (!serverType) { say('warn', 'hack: no serverType — cannot pick HACK software'); return BUG('no-serverType'); }
-            const cap = await LO.ensureHack(serverType, say);
+            const cap = await LO.ensureHack(serverType, status.serverDefenceRate, say);
             if (!cap.ok) {
-                // 'none' (no owned HACK software covers this type) / 'install-failed'
-                // → permanent, bug it. 'unknown' / 'no-helper' → timing/WS race → retry.
-                const transient = cap.status === 'unknown' || cap.status === 'no-helper';
-                say('warn', `hack: no HACK capability for "${serverType}" (${cap.status})`);
+                // 'none' (no owned HACK software covers this type) / 'underpower'
+                // (no owned SW+HW combo reaches the defence rate) → permanent, bug it.
+                // 'unknown' / 'no-helper' / 'apply-incomplete' (an equip didn't take
+                // effect this cycle) → timing/WS race → retry.
+                const transient = cap.status === 'unknown' || cap.status === 'no-helper' || cap.status === 'apply-incomplete';
+                say('warn', `hack: no HACK capability for "${serverType}" (${cap.status}${cap.reason ? ': ' + cap.reason : ''})`);
                 return transient ? RETRY(`no-hack-capability:${cap.status}`) : BUG(`no-hack-software:${serverType}`);
             }
             status = await root.__cor3SaiGetLoginStatus(serverId);

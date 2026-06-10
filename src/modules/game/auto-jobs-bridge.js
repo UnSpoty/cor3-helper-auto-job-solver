@@ -197,13 +197,18 @@
 
         if (!grant) {
             // No Active Access → HACK the server.
-            // 1. Ensure a Hack Tool exists — install HACK software if empty.
-            if (!(status.hackTools && status.hackTools.length)) {
+            // 1. Ensure a SUFFICIENT Hack Tool is equipped. ensureHack decides for
+            //    itself whether anything is needed (no-ops to 'ready' when the
+            //    equipped tool already clears serverDefenceRate) and otherwise maxes
+            //    hardware to reach the defence rate AND clear the CPU-freq boot floor
+            //    — so we call it unconditionally instead of re-deriving the
+            //    sufficiency check here. See [[reference_hack_power_model]].
+            {
                 const LO = (root.COR3.game || {}).loadout;
                 if (!LO || typeof LO.ensureHack !== 'function') { log('error', 'Open SAI — COR3.game.loadout.ensureHack unavailable'); return; }
                 if (!serverType) { log('error', 'Open SAI — no serverType in message (needed to pick HACK software)'); return; }
-                log('info', `Open SAI → no Active Access, no Hack Tool — installing HACK software for "${serverType}"`);
-                const cap = await LO.ensureHack(serverType, (lvl, m) => log(lvl, m));
+                log('info', `Open SAI → ensuring HACK capability for "${serverType}" (defence ${status.serverDefenceRate})`);
+                const cap = await LO.ensureHack(serverType, status.serverDefenceRate, (lvl, m) => log(lvl, m));
                 if (!cap.ok) { log('warn', `Open SAI → cannot gain hack capability for "${serverType}" (${cap.status}${cap.reason ? ': ' + cap.reason : ''})`); return; }
                 status = await root.__cor3SaiGetLoginStatus(serverId);
                 if (!status || !(status.hackTools && status.hackTools.length)) { log('warn', 'Open SAI → Hack Tool still absent after install'); return; }
