@@ -26,6 +26,18 @@
     const MARKETS = ['home', 'dark', 'srm', 'usol'];
     const TYPES = Object.values(C.FLOW);
 
+    // UI Show — purely visual: hide a popup panel without touching the
+    // orchestrator (which runs in the content world, independent of this UI).
+    // Reuses the panels' own section labels as chip text. Default ON
+    // (absent === shown), like markets/jobTypes. section.js reads the same
+    // `uiShow` group and toggles each host's visibility live.
+    const UI_PANELS = [
+        { key: 'networkMap',  labelKey: 'autojobs.networkMap' },
+        { key: 'jobs',        labelKey: 'autojobs.jobs' },
+        { key: 'flowMap',     labelKey: 'autojobs.flowMap' },
+        { key: 'activityLog', labelKey: 'autojobs.activityLog' },
+    ];
+
     function el(tag, cls, text) {
         const e = document.createElement(tag);
         if (cls) e.className = cls;
@@ -109,6 +121,8 @@
                 chip(t('autojobs.market.' + slot), isOn('markets', slot), (on) => setSwitch('markets', slot, on)))));
             body.appendChild(group(t('autojobs.msJobTypes'), TYPES.map((tp) =>
                 chip(t('autojobs.jobType.' + tp), isOn('jobTypes', tp), (on) => setSwitch('jobTypes', tp, on)))));
+            body.appendChild(group(t('autojobs.msUiShow'), UI_PANELS.map((p) =>
+                chip(t(p.labelKey), isOn('uiShow', p.key), (on) => setSwitch('uiShow', p.key, on)))));
         }
 
         const unsub = Store.local.onChanged((c) => {

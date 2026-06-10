@@ -34,6 +34,7 @@
     let liveNetworkMap = null;
     let liveJobList = null;
     let liveFlowMap = null;
+    let liveVisibilitySub = null;
     let panel = null;
 
     function renderHeader(host, settings, offSolvers) {
@@ -170,7 +171,11 @@
             liveFlowMap = uiComponents.flowMap.attach(flowHost);
         }
 
-        container.appendChild(el('div', 'section-title', t('autojobs.activityLog')));
+        // The Activity-Log block (title + clear button + stream) is grouped under
+        // one host so the "UI Show" master switch can hide it as a unit.
+        const activityHost = el('div', 'aj-activity-host');
+        container.appendChild(activityHost);
+        activityHost.appendChild(el('div', 'section-title', t('autojobs.activityLog')));
 
         // Clear the Activity-Log buffer. Routed to the content world (where the
         // authoritative log ring lives — a popup-side wipe would be re-flushed by
@@ -192,13 +197,36 @@
             clearLogBtn.textContent = t('autojobs.cleared');
             setTimeout(() => { clearLogBtn.textContent = clearLogLabel; }, 1500);
         });
-        container.appendChild(clearLogBtn);
+        activityHost.appendChild(clearLogBtn);
 
         const stream = el('div', 'log-stream');
-        container.appendChild(stream);
+        activityHost.appendChild(stream);
         if (uiComponents.logViewer && typeof uiComponents.logViewer.attach === 'function') {
             liveLogViewer = uiComponents.logViewer.attach(stream, { moduleFilter: /^(auto-jobs|flow-.+)$/ });
         }
+
+        // "UI Show" master switches — purely visual. Hide a panel's host without
+        // tearing down its component, so the orchestrator (content world) and each
+        // panel's live subscriptions keep running while hidden. Default ON
+        // (absent === shown), matching master-switches.js.
+        const VIS_HOSTS = {
+            networkMap:  networkHost,
+            jobs:        jobsHost,
+            flowMap:     flowHost,
+            activityLog: activityHost,
+        };
+        function applyUiVisibility(switches) {
+            const show = (switches && switches.uiShow) || {};
+            for (const key of Object.keys(VIS_HOSTS)) {
+                VIS_HOSTS[key].style.display = show[key] === false ? 'none' : '';
+            }
+        }
+        liveVisibilitySub = Store.local.onChanged((c) => {
+            if (c[C.STORAGE_LOCAL.AJ_MASTER_SWITCHES]) {
+                applyUiVisibility(c[C.STORAGE_LOCAL.AJ_MASTER_SWITCHES].newValue || {});
+            }
+        });
+        Store.local.getOne(C.STORAGE_LOCAL.AJ_MASTER_SWITCHES, {}).then((s) => applyUiVisibility(s || {}));
 
         panel = { container, headerHost, networkHost };
     }
@@ -209,6 +237,7 @@
         if (liveNetworkMap) { try { liveNetworkMap.destroy(); } catch (_) {} liveNetworkMap = null; }
         if (liveJobList)    { try { liveJobList.destroy();    } catch (_) {} liveJobList    = null; }
         if (liveFlowMap)    { try { liveFlowMap.destroy();    } catch (_) {} liveFlowMap    = null; }
+        if (liveVisibilitySub) { try { liveVisibilitySub(); } catch (_) {} liveVisibilitySub = null; }
         panel = null;
     }
 
