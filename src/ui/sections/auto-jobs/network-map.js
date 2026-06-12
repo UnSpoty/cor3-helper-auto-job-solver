@@ -90,10 +90,46 @@
         return { positions, worldW, worldH };
     }
 
+    // Pipeline reason string for a route cut by a maintenance transit node —
+    // shown raw (English) like the Job List's skip reasons. Keep in sync with
+    // CHECK_CONDITION's dataReasons in src/modules/automation/auto-jobs/pipeline.js.
+    const NO_PATH_REASON = 'no path to server (route blocked by maintenance)';
+
+    // BFS from HOME over ALL edges (hidden gateways included): a server in
+    // maintenance may be reached as an ENDPOINT but is never expanded as a
+    // transit hop (HOME itself is expanded even while in maintenance).
+    // pipeline.js is not loaded in the popup — keep in sync with
+    // computePathReachability in src/modules/automation/auto-jobs/pipeline.js.
+    function computePathReachability(servers, connections, homeName) {
+        const inMaintenance = new Map();
+        for (const s of servers) if (s && s.name) inMaintenance.set(s.name, !!s.isInMaintenance);
+        const adj = new Map();
+        const link = (a, b) => { let l = adj.get(a); if (!l) adj.set(a, l = []); l.push(b); };
+        for (const c of connections) {
+            if (!c || !c.a || !c.b) continue;
+            link(c.a, c.b);
+            link(c.b, c.a);
+        }
+        const reached = new Set([homeName]);
+        const queue = [homeName];
+        while (queue.length) {
+            const cur = queue.shift();
+            // Reached-but-in-maintenance: endpoint only, never a transit hop.
+            if (cur !== homeName && inMaintenance.get(cur)) continue;
+            for (const n of (adj.get(cur) || [])) {
+                if (!reached.has(n)) { reached.add(n); queue.push(n); }
+            }
+        }
+        return reached;
+    }
+
     function classifyNode(node, ctx) {
         if (!node) return 'ok';
         if (node.name === ctx.homeName) return 'home';
         if (node.isInMaintenance) return 'kd';
+        // Route from HOME cut by a maintenance transit node — the same verdict
+        // the pipeline's CHECK_ACCESS stamps as `noPath` (hard skip + postpone).
+        if (ctx.pathReachable && !ctx.pathReachable.has(node.name)) return 'nopath';
         return 'ok';
     }
 
@@ -107,7 +143,8 @@
                 if (typeof rs === 'string') name = rs;
                 else if (Array.isArray(rs) && rs.length > 0) {
                     const first = rs[0];
-                    name = (typeof first === 'string') ? first : (first && (first.name || first.serverName || first.server));
+                    // serverName first — same resolution as pipeline.js's jobServer.
+                    name = (typeof first === 'string') ? first : (first && (first.serverName || first.name));
                 }
                 if (name) counts[name] = (counts[name] || 0) + 1;
             }
@@ -390,12 +427,13 @@
             // an equipped HACK tool already covers the type (hack now), grey when
             // only owned (the flow installs it on the fly via ensureHack), dim
             // when we own no HACK software for it. Accessible servers untouched.
-            // K/D servers are ALSO untouched: a server in maintenance can't be
-            // connected to at all this cycle, so it CAN'T be hacked now — K/D
-            // dominates (mirrors the pipeline's jobServerReachable, which returns
-            // false on cooldown). Its K/D badge already marks the block.
+            // K/D and no-path servers are ALSO untouched: neither can be
+            // connected to at all this cycle, so they CAN'T be hacked now — the
+            // block dominates (mirrors the pipeline's jobServerReachable, which
+            // returns false on cooldown/noPath). The K/D badge / no-path styling
+            // already marks the block.
             let nodeHackState = null;
-            if (!isHome && !s.isAccessible && cls !== 'kd') {
+            if (!isHome && !s.isAccessible && cls !== 'kd' && cls !== 'nopath') {
                 nodeHackState = (root.COR3.ajEligibility && root.COR3.ajEligibility.hackState)
                     ? root.COR3.ajEligibility.hackState(s.serverTypeName, ctx.hackDerived) : null;
                 if (nodeHackState === 'active' || nodeHackState === 'available') {
@@ -420,9 +458,10 @@
             if (s.parentName)            parts.push(t('autojobs.tipFrom', { parent: s.parentName }));
             if (isActiveEndpoint)        parts.push(t('autojobs.tipCurrentEndpoint'));
             if (cls === 'kd')            parts.push(t('autojobs.tipKd'));
+            else if (cls === 'nopath')   parts.push(NO_PATH_REASON);
             if (nodeHackState === 'active')         parts.push(t('autojobs.tipHackActive'));
             else if (nodeHackState === 'available') parts.push(t('autojobs.tipHackAvailable'));
-            else if (nodeHackState === null && !isHome && !s.isAccessible && cls !== 'kd') parts.push(t('autojobs.tipNotAccessible'));
+            else if (nodeHackState === null && !isHome && !s.isAccessible && cls !== 'kd' && cls !== 'nopath') parts.push(t('autojobs.tipNotAccessible'));
             if (jobs > 0)                parts.push(t('autojobs.tipJobsAvail', { n: jobs }));
             if (ov && ov.skip)           parts.push(t('autojobs.tipSkipped'));
             else if (disabledCount > 0)  parts.push(t('autojobs.tipTypesDisabled', { n: disabledCount }));
@@ -545,6 +584,7 @@
         // Context-menu state (RIGHT-click a server node). Left-click selects.
         const serversByName = new Map();
         let homeName = null;
+        let pathReachable = null;    // Set of names with a live route from HOME (per refresh; null = no verdict)
         let v2Enabled = false;       // Open SAI / Open Market blocked while true
         let menuEl = null, menuFor = null, menuX = 0, menuY = 0;
         let selectedName = null;     // left-click selection (persistent highlight)
@@ -671,9 +711,13 @@
             // HOME has no SAI terminal — only offer Open Market there. A server on
             // K/D can't be connected to (set.endpoint won't land while it's in
             // maintenance), so Open SAI is BLOCKED there — only the connect-less
-            // Open Market stays available. Mirrors the pipeline's K/D gate.
+            // Open Market stays available. Same for a no-path server (route from
+            // HOME cut by a maintenance transit node — set.endpoint can't land
+            // there either). Mirrors the pipeline's K/D + noPath gates.
             const onCooldown = !!(server && server.isInMaintenance);
-            if (!isHome) gameBtn(t('autojobs.openSai'), C.MSG.AUTOJOBS.OPEN_SAI_ACTION, serverName, serverId, serverType, onCooldown ? t('autojobs.ctxKdBlocked') : null);
+            const noPath = !onCooldown && !!(server && pathReachable && !pathReachable.has(server.name));
+            if (!isHome) gameBtn(t('autojobs.openSai'), C.MSG.AUTOJOBS.OPEN_SAI_ACTION, serverName, serverId, serverType,
+                onCooldown ? t('autojobs.ctxKdBlocked') : (noPath ? NO_PATH_REASON : null));
             if (isMarket) gameBtn(t('autojobs.openMarket'), C.MSG.AUTOJOBS.OPEN_MARKET_ACTION, isHome ? null : serverName, isHome ? null : serverId, null, null);
 
             menu.appendChild(htmlEl('div', 'nm-ctx-divider'));
@@ -759,7 +803,12 @@
         const summaryStatus = wrap.querySelector('.nm-summary-status');
         let firstRender = true;
 
+        // Refresh reentrancy token — refresh() awaits a storage batch, so two
+        // overlapping calls can resolve out of order; only the NEWEST may paint.
+        let refreshSeq = 0;
+
         async function refresh() {
+            const seq = ++refreshSeq;
             const [graph, home, dark, srm, usol, overrides, switches, queue, loadout] = await Promise.all([
                 Store.local.getOne(SL.NM_GRAPH, null),
                 Store.local.getOne(SL.MARKET, null),
@@ -771,6 +820,16 @@
                 Store.local.getOne(SL.AJ_JOB_QUEUE, null),
                 Store.local.getOne(SL.LOADOUT, null),
             ]);
+            if (seq !== refreshSeq) return;   // superseded while awaiting — the newer refresh paints
+
+            // Live route from HOME — mirrors the pipeline's CHECK_ACCESS verdict
+            // (noPath). Computable only off a complete envelope: GET_SERVERS
+            // hard-requires home + connections[]; a stale pre-connections
+            // envelope yields no verdict here (the orchestrator's REQUEST_NM_MAP
+            // refreshes it within seconds).
+            pathReachable = (graph && graph.home && Array.isArray(graph.servers) && Array.isArray(graph.connections))
+                ? computePathReachability(graph.servers, graph.connections, graph.home)
+                : null;
 
             // Map each market server to its slot so we can dim it when its
             // Master Switch is off. home = the graph's home (no envelope
@@ -802,6 +861,7 @@
                 overrides: overrides || {},
                 switches: switches || {},
                 marketSlotByName,
+                pathReachable,
                 // HACK capability per server type (from the loadout snapshot) —
                 // lets us highlight a not-accessible-but-hackable server.
                 hackDerived: (loadout && loadout._derived && loadout._derived.hackServerTypes) || null,
@@ -847,13 +907,17 @@
         // blocked while it is. Re-render an open menu so its buttons reflect
         // the new state immediately.
         const SS = C.STORAGE_SYNC;
+        // Once a change event has fired, the initial getOne read is stale by
+        // definition — drop it (same guard as section.js's visSeenChange).
+        let v2SeenChange = false;
         const syncUnsub = Store.sync.onChanged((c) => {
             if (!c[SS.AUTOJOBS_SETTINGS]) return;
+            v2SeenChange = true;
             const nv = c[SS.AUTOJOBS_SETTINGS].newValue;
             v2Enabled = !!(nv && nv.enabled);
             if (menuEl && menuFor != null) openMenu(menuFor, menuX, menuY);
         });
-        Store.sync.getOne(SS.AUTOJOBS_SETTINGS, { enabled: false }).then((s) => { v2Enabled = !!(s && s.enabled); });
+        Store.sync.getOne(SS.AUTOJOBS_SETTINGS, { enabled: false }).then((s) => { if (!v2SeenChange) v2Enabled = !!(s && s.enabled); });
 
         refresh();
 

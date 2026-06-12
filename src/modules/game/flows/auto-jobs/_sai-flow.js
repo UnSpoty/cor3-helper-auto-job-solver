@@ -175,7 +175,11 @@
         {
             const LO = (root.COR3.game || {}).loadout;
             if (!LO || typeof LO.ensureHack !== 'function') { say('warn', 'hack: loadout API missing'); return RETRY('loadout-api-missing'); }
-            if (!serverType) { say('warn', 'hack: no serverType — cannot pick HACK software'); return BUG('no-serverType'); }
+            // serverType comes from the NM graph (the orchestrator's payload
+            // lookup) — a server missing from a stale/partial graph is a DATA
+            // gap, not a property of the job, so retry (the graph refreshes on
+            // a timer); the attempt budget bugs a persistent absence anyway.
+            if (!serverType) { say('warn', 'hack: no serverType (server not in the NM graph this cycle) — retrying'); return RETRY('no-serverType'); }
             // serverDefenceRate is the power bar ensureHack must clear — a missing
             // field would silently become "no gate" (Number(undefined)||0 → 0) and
             // wave an underpowered tool through to an unwinnable hack. Hard-require
@@ -254,9 +258,23 @@
     async function establishAccess(serverId, serverType, serverName, say, step, accessNode) {
         if (typeof root.__cor3SetEndpoint !== 'function'
             || typeof root.__cor3SaiGetLoginStatus !== 'function'
-            || typeof root.__cor3SaiLoginWithAccess !== 'function') {
+            || typeof root.__cor3SaiLoginWithAccess !== 'function'
+            || typeof root.__cor3AwaitWsChainsIdle !== 'function') {
             return { ok: false, retryable: true, reason: 'sai-ws-helpers-missing' };
         }
+        // Drain every in-flight market dance (accept / remote-refresh /
+        // complete / dismiss chains, INCLUDING their trailing endpoint reverts)
+        // BEFORE taking the endpoint: UPDATE_MARKETS resolves on the get.jobs
+        // frame while its dance still has ~1.5s of revert left, and that stray
+        // set.endpoint(home) used to land mid-login and tear this session down.
+        // Drain FIRST, while __pipelineLocked is still free — a queued dance
+        // poll-waits on the lock, so draining after locking would stall here
+        // for the dance's full 60s lock deadline. THEN take the lock so no NEW
+        // dance (auto-refresh and the like) yanks the endpoint while this flow
+        // works; defineFlow releases it when the run ends.
+        await root.__cor3AwaitWsChainsIdle();
+        if (root.__cor3Abort) return { ok: false, retryable: true, reason: 'aborted' };
+        root.__pipelineLocked = true;
         root.__cor3SetEndpoint(serverId);
         await sleep(1500);
         if (root.__cor3Abort) return { ok: false, retryable: true, reason: 'aborted' };
@@ -309,6 +327,12 @@
             // epoch check we'd reuse a DEAD session and the WS action would fail
             // (and the job get wrongly bugged). Any epoch change → re-establish.
             if (root.__cor3CurrentEndpoint === serverId && root.__cor3EndpointEpoch === cached.epoch) {
+                // Re-take the dance hold for THIS job too: defineFlow releases
+                // it at the end of every run, and an unlocked gap between two
+                // batch jobs must not let a queued dance flip the endpoint
+                // mid-action (the epoch guard above only catches a flip that
+                // happened BEFORE this check).
+                root.__pipelineLocked = true;
                 say('info', `SAI session reused for "${serverName || serverId}" (batch — one login/server)`);
                 return { ok: true };
             }
@@ -346,9 +370,12 @@
                     }
                     lock.busy = true;
                     lock.jobId = env.jobId;
-                    // private abort flag (not a shared global) so
-                    // a concurrent flow cannot clear our abort, nor we theirs.
-                    root.__cor3Abort = false;   // a prior aborted flow may have left it set
+                    // Shared abort flag — safe to reset here because the
+                    // __cor3FlowLock above guarantees one flow at a time, and
+                    // the reset happens BEFORE run() so an abort arriving any
+                    // time during this run is never erased. A prior aborted
+                    // flow may have left it set.
+                    root.__cor3Abort = false;
                     const say = (lvl, m, ctx) => { const f = this[lvl] || this.info; f.call(this, m, ctx); };
                     // Track the last emitted node so ensureAccess knows which
                     // *_ACCESS node it was called from (for the SAI_HACK detour).
@@ -393,6 +420,11 @@
                     } finally {
                         lock.busy = false;
                         lock.jobId = null;
+                        // Release the WS-dance hold ensureAccess took for this
+                        // run (held dances — auto-refresh, queued completes —
+                        // resume between batch jobs / after the batch).
+                        // Unconditional: clearing an unset flag is a no-op.
+                        root.__pipelineLocked = false;
                     }
                 }));
 

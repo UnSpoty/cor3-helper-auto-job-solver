@@ -1167,7 +1167,15 @@
         const cfg = MARKET_BY_ID[marketId];
         const requiredServer = cfg ? cfg.serverId : null;
         const dbg = (m) => post(MSG.JOB.LOG, { msg: `[complete/dbg] ${m}`, level: 'debug' });
-        if (!requiredServer || requiredServer === HOME_SERVER_ID) {
+        // Direct send only when the endpoint ALREADY matches the market's home
+        // server — by the endpoint model that gates take/dismiss, a complete
+        // sent from anywhere else can only fail. That INCLUDES the HOME market:
+        // the old `requiredServer === HOME_SERVER_ID` shortcut fired HOME
+        // completes while the endpoint sat on a SAI batch server (deferred
+        // batch completes) or mid-way through a remote-market refresh dance,
+        // wasting the send. Going through the chain also serialises the
+        // complete against any in-flight dance.
+        if (!requiredServer || currentEndpoint === requiredServer) {
             return sendComplete();
         }
         dbg(`job ${jobId.slice(-12)} market=${cfg.name} reqServer=${requiredServer.slice(-12)} cur=${currentEndpoint.slice(-12)} — flip+send+revert`);
@@ -1204,8 +1212,11 @@
         const sendDismiss = () => wsSendRpc('market', 'job.dismiss', { marketId, jobId });
         const cfg = MARKET_BY_ID[marketId];
         const requiredServer = cfg ? cfg.serverId : null;
-        // HOME (or unknown market — best-effort) — endpoint already correct.
-        if (!requiredServer || requiredServer === HOME_SERVER_ID) {
+        // Direct send only when the endpoint already matches the market's home
+        // server (unknown market — best-effort direct send). HOME-market
+        // dismisses away from home go through the dance too — same rationale
+        // as __cor3CompleteJob above.
+        if (!requiredServer || currentEndpoint === requiredServer) {
             return sendDismiss();
         }
         // Remote market — flip endpoint, dismiss, revert. Sequenced behind
@@ -1615,6 +1626,18 @@
         return run;
     };
 
+    // Resolves once every WS dance queued RIGHT NOW (the accept chain + the
+    // remote-fetch/complete/dismiss chain) has fully finished — INCLUDING the
+    // trailing endpoint reverts. The SAI flows await this before taking the
+    // endpoint for a batch: UPDATE_MARKETS resolves on the get.jobs frame
+    // while its dance still has ~1.5s of revert left, and that stray
+    // set.endpoint(home) used to land mid-login and tear the fresh SAI
+    // session down. Dances queued AFTER this call are held off by
+    // __pipelineLocked instead (the SAI flows set it for each run).
+    root.__cor3AwaitWsChainsIdle = function () {
+        return Promise.all([inflightAcceptChain, inflightRemoteFetch]).catch(() => { /* noop */ });
+    };
+
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
     // Remote markets (Dark, SRM7-M) require the user's current network-map
@@ -1783,6 +1806,13 @@
             // fetchRemoteMarketSequence was mid-dance and ping-pong the
             // endpoint into a state where the next connect() got rejected.
             const run = Promise.all([inflightAcceptChain, inflightRemoteFetch]).then(async () => {
+                // Respect the SAI-flow hold like every other dance: a REVERT
+                // posted before a batch must not slam the endpoint to HOME
+                // mid-login once the batch has taken the lock.
+                const lockDeadline = Date.now() + 60_000;
+                while (root.__pipelineLocked && Date.now() < lockDeadline) {
+                    await sleep(500);
+                }
                 if (currentEndpoint !== HOME_SERVER_ID) {
                     sendSetEndpoint(HOME_SERVER_ID);
                     await sleep(300);

@@ -37,7 +37,11 @@
             // masked as success. None-removed AND still-present → retry next cycle.
             if (removed === 0) {
                 const data = await h.getTransit(job.serverId);
-                const present = new Set(((data && data.ips) || []).map((x) => String(x && x.ip)));
+                // A get.transit TIMEOUT must not read as "empty list": an
+                // unreadable list proves nothing about the goal — retry, never
+                // a false goal-met complete.
+                if (!data) return { success: false, retryable: true, reason: 'get.transit timed out — cannot verify cleanup goal' };
+                const present = new Set((data.ips || []).map((x) => String(x && x.ip)));
                 const allAbsent = job.ips.every((ip) => !present.has(String(ip)));
                 if (!allAbsent) return { success: false, retryable: true, reason: `0/${job.ips.length} IPs removed and some still present — retrying` };
                 h.say('info', 'all target IPs already absent — goal met');

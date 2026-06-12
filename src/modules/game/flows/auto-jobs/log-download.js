@@ -18,7 +18,10 @@
         const names = Array.isArray(job.logNames) ? job.logNames : [];
         if (!names.length) return [];
         const data = await h.getLogs(job.serverId);
-        const logs = (data && Array.isArray(data.logs)) ? data.logs : [];
+        // null = the READ failed (get.logs timeout) — distinct from "read fine,
+        // no matching log". Lets the caller report the accurate retry reason.
+        if (!data) return null;
+        const logs = Array.isArray(data.logs) ? data.logs : [];
         const out = [];
         for (const name of names) {
             const n = String(name || '').toLowerCase();
@@ -43,6 +46,8 @@
 
             h.step(NODE.LG_DOWNLOAD);
             const seqs = await resolveSeqs(job, h);
+            // null = get.logs timed out (unreadable list, not a match miss).
+            if (seqs === null) return { success: false, retryable: true, reason: 'get.logs timed out — cannot resolve target logs' };
             // No target log identified this cycle (not on the server yet, or a
             // name-match miss) → RETRY rather than permanently bug a download that
             // may become possible once the log appears.

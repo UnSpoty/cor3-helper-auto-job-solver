@@ -90,6 +90,60 @@
     function tierClass(tier) {
         return 'exp-tier exp-tier-' + String(tier || 'common').toLowerCase();
     }
+
+    // ─── Stash item sorting ───────────────────────────────────────────────
+    // Preference lives in STORAGE_SYNC.EXP_STASH_SORT: { by, dir }. Every
+    // sorter compares ASCENDING; `dir` flips the result. 'default' is the
+    // identity comparator — Array.sort is stable, so it keeps server order.
+    const STASH_SORT_FIELDS = ['default', 'name', 'price', 'tier', 'qty', 'category', 'flags', 'newest'];
+    // Direction applied when the user switches TO a field (what you most
+    // likely want first: expensive/rare/fresh on top, names A→Z).
+    const STASH_SORT_NATURAL_DIR = {
+        default: 'asc', name: 'asc', category: 'asc',
+        price: 'desc', tier: 'desc', qty: 'desc', flags: 'desc', newest: 'desc',
+    };
+    const TIER_RANK = { COMMON: 0, UNCOMMON: 1, RARE: 2, EPIC: 3, LEGENDARY: 4, MYTHIC: 5, QUEST: 6 };
+    function tierRank(item) {
+        const r = TIER_RANK[String(item.tier || '').toUpperCase()];
+        return r === undefined ? -1 : r;
+    }
+    function itemValue(item) {
+        return (typeof item.sellPrice === 'number' && item.sellPrice > 0) ? item.sellPrice : (item.baseValue || 0);
+    }
+    // Flags weight: craftable > usable > sellable — craft is the rarest
+    // and most interesting bit, so it dominates the ordering.
+    function flagsRank(item) {
+        return (item.canCraft ? 4 : 0) + (item.canUse ? 2 : 0) + (item.canSell ? 1 : 0);
+    }
+    function createdMs(item) {
+        const ts = Date.parse(item.createdAt || '');
+        return isNaN(ts) ? 0 : ts;
+    }
+    const byName = (a, b) => String(a.name || '').localeCompare(String(b.name || ''));
+    const STASH_SORTERS = {
+        default: () => 0,
+        name: byName,
+        price: (a, b) => (itemValue(a) - itemValue(b)) || byName(a, b),
+        tier: (a, b) => (tierRank(a) - tierRank(b)) || byName(a, b),
+        qty: (a, b) => ((a.quantity || 1) - (b.quantity || 1)) || byName(a, b),
+        category: (a, b) => String(a.category || '').localeCompare(String(b.category || '')) || byName(a, b),
+        flags: (a, b) => (flagsRank(a) - flagsRank(b)) || byName(a, b),
+        newest: (a, b) => (createdMs(a) - createdMs(b)) || byName(a, b),
+    };
+    // The stored object also carries view flags (hideCraft — drop items
+    // usable in crafting from the list) alongside the sort: ONE storage
+    // key holds all Items-list view preferences.
+    async function getStashView() {
+        const s = await Store.sync.getOne(C.STORAGE_SYNC.EXP_STASH_SORT, null);
+        const hideCraft = !!(s && s.hideCraft);
+        if (!s || !STASH_SORT_FIELDS.includes(s.by)) return { by: 'default', dir: 'asc', hideCraft };
+        return { by: s.by, dir: s.dir === 'asc' ? 'asc' : 'desc', hideCraft };
+    }
+    function sortStashItems(items, sort) {
+        const cmp = STASH_SORTERS[sort.by];
+        const mul = sort.dir === 'desc' ? -1 : 1;
+        return items.slice().sort((a, b) => mul * cmp(a, b));
+    }
     // Real expedition end time (ms epoch). The server sends startTime/endTime as
     // null even while RUNNING, but the expedition `id` is a UUIDv7 whose first
     // 48 bits are the launch unix-ms — so end = launch + runDuration.
@@ -135,7 +189,7 @@
             active: { listHost: null, timers: [] },
             pending: { title: null, listHost: null, timers: [] },
             markets: { host: null },
-            stash: { capacityText: null, bar: null, itemsTitle: null, itemsHost: null },
+            stash: { capacityText: null, bar: null, itemsHead: null, itemsTitle: null, sortSelect: null, sortDir: null, hideCraft: null, itemsHost: null },
             recent: { listHost: null, showAll: false, collapsed: true, caret: null },
         };
 
@@ -290,9 +344,51 @@
         sBarOuter.appendChild(sBar);
         sCard.appendChild(sBarOuter);
         container.appendChild(sCard);
+        // Items header: title + sort controls. Hidden as a whole while the
+        // stash is empty (mirrors the old single-title behaviour).
+        const itemsHead = el('div', 'row between mt-md');
+        itemsHead.style.display = 'none';
         const itemsTitle = el('div', 'section-title', '');
-        itemsTitle.style.display = 'none';
-        container.appendChild(itemsTitle);
+        itemsHead.appendChild(itemsTitle);
+        const sortWrap = el('div', 'exp-sort');
+        sortWrap.title = t('expeditions.stash.sortLabel');
+        const sortSelect = document.createElement('select');
+        sortSelect.className = 'exp-sort-select';
+        for (const field of STASH_SORT_FIELDS) {
+            const opt = document.createElement('option');
+            opt.value = field;
+            opt.textContent = t('expeditions.stash.sort.' + field);
+            sortSelect.appendChild(opt);
+        }
+        const sortDir = el('button', 'btn small exp-sort-dir', '▼');
+        sortDir.title = t('expeditions.stash.sortDirTip');
+        const hideCraftLab = el('label', 'exp-sort-hide');
+        hideCraftLab.title = t('expeditions.stash.hideCraft');
+        const hideCraftCb = document.createElement('input');
+        hideCraftCb.type = 'checkbox';
+        hideCraftLab.appendChild(hideCraftCb);
+        hideCraftLab.appendChild(el('span', '', escape(t('expeditions.stash.hideCraftShort'))));
+        sortWrap.appendChild(sortSelect);
+        sortWrap.appendChild(sortDir);
+        sortWrap.appendChild(hideCraftLab);
+        itemsHead.appendChild(sortWrap);
+        container.appendChild(itemsHead);
+        // Writes go through storage (read-modify-write — each control only
+        // touches its own fields); the sync onChanged listener re-renders,
+        // so popout + popup stay in lockstep.
+        const patchStashView = async (patch) => {
+            const v = await getStashView();
+            Store.sync.setOne(C.STORAGE_SYNC.EXP_STASH_SORT, Object.assign(v, patch));
+        };
+        sortSelect.addEventListener('change', () => {
+            const by = sortSelect.value;
+            patchStashView({ by, dir: STASH_SORT_NATURAL_DIR[by] });
+        });
+        sortDir.addEventListener('click', async () => {
+            const v = await getStashView();
+            patchStashView({ dir: v.dir === 'asc' ? 'desc' : 'asc' });
+        });
+        hideCraftCb.addEventListener('change', (e) => patchStashView({ hideCraft: e.target.checked }));
         const itemsHost = el('div', 'exp-item-grid');
         container.appendChild(itemsHost);
         itemsHost.addEventListener('click', (e) => {
@@ -310,7 +406,7 @@
                 }
             }
         });
-        panel.stash = { capacityText: sCapText, bar: sBar, itemsTitle, itemsHost };
+        panel.stash = { capacityText: sCapText, bar: sBar, itemsHead, itemsTitle, sortSelect, sortDir, hideCraft: hideCraftCb, itemsHost };
 
         // ─── Recent runs (collapsible — collapsed by default) ─────────
         const recHead = el('div', 'row between mt-md');
@@ -689,14 +785,24 @@
         }
         const items = (stash && Array.isArray(stash.items)) ? stash.items : [];
         if (!items.length) {
-            n.itemsTitle.style.display = 'none';
+            n.itemsHead.style.display = 'none';
             n.itemsHost.replaceChildren();
             return;
         }
-        n.itemsTitle.style.display = '';
-        n.itemsTitle.textContent = t('expeditions.stash.items', { n: items.length });
+        n.itemsHead.style.display = '';
+        const view = await getStashView();
+        n.sortSelect.value = view.by;
+        n.sortDir.textContent = view.dir === 'asc' ? '▲' : '▼';
+        // Direction is meaningless for server order — hide (not remove) the
+        // toggle so the controls don't jump around.
+        n.sortDir.style.visibility = view.by === 'default' ? 'hidden' : 'visible';
+        if (n.hideCraft.checked !== view.hideCraft) n.hideCraft.checked = view.hideCraft;
+        const visible = view.hideCraft ? items.filter((i) => !i.canCraft) : items;
+        n.itemsTitle.textContent = view.hideCraft
+            ? t('expeditions.stash.itemsFiltered', { shown: visible.length, total: items.length })
+            : t('expeditions.stash.items', { n: items.length });
         const cards = [];
-        for (const item of items) {
+        for (const item of sortStashItems(visible, view)) {
             // Compact single-line row: [thumb][name + tier/cat/value][actions].
             // Full description goes to the tooltip to keep the row short.
             const c = el('div', 'exp-item-card');
@@ -715,6 +821,16 @@
             if ((item.quantity || 1) > 1) sub.appendChild(el('span', 'exp-cat', `x${item.quantity}`));
             const value = item.sellPrice || item.baseValue;
             if (value) sub.appendChild(el('span', 'exp-val', num(value)));
+            if (item.canCraft) {
+                const f = el('span', 'exp-flag exp-flag-craft', '⚒ ' + escape(t('expeditions.stash.flagCraft')));
+                f.title = t('expeditions.stash.flagCraftTip');
+                sub.appendChild(f);
+            }
+            if (item.canUse) {
+                const f = el('span', 'exp-flag exp-flag-use', '▶ ' + escape(t('expeditions.stash.flagUse')));
+                f.title = t('expeditions.stash.flagUseTip');
+                sub.appendChild(f);
+            }
             info.appendChild(sub);
             c.appendChild(info);
 
@@ -830,6 +946,7 @@
                 if (!container.classList.contains('active')) return;
                 if (changes[C.STORAGE_SYNC.EXPEDITIONS_SETTINGS]) { refreshMaster(); refreshAutoSend(); }
                 if (changes[C.STORAGE_SYNC.AUTO_CHOOSE_ENABLED] || changes[C.STORAGE_SYNC.RISK_THRESHOLD]) refreshAutoChoose();
+                if (changes[C.STORAGE_SYNC.EXP_STASH_SORT]) refreshStash();
             });
         },
         async activate(container) {

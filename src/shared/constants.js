@@ -426,6 +426,13 @@
         // balance ≤ moneyMin (hysteresis latch; never self-disables).
         EXPEDITIONS_SETTINGS: 'expeditionsSettings',
 
+        // Expeditions tab — stash Items list view preferences. Single object:
+        //   { by: 'default'|'name'|'price'|'tier'|'qty'|'category'|'flags'|'newest',
+        //     dir: 'asc'|'desc',
+        //     hideCraft: bool }   // hide items usable in crafting
+        // 'default' keeps the server order ('dir' is ignored for it).
+        EXP_STASH_SORT: 'expStashSort',
+
         // Auto-decrypt / Auto-ice-wall / Auto-simple-decrypt
         AUTO_DECRYPT_ENABLED: 'autoDecryptEnabled',
         AUTO_ICE_WALL_ENABLED: 'autoIceWallEnabled',

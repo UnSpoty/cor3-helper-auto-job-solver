@@ -17,7 +17,11 @@
         const names = Array.isArray(job.logNames) ? job.logNames : [];
         if (!names.length) return [];
         const data = await h.getLogs(job.serverId);
-        const logs = (data && Array.isArray(data.logs)) ? data.logs : [];
+        // null = the READ failed (get.logs timeout) — distinct from "read fine,
+        // logs genuinely absent". The caller retries instead of claiming the
+        // deletion goal met off an unreadable list.
+        if (!data) return null;
+        const logs = Array.isArray(data.logs) ? data.logs : [];
         const out = [];
         for (const name of names) {
             const n = String(name || '').toLowerCase();
@@ -42,6 +46,8 @@
 
             h.step(NODE.LD_DELETE);
             const seqs = await resolveSeqs(job, h);
+            // null = get.logs timed out — the list was unreadable, NOT empty.
+            if (seqs === null) return { success: false, retryable: true, reason: 'get.logs timed out — cannot resolve target logs' };
             // No target log resolved → the logs are already gone from the server →
             // the deletion goal is met → complete (the server validates on
             // job.complete; a name mismatch is rejected and re-dispatched). Never a

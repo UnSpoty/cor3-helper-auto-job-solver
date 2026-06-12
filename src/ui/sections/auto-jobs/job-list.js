@@ -135,14 +135,18 @@
         } else if (isFailed) {
             head.appendChild(el('span', 'pill aj-failed', t('autojobs.pillFailed')));
             const running = !!(opts && opts.running);
+            // Without a marketId market.job.dismiss has no target — render the
+            // button disabled with the reason rather than a silently dead ✕.
+            // (Raw English, like the skip reasons / debug bundle.)
+            const noMarket = job.marketId == null;
             const dismiss = el('button', 'aj-unbug aj-dismiss', '✕');
-            dismiss.disabled = running;
-            dismiss.title = running
-                ? t('autojobs.dismissBlockedTip')
-                : t('autojobs.dismissTip');
+            dismiss.disabled = running || noMarket;
+            dismiss.title = noMarket
+                ? 'no marketId — cannot dismiss'
+                : (running ? t('autojobs.dismissBlockedTip') : t('autojobs.dismissTip'));
             dismiss.addEventListener('click', (e) => {
                 e.stopPropagation();
-                if (!running && opts && typeof opts.onDismiss === 'function') opts.onDismiss(job);
+                if (!running && !noMarket && opts && typeof opts.onDismiss === 'function') opts.onDismiss(job);
             });
             head.appendChild(dismiss);
         } else if (inProgress) {
@@ -154,12 +158,17 @@
                 // Disabled while the loop runs (the orchestrator's
                 // READY_TO_COMPLETE step claims it automatically then).
                 const running = !!(opts && opts.running);
+                // Same as the ✕: no marketId → market.job.complete has no
+                // target, so the ✓ is disabled with the reason.
+                const noMarket = job.marketId == null;
                 const complete = el('button', 'aj-unbug aj-complete', '✓');
-                complete.disabled = running;
-                complete.title = running ? t('autojobs.completeBlockedTip') : t('autojobs.completeTip');
+                complete.disabled = running || noMarket;
+                complete.title = noMarket
+                    ? 'no marketId — cannot complete'
+                    : (running ? t('autojobs.completeBlockedTip') : t('autojobs.completeTip'));
                 complete.addEventListener('click', (e) => {
                     e.stopPropagation();
-                    if (!running && opts && typeof opts.onComplete === 'function') opts.onComplete(job);
+                    if (!running && !noMarket && opts && typeof opts.onComplete === 'function') opts.onComplete(job);
                 });
                 head.appendChild(complete);
             } else {
@@ -395,13 +404,22 @@
         // rather than vanishing forever.
         const removedIds = new Set();
         function onDismiss(job) {
-            if (!job || !job.marketId) return;
+            // jobRow renders the ✕ disabled without a marketId, so this only
+            // fires if that gate is bypassed — say so instead of dying silently.
+            if (!job || !job.marketId) {
+                console.warn('[COR3.ui] dismiss refused — job has no marketId', job && job.id);
+                return;
+            }
             removedIds.add(job.id);
             sendDismissFailed(job.id, job.marketId);
             render();
         }
         function onComplete(job) {
-            if (!job || !job.marketId) return;
+            // Same as onDismiss: the ✓ is rendered disabled without a marketId.
+            if (!job || !job.marketId) {
+                console.warn('[COR3.ui] complete refused — job has no marketId', job && job.id);
+                return;
+            }
             removedIds.add(job.id);
             sendCompleteJob(job.id, job.marketId);
             render();
@@ -477,14 +495,14 @@
 
             // Counts describe the acceptance board (available jobs); in-progress
             // (TAKEN), failed (FAILED) and bugged jobs are reported separately.
-            // Bugged jobs are excluded from `skipped`/`failed` so they are not
-            // tallied under two buckets at once.
+            // Bugged jobs are excluded from `inProgress`/`readyN`/`skipped`/
+            // `failed` so they are not tallied under two buckets at once.
             const avail = rows.filter((j) => j.status === 'AVAILABLE');
-            const inProgress = rows.filter((j) => j.status === 'TAKEN').length;
+            const inProgress = rows.filter((j) => j.status === 'TAKEN' && !bugged[j.id]).length;
             // Ready-to-complete: a subset of the TAKEN total the game flags
             // canComplete (solved, awaiting the claim) — counted separately so
             // the user sees how many are done bar the orchestrator's claim step.
-            const readyN = rows.filter((j) => j.status === 'TAKEN' && j.ws && j.ws.canComplete === true).length;
+            const readyN = rows.filter((j) => j.status === 'TAKEN' && !bugged[j.id] && j.ws && j.ws.canComplete === true).length;
             const failedN = rows.filter((j) => j.status === 'FAILED' && !bugged[j.id]).length;
             const evaluated = avail.filter((j) => j.eligible != null).length;
             const eligible = avail.filter((j) => j.eligible === true).length;
@@ -539,24 +557,30 @@
         // The display re-renders when the job board OR the switches/overrides
         // change — so a Master-Switches toggle or a Network-Map server skip is
         // reflected here immediately.
+        // Once a change event has fired for a key, the initial read of that key
+        // is stale by definition — drop it (same guard as section.js's
+        // visSeenChange), one flag per key.
+        const seen = { queue: false, switches: false, overrides: false, bugged: false, pipeline: false };
         const unsub = Store.local.onChanged((changes) => {
             let dirty = false;
             if (changes[SL.AJ_JOB_QUEUE]) {
+                seen.queue = true;
                 lastQueue = changes[SL.AJ_JOB_QUEUE].newValue;
                 // A fresh board reflects reality — drop the optimistic-removal
                 // veil so any job that wasn't actually cleared/claimed re-appears.
                 removedIds.clear();
                 dirty = true;
             }
-            if (changes[SL.AJ_MASTER_SWITCHES]) { switches = changes[SL.AJ_MASTER_SWITCHES].newValue || {}; dirty = true; }
-            if (changes[SL.AJ_SERVER_OVERRIDES]) { overrides = changes[SL.AJ_SERVER_OVERRIDES].newValue || {}; dirty = true; }
-            if (changes[SL.AJ_BUGGED_JOBS]) { bugged = changes[SL.AJ_BUGGED_JOBS].newValue || {}; dirty = true; }
+            if (changes[SL.AJ_MASTER_SWITCHES]) { seen.switches = true; switches = changes[SL.AJ_MASTER_SWITCHES].newValue || {}; dirty = true; }
+            if (changes[SL.AJ_SERVER_OVERRIDES]) { seen.overrides = true; overrides = changes[SL.AJ_SERVER_OVERRIDES].newValue || {}; dirty = true; }
+            if (changes[SL.AJ_BUGGED_JOBS]) { seen.bugged = true; bugged = changes[SL.AJ_BUGGED_JOBS].newValue || {}; dirty = true; }
             // The live batch + running flag ride on the pipeline state (written
             // every node transition); pull just `batch` and `running`. Re-render
             // ONLY when the batch identity/progress or running state actually
             // changes — the state is written on every node transition, but these
             // fields change far less often, so the gate avoids a re-render storm.
             if (changes[SL.AJ_PIPELINE_STATE]) {
+                seen.pipeline = true;
                 const ps = changes[SL.AJ_PIPELINE_STATE].newValue || {};
                 const nb = ps.batch || null;
                 if (batchSig(nb) !== batchSig(batch)) { batch = nb; dirty = true; }
@@ -570,7 +594,14 @@
             Store.local.getOne(SL.AJ_SERVER_OVERRIDES, {}),
             Store.local.getOne(SL.AJ_BUGGED_JOBS, {}),
             Store.local.getOne(SL.AJ_PIPELINE_STATE, null),
-        ]).then(([q, s, o, b, ps]) => { lastQueue = q; switches = s || {}; overrides = o || {}; bugged = b || {}; batch = (ps || {}).batch || null; running = !!((ps || {}).running); render(); });
+        ]).then(([q, s, o, b, ps]) => {
+            if (!seen.queue) lastQueue = q;
+            if (!seen.switches) switches = s || {};
+            if (!seen.overrides) overrides = o || {};
+            if (!seen.bugged) bugged = b || {};
+            if (!seen.pipeline) { batch = (ps || {}).batch || null; running = !!((ps || {}).running); }
+            render();
+        });
 
         return {
             destroy() {

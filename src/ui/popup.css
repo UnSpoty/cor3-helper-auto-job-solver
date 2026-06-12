@@ -1090,6 +1090,14 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
     stroke-width: 1.8 !important;
     stroke-dasharray: none;
 }
+/* No path — the route from HOME is cut by a maintenance transit node (the
+   pipeline's `noPath` verdict): dashed danger stroke, dimmed name. */
+.nm-state-nopath .nm-card {
+    stroke: var(--os-color-danger) !important;
+    stroke-width: 1.6 !important;
+    stroke-dasharray: 2 3;
+}
+.nm-state-nopath .nm-name { opacity: 0.6; }
 .nm-state-skip .nm-name { text-decoration: line-through; opacity: 0.7; }
 .nm-state-off  .nm-card { stroke-dasharray: 3 3; }
 .nm-state-off  .nm-name { opacity: 0.55; }
@@ -1707,6 +1715,20 @@ body.theme-neon a { text-shadow: 0 0 6px rgba(0, 240, 255, 0.45); }
 .exp-tier-legendary { background: rgba(255, 200, 87, 0.20); color: var(--os-color-warning); }
 .exp-tier-quest { background: rgba(74, 222, 128, 0.18); color: var(--os-color-success); }
 .exp-item-acts { display: flex; gap: 6px; flex: none; }
+.exp-flag { font-size: 10px; padding: 1px 6px; border-radius: 8px; white-space: nowrap; }
+.exp-flag-craft { background: rgba(255, 200, 87, 0.18); color: var(--os-color-warning); }
+.exp-flag-use { background: rgba(74, 222, 128, 0.18); color: var(--os-color-success); }
+
+/* Stash items sort bar (sits in the Items header row) */
+.exp-sort { display: flex; align-items: center; gap: 6px; flex: none; }
+.exp-sort-select { padding: 2px 6px; font-size: 11px; }
+.exp-sort-dir { padding: 2px 8px; line-height: 1.4; }
+.exp-sort-hide {
+    display: flex; align-items: center; gap: 4px;
+    font-size: 11px; color: var(--os-color-text-secondary);
+    cursor: pointer; white-space: nowrap; user-select: none;
+}
+.exp-sort-hide input { margin: 0; accent-color: var(--os-color-primary-hex); }
 
 .exp-run-detail { display: none; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--os-color-divider); }
 .exp-run-detail.open { display: block; }

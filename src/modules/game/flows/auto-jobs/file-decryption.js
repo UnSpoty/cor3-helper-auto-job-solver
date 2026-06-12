@@ -159,11 +159,6 @@
             return { success: true, didWork: false, retryable, reason: cap.reason };
         }
 
-        // private abort flag (not a shared global) — reset at the
-        // start of each flow; FLOW_ABORT sets it true. Reset per flow so a
-        // concurrent flow cannot clear our abort, nor we theirs.
-        root.__cor3Abort = false;
-
         startSolvers();
         try {
             // ── MODULE:FD_OPEN_DOWNLOADS ── find the file in Downloads over WS
@@ -250,6 +245,12 @@
                 }
                 lock.busy = true;
                 lock.jobId = env.jobId;
+                // Shared abort flag — reset BEFORE the run starts (one flow at
+                // a time via __cor3FlowLock, same as _sai-flow.js). Resetting
+                // it mid-flow (the old placement, after ensureDecrypt) ERASED
+                // an abort that arrived during the loadout work, and the flow
+                // then solved + completed the job behind a stopped orchestrator.
+                root.__cor3Abort = false;
                 const say = (lvl, m, ctx) => { const f = this[lvl] || this.info; f.call(this, m, ctx); };
                 this.info(`FLOW_START file_decryption job=${env.jobId} file="${env.fileCondition}"`);
                 try {
@@ -258,7 +259,11 @@
                     this.info(`FLOW_RESULT job=${env.jobId} → ${JSON.stringify(r)}`);
                 } catch (e) {
                     this.error(`flow crashed for job ${env.jobId}`, { error: String(e), stack: e && e.stack });
-                    Bus.window.post(AJ.FLOW_RESULT, { jobId: env.jobId, marketId: env.marketId, success: false, reason: 'flow-crash' });
+                    // retryable:true — an uncaught throw is a TRANSIENT failure
+                    // (same policy as the _sai-flow factory); a genuinely
+                    // impossible job surfaces via an explicit retryable:false
+                    // result, not a crash.
+                    Bus.window.post(AJ.FLOW_RESULT, { jobId: env.jobId, marketId: env.marketId, success: false, retryable: true, reason: 'flow-crash' });
                 } finally {
                     lock.busy = false;
                     lock.jobId = null;

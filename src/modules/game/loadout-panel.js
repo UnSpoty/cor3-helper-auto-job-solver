@@ -52,8 +52,25 @@
     // Our own setting: auto-power-off when opening the panel and
     // auto-restore on close. Defaults to ON.
     const LS_AUTO_POWER_KEY = 'cor3-lp-auto-power-off';
+    // Pill position. One of:
+    //   { mode: 'auto' }           docked left of the Notifications button (default)
+    //   { mode: 'dock' }           right of the bottom-center app launcher bar
+    //   { mode: 'hud' }            hanging under the top-right account HUD
+    //                              (PATHFINDER/BALANCE) — panel opens DOWNWARD
+    //   { mode: 'custom', frac }   free spot on the bottom edge; `frac` is the
+    //                              right-offset as a fraction of the viewport
+    //                              width, so it survives resizes proportionally
+    const LS_POS_KEY = 'cor3-lp-pos';
+    const POS_MODES = ['auto', 'dock', 'hud'];
 
     const TOAST_DURATION_MS = 4500;
+    // Fixed widths from the CSS below — the layout math (_applyLayout)
+    // keeps every part of the cluster on-screen using these.
+    const PILL_W = 220;
+    const PANEL_W = 480;
+    const TOASTS_W = 320;
+    // Drop the pill within this many px of a snap target → dock there.
+    const SNAP_PX = 60;
     function findNotificationsAnchor() {
         // Anchor our pill next to cor3.gg's Notifications widget. We
         // pick a language-independent attribute baked into cor3.gg's
@@ -84,12 +101,59 @@
         // panel's _reanchor falls back to right:4 bottom:0 instead of
         // mis-anchoring to a toast.
         let el = node;
+        let wrap = null;
         while (el && el !== document.body) {
             const r = el.getBoundingClientRect();
-            if (r.bottom >= window.innerHeight - 32 && r.width >= 200) return el;
+            if (r.bottom >= window.innerHeight - 32 && r.width >= 200) { wrap = el; break; }
             el = el.parentElement;
         }
+        if (!wrap) return null;
+        // The wrapper is much wider than the visible "Notifications"
+        // sticker button (it reserves the full width of the expanded
+        // history list; the button is right-aligned inside it), so
+        // anchoring to the wrapper's LEFT edge parks the pill way left of
+        // the visible widget. Refine to the sticker button itself.
+        return wrap.querySelector('button[data-sentry-element="StickerTabWrapperStyled"]')
+            || wrap.querySelector('button')
+            || wrap;
+    }
+    // The bottom-center app launcher bar (the "taskbar" of dock icons).
+    // Its class hash (DOCK_SEL) rotates on cor3.gg deploys, so fall back
+    // to a geometry scan; cache the hit — the scan walks every <div>.
+    let dockElCache = null;
+    function findDockAnchor() {
+        const valid = (el) => {
+            if (!el || !el.isConnected) return false;
+            const r = el.getBoundingClientRect();
+            return r.width >= 300 && r.width <= 1000 && r.height >= 30 && r.height <= 90
+                && r.bottom >= window.innerHeight - 120;
+        };
+        if (valid(dockElCache)) return dockElCache;
+        dockElCache = null;
+        const bySel = document.querySelector(DOCK_SEL);
+        if (valid(bySel)) { dockElCache = bySel; return bySel; }
+        for (const d of document.querySelectorAll('div')) {
+            const r = d.getBoundingClientRect();
+            if (r.bottom >= window.innerHeight - 120 && r.height >= 30 && r.height <= 90
+                && r.width >= 300 && r.width <= 1000
+                && Math.abs((r.left + r.right) / 2 - window.innerWidth / 2) < 250) {
+                dockElCache = d;
+                return d;
+            }
+        }
         return null;
+    }
+    // The top-right account HUD (PATHFINDER / BALANCE / RENOWN) —
+    // article[data-sentry-component="AccountOverview"], verified live.
+    function findHudAnchor() {
+        const el = document.querySelector('[data-sentry-component="AccountOverview"]')
+            || document.querySelector('[data-sentry-source-file*="account-overview"]');
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        // Sanity: it must actually be the top-right HUD, not a re-used
+        // component somewhere else on the page.
+        if (r.top > window.innerHeight / 2 || r.width < 200) return null;
+        return el;
     }
     function readPowerLS() {
         try {
@@ -112,6 +176,23 @@
     function writeAutoPower(on) {
         try { localStorage.setItem(LS_AUTO_POWER_KEY, JSON.stringify(!!on)); }
         catch (_) {}
+    }
+    function readPos() {
+        try {
+            const v = localStorage.getItem(LS_POS_KEY);
+            if (v === null) return { mode: 'auto' };
+            const p = JSON.parse(v);
+            if (p && p.mode === 'custom' && typeof p.frac === 'number' && isFinite(p.frac)) return p;
+            if (p && POS_MODES.includes(p.mode)) return { mode: p.mode };
+            return { mode: 'auto' };
+        } catch (_) { return { mode: 'auto' }; }
+    }
+    function writePos(p) {
+        try { localStorage.setItem(LS_POS_KEY, JSON.stringify(p)); }
+        catch (_) {}
+    }
+    function clamp(v, lo, hi) {
+        return Math.min(hi, Math.max(lo, v));
     }
 
     // ─── Resource maps ───────────────────────────────────────────────────
@@ -149,10 +230,31 @@
 
     // ─── Style ───────────────────────────────────────────────────────────
     const CSS = `
-#${HOST_ID} { position: fixed; left: 0; right: 0; bottom: 0; height: 0; z-index: 2147483600; font-family: "Roboto Mono", monospace; color: #fff; pointer-events: none; }
-#${PILL_ID} { position: absolute; bottom: 0; width: 220px; height: 34px; background: rgba(10,14,18,0.98); border-top-left-radius: 16px; border-top-right-radius: 16px; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 14px; font-weight: 700; letter-spacing: 0.5px; cursor: pointer; pointer-events: auto; user-select: none; transition: background 120ms ease; }
+#${HOST_ID} { position: fixed; inset: 0; z-index: 2147483600; font-family: "Roboto Mono", monospace; color: #fff; pointer-events: none; }
+#${PILL_ID} { position: absolute; bottom: 0; width: ${PILL_W}px; height: 34px; background: rgba(10,14,18,0.98); border-top-left-radius: 16px; border-top-right-radius: 16px; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 14px; font-weight: 700; letter-spacing: 0.5px; cursor: pointer; pointer-events: auto; user-select: none; touch-action: none; transition: background 120ms ease; }
 #${PILL_ID}:hover { background: rgba(20,28,38,0.98); }
 #${PILL_ID} .cor3-lp-chev { font-size: 10px; opacity: 0.7; transform: translateY(-1px); }
+/* drag-to-reposition states */
+#${PILL_ID}.cor3-lp-dragging { cursor: grabbing; box-shadow: 0 0 18px rgba(118,193,209,0.45); transition: none; }
+#${PILL_ID}.cor3-lp-snap { background: rgba(118,193,209,0.28); }
+/* ghost outlines marking the snap spots while dragging */
+.cor3-lp-dock-hint { position: absolute; width: ${PILL_W}px; height: 34px; border: 2px dashed rgba(118,193,209,0.55); border-bottom: none; border-top-left-radius: 16px; border-top-right-radius: 16px; box-sizing: border-box; opacity: 0.85; pointer-events: none; }
+.cor3-lp-dock-hint.hang { border: 2px dashed rgba(118,193,209,0.55); border-top: none; border-radius: 0 0 16px 16px; }
+.cor3-lp-dock-hint.fill { border: 2px dashed rgba(118,193,209,0.55); border-radius: 10px; }
+.cor3-lp-dock-hint.near { border-color: rgba(118,193,209,1); background: rgba(118,193,209,0.14); }
+/* hud mode — the pill hangs UNDER the account HUD: radii flip down, the
+ * panel opens DOWNWARD below the pill. */
+#${HOST_ID}.cor3-lp-mode-hud #${PILL_ID} { border-radius: 0 0 16px 16px; }
+#${HOST_ID}.cor3-lp-mode-hud .cor3-lp-auto { border-radius: 0 0 16px 16px; }
+#${HOST_ID}.cor3-lp-mode-hud #${PANEL_ID} { border-top-left-radius: 0; border-bottom-left-radius: 16px; box-shadow: -8px 8px 32px rgba(0,0,0,0.4); }
+/* dock mode — the cluster sits beside the app launcher bar and dresses
+ * like it: ONE rounded block (outer corners only; the auto-pill's right
+ * border is the divider) whose height/radius/background/border are
+ * SAMPLED live from the bar (--cor3-lp-ds-* vars set by _applyLayout),
+ * so a cor3.gg restyle carries over automatically. */
+#${HOST_ID}.cor3-lp-mode-dock #${PILL_ID} { box-sizing: border-box; height: var(--cor3-lp-ds-h, 34px); background: var(--cor3-lp-ds-bg, rgba(10,14,18,0.98)); border: var(--cor3-lp-ds-border, 1px solid rgba(96,108,124,0.5)); border-left: none; border-radius: 0 var(--cor3-lp-ds-radius, 10px) var(--cor3-lp-ds-radius, 10px) 0; }
+#${HOST_ID}.cor3-lp-mode-dock .cor3-lp-auto { box-sizing: border-box; height: var(--cor3-lp-ds-h, 34px); background: var(--cor3-lp-ds-bg, rgba(10,14,18,0.98)); border: var(--cor3-lp-ds-border, 1px solid rgba(96,108,124,0.5)); border-right: 1px solid rgba(96,108,124,0.35); border-radius: var(--cor3-lp-ds-radius, 10px) 0 0 var(--cor3-lp-ds-radius, 10px); }
+#${HOST_ID}.cor3-lp-mode-dock #${PILL_ID}:hover, #${HOST_ID}.cor3-lp-mode-dock .cor3-lp-auto:hover { filter: brightness(1.3); }
 /* Auto-power mini-pill — sits to the left of the main pill, toggles
  * the "shut off system on panel open" behaviour. */
 .cor3-lp-auto { position: absolute; bottom: 0; height: 34px; padding: 0 12px; background: rgba(10,14,18,0.98); border-top-left-radius: 16px; border-top-right-radius: 16px; display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; cursor: pointer; pointer-events: auto; user-select: none; transition: background 120ms ease; border-right: 1px solid rgba(96,108,124,0.25); }
@@ -160,7 +262,7 @@
 .cor3-lp-auto .cor3-lp-auto-dot { width: 8px; height: 8px; border-radius: 50%; background: #4ade80; box-shadow: 0 0 6px #4ade80; }
 .cor3-lp-auto.off .cor3-lp-auto-dot { background: #FE4949; box-shadow: 0 0 6px #FE4949; }
 .cor3-lp-auto .cor3-lp-auto-label { color: rgba(255,255,255,0.85); }
-#${PANEL_ID} { position: absolute; bottom: 34px; width: 480px; max-height: 78vh; background: rgba(10,14,18,0.98); border-top-left-radius: 16px; display: none; flex-direction: column; overflow: hidden; pointer-events: auto; box-shadow: -8px -8px 32px rgba(0,0,0,0.4); }
+#${PANEL_ID} { position: absolute; bottom: 34px; width: ${PANEL_W}px; max-height: 78vh; background: rgba(10,14,18,0.98); border-top-left-radius: 16px; display: none; flex-direction: column; overflow: hidden; pointer-events: auto; box-shadow: -8px -8px 32px rgba(0,0,0,0.4); }
 #${PANEL_ID}.cor3-lp-open { display: flex; }
 #${PANEL_ID} .cor3-lp-header { padding: 10px 14px 8px; font-size: 13px; font-weight: 700; color: #76C1D1; letter-spacing: 0.6px; border-bottom: 1px solid rgba(96,108,124,0.25); display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 #${PANEL_ID} .cor3-lp-hdr-left  { display: flex; align-items: center; gap: 10px; }
@@ -263,7 +365,7 @@
 #${PANEL_ID} .cor3-lp-btn { background: rgba(118,193,209,0.12); color: #76C1D1; border: 1px solid rgba(118,193,209,0.35); padding: 3px 10px; border-radius: 4px; font-size: 10px; font-weight: 700; letter-spacing: 0.5px; cursor: pointer; font-family: inherit; }
 #${PANEL_ID} .cor3-lp-btn:hover { background: rgba(118,193,209,0.22); }
 /* toasts — stack above the pill, slide+fade in/out */
-.cor3-lp-toasts { position: absolute; bottom: 38px; width: 320px; display: flex; flex-direction: column; gap: 6px; pointer-events: none; z-index: 2147483601; }
+.cor3-lp-toasts { position: absolute; bottom: 38px; width: ${TOASTS_W}px; display: flex; flex-direction: column; gap: 6px; pointer-events: none; z-index: 2147483601; }
 .cor3-lp-toast { background: rgba(10,14,18,0.98); border-left: 3px solid #76C1D1; border-radius: 4px; padding: 8px 12px; color: #fff; font-family: "Roboto Mono", monospace; font-size: 11px; line-height: 1.4; box-shadow: -4px -4px 16px rgba(0,0,0,0.4); pointer-events: auto; animation: cor3-lp-toast-in 200ms ease; }
 .cor3-lp-toast.warn { border-left-color: #ffc857; }
 .cor3-lp-toast.err  { border-left-color: #FE4949; }
@@ -298,6 +400,9 @@
             this._autoPower = readAutoPower();   // setting: auto-poweroff on open
             this._savedPowerState = null;        // remembered across open/close when _autoPower=true
             this._toastSeq = 0;
+            // Drag-to-reposition state. While `_dragging`, the periodic
+            // _reanchor is suspended — the pointer owns the position.
+            this._dragging = false;
             // Watchdog for server-side mutation outcomes. When we send
             // equip/unequip/swap, we set `_pendingMutation` so the
             // snapshot handler can compare expected vs actual change.
@@ -377,6 +482,7 @@
                     </div>
                 </div>
                 <div class="cor3-lp-toasts" data-role="toasts"></div>
+                <div data-role="hints"></div>
                 <div class="cor3-lp-auto" data-role="auto">
                     <span class="cor3-lp-auto-dot"></span>
                     <span class="cor3-lp-auto-label" data-role="auto-label">${escapeHtml(t('loadout.auto.label'))}</span>
@@ -388,7 +494,21 @@
             `;
             document.body.appendChild(host);
 
-            host.querySelector(`#${PILL_ID}`).addEventListener('click', () => this._toggle());
+            // cor3.gg's desktop starts a rubber-band (marquee) selection
+            // from mousedown at the document level; presses on our UI
+            // bubble there (the host is a body child, not a desktop
+            // child). Stop them at the host so interacting with the pill
+            // or panel never starts a selection box under it.
+            host.addEventListener('pointerdown', (e) => e.stopPropagation());
+            host.addEventListener('mousedown', (e) => e.stopPropagation());
+            const pillEl = host.querySelector(`#${PILL_ID}`);
+            pillEl.title = t('loadout.pos.dragHint');
+            // No 'click' listener: open/close lives in _onPillPointerDown's
+            // pointerup branch — the pointerdown is preventDefault-ed (to
+            // also kill the marquee's compatibility mousedown + native
+            // selection), and a click after a cancelled pointerdown is not
+            // reliable across browsers.
+            pillEl.addEventListener('pointerdown', (e) => this._onPillPointerDown(e));
             host.querySelector('[data-role="auto"]').addEventListener('click', (e) => {
                 e.stopPropagation();
                 this._toggleAutoPower();
@@ -419,29 +539,262 @@
         }
 
         _reanchor() {
+            if (this._dragging) return;   // drag owns the position until drop
+            this._applyLayout(this._layoutFor(readPos()));
+        }
+
+        // Resolve a stored position to a concrete layout. A snap mode whose
+        // anchor element is missing this cycle (game UI not mounted yet, or
+        // a cor3.gg redesign) falls back to the Notifications dock WITHOUT
+        // touching storage — it self-heals the moment the anchor reappears.
+        _layoutFor(pos) {
+            if (pos.mode === 'custom') {
+                return {
+                    mode: 'custom',
+                    right: clamp(Math.round(pos.frac * window.innerWidth), 4, this._maxRight()),
+                    bottom: 0,
+                };
+            }
+            if (pos.mode === 'dock' || pos.mode === 'hud') {
+                const target = this._snapTargets().find((s) => s.mode === pos.mode);
+                if (target) return target;
+            }
+            const a = this._autoOffsets();
+            return { mode: 'auto', right: a.right, bottom: a.bottom };
+        }
+
+        // The position the pill takes when docked to the Notifications
+        // widget (or the bottom-right fallback when it isn't on screen).
+        _autoOffsets() {
+            const anchor = findNotificationsAnchor();
+            // Default fallback: bottom-right with 4px gap.
+            let right = 4;
+            let bottom = 0;
+            if (anchor) {
+                const r = anchor.getBoundingClientRect();
+                right = Math.max(0, window.innerWidth - r.left + 4);
+                bottom = Math.max(0, window.innerHeight - (r.top + r.height));
+            }
+            return { right, bottom };
+        }
+
+        // Every snap target available right now, as a concrete layout:
+        //   auto — left of the Notifications button (always present)
+        //   dock — cluster starts just right of the app launcher bar,
+        //          vertically centred on it
+        //   hud  — hanging under the account HUD, right edges aligned;
+        //          `hang: true` flips the pill shape + panel direction
+        _snapTargets() {
+            const targets = [];
+            const a = this._autoOffsets();
+            targets.push({ mode: 'auto', right: a.right, bottom: a.bottom, hang: false });
+            const dock = findDockAnchor();
+            if (dock) {
+                const r = dock.getBoundingClientRect();
+                const cs = getComputedStyle(dock);
+                targets.push({
+                    mode: 'dock',
+                    right: Math.max(4, Math.round(window.innerWidth - r.right - 8 - this._autoPillW() - PILL_W)),
+                    // same height as the bar, bottoms aligned
+                    bottom: Math.max(0, Math.round(window.innerHeight - r.bottom)),
+                    hang: false,
+                    pillH: Math.round(r.height),
+                    // live-sampled look of the launcher bar (see CSS vars)
+                    skin: {
+                        h: Math.round(r.height) + 'px',
+                        radius: cs.borderRadius,
+                        bg: cs.backgroundColor,
+                        border: `${cs.borderTopWidth} ${cs.borderTopStyle} ${cs.borderTopColor}`,
+                    },
+                });
+            }
+            const hud = findHudAnchor();
+            if (hud) {
+                const r = hud.getBoundingClientRect();
+                targets.push({
+                    mode: 'hud',
+                    right: Math.max(4, Math.round(window.innerWidth - r.right)),
+                    bottom: Math.max(0, Math.round(window.innerHeight - r.bottom - 6 - 34)),
+                    hang: true,
+                });
+            }
+            return targets;
+        }
+
+        _autoPillW() {
+            const auto = document.querySelector(`#${HOST_ID} [data-role="auto"]`);
+            return (auto && auto.offsetWidth) || 90;
+        }
+
+        // Largest right-offset that still keeps the whole pill cluster
+        // (auto mini-pill + main pill) on screen.
+        _maxRight() {
+            return Math.max(4, window.innerWidth - PILL_W - this._autoPillW() - 4);
+        }
+
+        // Position the whole cluster. `layout.mode === 'hud'` flips the
+        // open direction: pill hangs below the HUD, panel + toasts open
+        // DOWNWARD (host covers the whole viewport, so `top` works too).
+        // Panel and toasts are wider than the pill, so each gets its own
+        // clamp — a pill parked at the far left must not push them
+        // off-screen.
+        _applyLayout(layout) {
             const host = document.getElementById(HOST_ID);
             if (!host) return;
-            const anchor = findNotificationsAnchor();
+            const hud = layout.mode === 'hud';
+            const dock = layout.mode === 'dock';
+            const pillH = layout.pillH || 34;
+            host.classList.toggle('cor3-lp-mode-hud', hud);
+            host.classList.toggle('cor3-lp-mode-dock', dock);
+            if (dock && layout.skin) {
+                host.style.setProperty('--cor3-lp-ds-h', layout.skin.h);
+                host.style.setProperty('--cor3-lp-ds-radius', layout.skin.radius);
+                host.style.setProperty('--cor3-lp-ds-bg', layout.skin.bg);
+                host.style.setProperty('--cor3-lp-ds-border', layout.skin.border);
+            }
             const pill = document.getElementById(PILL_ID);
             const panel = document.getElementById(PANEL_ID);
             const auto = host.querySelector('[data-role="auto"]');
             const toasts = host.querySelector('[data-role="toasts"]');
-            // Default fallback: bottom-right with 4px gap.
-            let rightOffset = 4;
-            let bottomOffset = 0;
-            if (anchor) {
-                const r = anchor.getBoundingClientRect();
-                rightOffset = Math.max(0, window.innerWidth - r.left + 4);
-                bottomOffset = Math.max(0, window.innerHeight - (r.top + r.height));
-            }
-            // Main pill anchors at rightOffset; panel above it.
-            const PILL_W = 220;
-            if (pill)  { pill.style.right  = rightOffset + 'px';  pill.style.bottom  = bottomOffset + 'px'; }
-            if (panel) { panel.style.right = rightOffset + 'px';  panel.style.bottom = (bottomOffset + 34) + 'px'; }
+            const panelRight = clamp(layout.right, 4, Math.max(4, window.innerWidth - PANEL_W - 4));
+            const toastsRight = clamp(layout.right, 4, Math.max(4, window.innerWidth - TOASTS_W - 4));
+            const pillTop = window.innerHeight - layout.bottom - pillH;
+            if (pill)  { pill.style.right  = layout.right + 'px';  pill.style.bottom  = layout.bottom + 'px'; }
             // Auto-pill sits just to the LEFT of the main pill, sharing the same bottom.
-            if (auto) { auto.style.right = (rightOffset + PILL_W) + 'px'; auto.style.bottom = bottomOffset + 'px'; }
-            // Toasts stack above the main pill, aligned to its left edge.
-            if (toasts) { toasts.style.right = rightOffset + 'px'; toasts.style.bottom = (bottomOffset + 38) + 'px'; }
+            if (auto) { auto.style.right = (layout.right + PILL_W) + 'px'; auto.style.bottom = layout.bottom + 'px'; }
+            if (panel) {
+                panel.style.right = panelRight + 'px';
+                if (hud) {
+                    panel.style.bottom = 'auto';
+                    panel.style.top = (pillTop + pillH) + 'px';
+                    panel.style.maxHeight = Math.max(200, window.innerHeight - (pillTop + pillH) - 8) + 'px';
+                } else {
+                    panel.style.top = 'auto';
+                    panel.style.bottom = (layout.bottom + pillH) + 'px';
+                    panel.style.maxHeight = '';
+                }
+            }
+            // Toasts stack on the panel side of the pill, aligned to its edge.
+            if (toasts) {
+                toasts.style.right = toastsRight + 'px';
+                if (hud) { toasts.style.bottom = 'auto'; toasts.style.top = (pillTop + pillH + 4) + 'px'; }
+                else { toasts.style.top = 'auto'; toasts.style.bottom = (layout.bottom + pillH + 4) + 'px'; }
+            }
+            this._refreshChev();
+        }
+
+        // The pill chevron points where the panel will open (down in hud
+        // mode, up everywhere else) and flips while open.
+        _refreshChev() {
+            const chev = document.querySelector(`#${PILL_ID} [data-role="chev"]`);
+            if (!chev) return;
+            const hud = readPos().mode === 'hud';
+            chev.textContent = this._open ? (hud ? '▲' : '▼') : (hud ? '▼' : '▲');
+        }
+
+        // ─── Drag-to-reposition ───────────────────────────────────────
+        // The pill follows the pointer freely while dragging ("in hand");
+        // dashed ghosts mark every snap target. Dropping within SNAP_PX of
+        // one docks there; dropping anywhere else lets the pill fall to
+        // the bottom edge at the drop X (a custom spot). A press without
+        // movement is a click → toggles the panel (no 'click' listener —
+        // see _injectUi).
+        _onPillPointerDown(e) {
+            if (e.button !== 0) return;
+            // Kill the page's marquee selection (cancelling pointerdown
+            // suppresses its compatibility mousedown) + native drag/text
+            // selection; stopPropagation keeps document-level listeners
+            // from ever seeing the press.
+            e.preventDefault();
+            e.stopPropagation();
+            const pill = e.currentTarget;
+            const startX = e.clientX;
+            const startY = e.clientY;
+            const rect = pill.getBoundingClientRect();
+            const grabDX = e.clientX - rect.left;
+            const grabDY = e.clientY - rect.top;
+            let drop = null;   // { right, bottom, snap: target|null }
+            const onMove = (ev) => {
+                // 5px threshold separates a drag from a sloppy click.
+                if (!this._dragging && Math.hypot(ev.clientX - startX, ev.clientY - startY) < 5) return;
+                if (!this._dragging) {
+                    this._dragging = true;
+                    pill.classList.add('cor3-lp-dragging');
+                    this._renderSnapHints();
+                }
+                const right = clamp(Math.round(window.innerWidth - (ev.clientX - grabDX) - PILL_W), 4, this._maxRight());
+                const bottom = clamp(Math.round(window.innerHeight - (ev.clientY - grabDY) - 34), 0, window.innerHeight - 40);
+                const snap = this._nearestSnap(right, bottom);
+                drop = snap ? { right: snap.right, bottom: snap.bottom, snap } : { right, bottom, snap: null };
+                pill.classList.toggle('cor3-lp-snap', !!snap);
+                this._highlightSnapHint(snap);
+                this._applyLayout({ mode: snap ? snap.mode : 'drag', right: drop.right, bottom: drop.bottom });
+            };
+            const onUp = (ev) => {
+                pill.removeEventListener('pointermove', onMove);
+                pill.removeEventListener('pointerup', onUp);
+                pill.removeEventListener('pointercancel', onUp);
+                try { pill.releasePointerCapture(e.pointerId); } catch (_) {}
+                if (!this._dragging) {
+                    if (ev.type === 'pointerup') this._toggle();   // plain click
+                    return;
+                }
+                this._dragging = false;
+                pill.classList.remove('cor3-lp-dragging', 'cor3-lp-snap');
+                this._clearSnapHints();
+                if (drop && drop.snap) {
+                    writePos({ mode: drop.snap.mode });
+                    this._showToast(t('loadout.pos.dockedTitle'), 'ok', t('loadout.pos.dockedBody'));
+                } else if (drop) {
+                    writePos({ mode: 'custom', frac: drop.right / window.innerWidth });
+                    this._showToast(t('loadout.pos.movedTitle'), 'ok', t('loadout.pos.movedBody'));
+                }
+                this._reanchor();
+            };
+            try { pill.setPointerCapture(e.pointerId); } catch (_) {}
+            pill.addEventListener('pointermove', onMove);
+            pill.addEventListener('pointerup', onUp);
+            pill.addEventListener('pointercancel', onUp);
+        }
+
+        _nearestSnap(right, bottom) {
+            let best = null;
+            let bestDist = Infinity;
+            for (const s of this._snapTargets()) {
+                const d = Math.hypot(right - s.right, bottom - s.bottom);
+                if (d <= SNAP_PX && d < bestDist) { best = s; bestDist = d; }
+            }
+            return best;
+        }
+
+        _renderSnapHints() {
+            const wrap = document.querySelector(`#${HOST_ID} [data-role="hints"]`);
+            if (!wrap) return;
+            const hints = [];
+            for (const s of this._snapTargets()) {
+                const h = document.createElement('div');
+                h.className = 'cor3-lp-dock-hint' + (s.hang ? ' hang' : '') + (s.skin ? ' fill' : '');
+                h.dataset.snapMode = s.mode;
+                h.style.right = s.right + 'px';
+                h.style.bottom = s.bottom + 'px';
+                // preview the skinned shape (dock target matches the bar)
+                if (s.skin) { h.style.height = s.skin.h; h.style.borderRadius = s.skin.radius; }
+                hints.push(h);
+            }
+            wrap.replaceChildren(...hints);
+        }
+
+        _highlightSnapHint(snap) {
+            const wrap = document.querySelector(`#${HOST_ID} [data-role="hints"]`);
+            if (!wrap) return;
+            for (const h of wrap.children) {
+                h.classList.toggle('near', !!snap && h.dataset.snapMode === snap.mode);
+            }
+        }
+
+        _clearSnapHints() {
+            const wrap = document.querySelector(`#${HOST_ID} [data-role="hints"]`);
+            if (wrap) wrap.replaceChildren();
         }
 
         // ─── Open / close ─────────────────────────────────────────────
@@ -452,9 +805,10 @@
         async _open_() {
             this._open = true;
             const panel = document.getElementById(PANEL_ID);
-            const chev = document.querySelector(`#${PILL_ID} [data-role="chev"]`);
             if (panel) panel.classList.add('cor3-lp-open');
-            if (chev) chev.textContent = '▼';
+            // Re-layout right away — the panel's open direction (up, or
+            // down in hud mode) and max-height are set by _applyLayout.
+            this._reanchor();
             // Auto power-off (default ON) — remember the user's prior
             // state, then force off while the panel is open. Restored
             // on close. Skips if the user already had it off.
@@ -480,9 +834,8 @@
             this._hoveringHwId = null;
             this._closeCapChooser();
             const panel = document.getElementById(PANEL_ID);
-            const chev = document.querySelector(`#${PILL_ID} [data-role="chev"]`);
             if (panel) panel.classList.remove('cor3-lp-open');
-            if (chev) chev.textContent = '▲';
+            this._refreshChev();
             // Restore prior power state if auto-mode is on and we
             // actually changed it on open. If user had it off prior to
             // open, we leave it off — _savedPowerState captured that.
@@ -545,6 +898,8 @@
             setText('[data-role="auto-label"]', t('loadout.auto.label'));
             const power = host.querySelector('[data-role="power"]');
             if (power) power.title = t('loadout.power.tooltip');
+            const pill = host.querySelector(`#${PILL_ID}`);
+            if (pill) pill.title = t('loadout.pos.dragHint');
             this._refreshPowerBtn();
             this._refreshAutoPill();
             if (this._open) this._render();

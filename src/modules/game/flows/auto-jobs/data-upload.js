@@ -57,7 +57,12 @@ const DEFAULT_UPLOAD_SIZE_MB = 1;
                 h.say('info', `file.upload ${file.name} (${sizeMb} MB) → ${ok ? 'uploaded' : 'failed'}${r && r.error ? ' [' + JSON.stringify(r.error) + ']' : ''}`);
             }
 
-            if (uploaded === 0) return { success: true, didWork: false, reason: `no file uploaded (${notFound} not in Downloads)` };
+            // retryable — the source file may not have landed in Downloads yet,
+            // and listDownloads() also returns [] on an open.folder timeout, so
+            // "not found" here can be a transient read miss. The attempt budget
+            // (MAX_FLOW_ATTEMPTS) bugs a persistent miss; never bug on the
+            // first one (the old missing-retryable did exactly that).
+            if (uploaded === 0) return { success: true, didWork: false, retryable: true, reason: `no file uploaded (${notFound} not in Downloads) — retrying` };
 
             h.step(NODE.DU_COMPLETE);
             h.complete();

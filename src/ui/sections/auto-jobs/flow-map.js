@@ -154,10 +154,16 @@
             else stopDelay();
         }
 
+        // Once a change event has fired, the initial getOne read is stale by
+        // definition — drop it (same guard as section.js's visSeenChange).
+        let seenChange = false;
         const unsub = Store.local.onChanged((changes) => {
-            if (changes[SL.AJ_PIPELINE_STATE]) renderState(changes[SL.AJ_PIPELINE_STATE].newValue);
+            if (changes[SL.AJ_PIPELINE_STATE]) {
+                seenChange = true;
+                renderState(changes[SL.AJ_PIPELINE_STATE].newValue);
+            }
         });
-        Store.local.getOne(SL.AJ_PIPELINE_STATE, null).then(renderState);
+        Store.local.getOne(SL.AJ_PIPELINE_STATE, null).then((s) => { if (!seenChange) renderState(s); });
 
         return {
             destroy() {

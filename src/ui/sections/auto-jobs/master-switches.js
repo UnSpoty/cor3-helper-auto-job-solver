@@ -83,11 +83,19 @@
         // markets/jobTypes switches: a behaviour like auto-dismiss must be opted
         // into, never enabled silently on a fresh install.
         const isBehaviourOn = (key) => (switches.behaviour || {})[key] === true;
-        async function setSwitch(group, key, on) {
-            const cur = (await Store.local.getOne(SL.AJ_MASTER_SWITCHES, {})) || {};
-            cur[group] = cur[group] || {};
-            cur[group][key] = on;
-            await Store.local.setOne(SL.AJ_MASTER_SWITCHES, cur);
+        // Serialized so rapid chip toggles can't race: each write reads AFTER
+        // the previous one's write commits (read-modify-write on shared storage
+        // would otherwise clobber concurrent edits) — same pattern as
+        // network-map.js's patchOverride.
+        let switchChain = Promise.resolve();
+        function setSwitch(group, key, on) {
+            switchChain = switchChain.then(async () => {
+                const cur = (await Store.local.getOne(SL.AJ_MASTER_SWITCHES, {})) || {};
+                cur[group] = cur[group] || {};
+                cur[group][key] = on;
+                await Store.local.setOne(SL.AJ_MASTER_SWITCHES, cur);
+            });
+            return switchChain;
         }
 
         function group(title, chips) {
@@ -122,13 +130,21 @@
                 chip(t('autojobs.' + p), isOn('uiShow', p), (on) => setSwitch('uiShow', p, on)))));
         }
 
+        // Once a change event has fired, the initial getOne read is stale by
+        // definition — drop it (same guard as section.js's visSeenChange).
+        let seenChange = false;
         const unsub = Store.local.onChanged((c) => {
             if (c[SL.AJ_MASTER_SWITCHES]) {
+                seenChange = true;
                 switches = c[SL.AJ_MASTER_SWITCHES].newValue || {};
                 render();
             }
         });
-        Store.local.getOne(SL.AJ_MASTER_SWITCHES, {}).then((s) => { switches = s || {}; render(); });
+        Store.local.getOne(SL.AJ_MASTER_SWITCHES, {}).then((s) => {
+            if (seenChange) return;
+            switches = s || {};
+            render();
+        });
 
         return {
             destroy() {
