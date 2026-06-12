@@ -192,6 +192,19 @@
             LOG: 'COR3_JOB_LOG',
         },
 
+        // Site-embedded helper-UI control (isolated → MAIN).
+        UI: {
+            // Visibility verdict for the LOADOUT pill the MAIN-world
+            // loadout-panel module injects. Bridged from
+            // STORAGE_SYNC.SHOW_LOADOUT_WIDGET (MAIN has no chrome.storage)
+            // by the isolated appearance-loadout-widget module: posted once on
+            // boot and on every toggle change. Payload: { visible: bool }.
+            // Hiding removes ONLY the pill/panel DOM — the headless
+            // COR3.game.loadout API (Auto Jobs's ensureDecrypt/ensureHack)
+            // stays live regardless.
+            SHOW_LOADOUT_WIDGET: 'COR3_SHOW_LOADOUT_WIDGET',
+        },
+
         // Auto Jobs control. Owns its own runtime actions and window messages.
         AUTOJOBS: {
             // chrome.tabs.sendMessage action the popup fires alongside the
@@ -453,6 +466,12 @@
         DISABLE_SYSTEM_MESSAGES: 'disableSystemMessages',
         DISABLE_BACKGROUND: 'disableBackground',
         DISABLE_NETWORK_FOG: 'disableNetworkFog',
+
+        // Site-embedded LOADOUT widget (the pill the MAIN-world loadout-panel
+        // module injects next to cor3.gg's Notifications). OFF by default —
+        // nothing is injected until the user enables it in Overview. Bridged
+        // to MAIN by appearance-loadout-widget via MSG.UI.SHOW_LOADOUT_WIDGET.
+        SHOW_LOADOUT_WIDGET: 'showLoadoutWidget',
 
         // Per-module enable/log state.
         // Shape: { [moduleId]: { enabled: boolean, logsEnabled: boolean } }

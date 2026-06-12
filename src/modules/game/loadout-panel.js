@@ -391,6 +391,13 @@
             this._snapshot = null;
             this._open = false;
             this._injected = false;
+            // Widget visibility — driven by the popup's Overview "Show LOADOUT
+            // widget" toggle (STORAGE_SYNC.SHOW_LOADOUT_WIDGET, default OFF),
+            // bridged to this world by appearance-loadout-widget over
+            // MSG.UI.SHOW_LOADOUT_WIDGET. While false NOTHING is injected;
+            // the WS snapshot subscription + the headless COR3.game.loadout
+            // API stay live (Auto Jobs's ensureDecrypt/ensureHack need them).
+            this._visible = false;
             this._mountTimer = null;
             this._reanchorTimer = null;
             this._openSlot = null;       // 'cpu' | 'gpu' | 'ram' | 'psu' | null
@@ -430,13 +437,12 @@
             // refresh / auto pill) is rewritten in place; if the body
             // is open we re-render the whole panel.
             this.track(Bus.window.on(LANG_MSG, () => this._relocalize()));
-            this._mountTimer = setInterval(() => {
-                if (document.querySelector(DOCK_SEL)) {
-                    clearInterval(this._mountTimer);
-                    this._mountTimer = null;
-                    this._injectUi();
-                }
-            }, 500);
+            // Visibility verdict from the isolated bridge (initial post on its
+            // boot + one per toggle change). No mount watch starts until the
+            // first `visible:true` — the widget is opt-in, default hidden.
+            this.track(Bus.window.on(MSG.UI.SHOW_LOADOUT_WIDGET, (env) => {
+                this._setVisible(!!(env && env.visible));
+            }));
             // Re-anchor on window resize. Keep a stable bound reference so
             // stop()/reload can remove it — a fresh `.bind()` each start would
             // be unremovable and leak one dead handler per reload.
@@ -445,9 +451,39 @@
         }
 
         async stop() {
+            this._removeUi();
+            if (this._onResize) { window.removeEventListener('resize', this._onResize); this._onResize = null; }
+        }
+
+        // ─── Widget visibility (Overview toggle) ──────────────────────
+        _setVisible(visible) {
+            if (visible === this._visible) return;
+            this._visible = visible;
+            this.info(`widget ${visible ? 'shown' : 'hidden'} (Overview toggle)`);
+            if (visible) this._startMountWatch();
+            else this._removeUi();
+        }
+
+        // Poll for the game desktop, then inject. Idempotent — a repeat
+        // `visible:true` verdict while already mounted/polling is a no-op.
+        _startMountWatch() {
+            if (this._injected || this._mountTimer) return;
+            this._mountTimer = setInterval(() => {
+                if (document.querySelector(DOCK_SEL)) {
+                    clearInterval(this._mountTimer);
+                    this._mountTimer = null;
+                    this._injectUi();
+                }
+            }, 500);
+        }
+
+        // Tear the injected UI down (toggle OFF / module stop). Closing first
+        // matters: _close() restores the auto-power-off saved state, so hiding
+        // the widget while its panel is open can't strand the system off.
+        _removeUi() {
             if (this._mountTimer) { clearInterval(this._mountTimer); this._mountTimer = null; }
             if (this._reanchorTimer) { clearInterval(this._reanchorTimer); this._reanchorTimer = null; }
-            if (this._onResize) { window.removeEventListener('resize', this._onResize); this._onResize = null; }
+            if (this._open) this._close();
             document.getElementById(HOST_ID)?.remove();
             document.getElementById('cor3-loadout-panel-style')?.remove();
             this._injected = false;

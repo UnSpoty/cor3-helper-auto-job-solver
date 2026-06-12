@@ -144,7 +144,32 @@
         [C.FLOW.DECRYPT_EXTRACT]:  ['decrypt & extract', 'decrypt and extract'],
     };
 
+    // Canonical WS job-type override — wins over the localised-name keywords.
+    // cor3.gg ships mislabeled jobs: a job NAMED "Data download" can carry the
+    // raw WS `jobType: 'DecryptDownloadedFile'` — its completion condition
+    // demands DECRYPTING the downloaded file, which the plain data_download
+    // flow never does, so the job would sit TAKEN forever. The raw `jobType` /
+    // condition `type` codes are language-independent and authoritative, so a
+    // known code reroutes the job regardless of what the name says: the
+    // decrypt_extract flow downloads the file (resolving server/local names by
+    // fileId → exact name → STEM — the condition's extension is fake), reads
+    // the REAL local extension and ensureDecrypt's the loadout for it.
+    // Codes verified live land here; everything else still classifies by name
+    // (full delocalisation is #9, pending a complete code capture).
+    const WS_JOB_TYPE_OVERRIDES = {
+        DecryptDownloadedFile: C.FLOW.DECRYPT_EXTRACT,
+    };
+
     function detectJobType(job) {
+        const wsType = job && job.jobType;
+        if (wsType && WS_JOB_TYPE_OVERRIDES[wsType]) return WS_JOB_TYPE_OVERRIDES[wsType];
+        // The same canonical codes appear as condition item types (a decrypt
+        // condition is `DecryptFile`/`DecryptDownloadedFile` — see
+        // docs/glossary.md → CRYPT RATE), so cover a job whose top-level
+        // jobType differs from its primary condition's code.
+        for (const ct of conditionTypes(job)) {
+            if (WS_JOB_TYPE_OVERRIDES[ct]) return WS_JOB_TYPE_OVERRIDES[ct];
+        }
         const name = String(job && (job.name || job.category) || '').toLowerCase();
         for (const type of Object.keys(JOB_TYPE_KEYWORDS)) {
             if (JOB_TYPE_KEYWORDS[type].some((kw) => name.includes(kw))) return type;
@@ -722,7 +747,8 @@
             for (const j of queue) {
                 const ct = conditionTypes(j.raw);
                 const cat = (j.raw && j.raw.category) || '—';
-                ctx.log.debug(`JOB_QUEUE · "${j.name || '?'}" [${j.status}] cat="${cat}" cond=[${ct.join(', ') || '—'}] name→${j.type || 'null'} @${j.marketSlot}`);
+                const wsType = (j.raw && j.raw.jobType) || '—';
+                ctx.log.debug(`JOB_QUEUE · "${j.name || '?'}" [${j.status}] cat="${cat}" jobType=${wsType} cond=[${ct.join(', ') || '—'}] → ${j.type || 'null'} @${j.marketSlot}`);
             }
 
             ctx.log.info(`JOB_QUEUE → ${queue.length} job(s) on the board`);
@@ -996,6 +1022,7 @@
         stamp,
         MARKET_SLOTS,
         WIRED_FLOW_TYPES,
+        WS_JOB_TYPE_OVERRIDES,
         detectJobType,
         jobServer,
         buildJobWsInfo,

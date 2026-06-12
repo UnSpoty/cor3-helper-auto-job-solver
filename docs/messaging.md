@@ -155,6 +155,14 @@ log, which the Auto Jobs bridge mirrors into the Activity Log.
 
 ---
 
+## MSG.UI — Site-embedded helper-UI control
+
+| Constant | Wire string | Payload | Direction |
+|---|---|---|---|
+| `UI.SHOW_LOADOUT_WIDGET` | `COR3_SHOW_LOADOUT_WIDGET` | `{ visible }` | isolated → MAIN. Visibility verdict for the LOADOUT pill. Posted by `appearance/loadout-widget.js` once on boot and on every `STORAGE_SYNC.SHOW_LOADOUT_WIDGET` change (the Overview "Show LOADOUT widget" toggle, default OFF). `loadout-panel` injects the pill on `true` and removes it on `false` (closing the panel first so auto-power-off state is restored); the headless `COR3.game.loadout` API stays live either way. |
+
+---
+
 ## MSG.AUTOJOBS — Auto Jobs control
 
 Owned entirely by the Auto Jobs subsystem. See
@@ -284,6 +292,7 @@ Constants live under `STORAGE_LOCAL.AJ_*`.
 | `disableBackground` | bool | `false` | `appearance/background.js` |
 | `disableNetworkFog` | bool | `false` | `appearance/network-fog.js` |
 | `disableMapFxEnabled` | bool | `false` | `appearance/map-fx.js` (key has an `Enabled` suffix for historical reasons) |
+| `showLoadoutWidget` | bool | `false` | `appearance/loadout-widget.js` — bridges to MAIN over `MSG.UI.SHOW_LOADOUT_WIDGET`; `loadout-panel` injects/removes its pill accordingly (headless `COR3.game.loadout` API unaffected) |
 | `pinnedTimers` | (unused) | `[]` | — |
 | `modules` | `{[moduleId]: {enabled, logsEnabled}}` | `{}` | Module Manager UI + `core/settings.js` |
 
@@ -294,6 +303,16 @@ Constants live under `STORAGE_LOCAL.AJ_*`.
 These are the job-type strings produced by the pipeline's `detectJobType()`
 (`auto-jobs/pipeline.js`) and carried as `jobType` on `MSG.AUTOJOBS.FLOW_START`
 when the orchestrator dispatches a TAKEN job to its MAIN `flow-*` module.
+
+`detectJobType()` classifies by localised-name keywords, EXCEPT where the raw
+WS job's canonical code is known (`WS_JOB_TYPE_OVERRIDES`): cor3.gg ships
+mislabeled jobs — a job NAMED "Data download" can carry raw
+`jobType: 'DecryptDownloadedFile'` (also visible as a condition item `type`),
+whose completion requires decrypting the downloaded file. The override routes
+it to `decrypt_extract` regardless of the name; the plain `data_download` flow
+would download but never decrypt, leaving the job TAKEN forever. The flow then
+resolves the file by fileId → exact name → stem (the condition's extension is
+fake) and decrypts by the REAL local extension — see `decrypt-extract.js`.
 
 | Constant | Value | Flow module (`src/modules/game/flows/auto-jobs/`) |
 |---|---|---|

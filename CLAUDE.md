@@ -197,7 +197,8 @@ cor3-helper/
     │   ├── game/         desktop-window, auto-jobs-bridge, loadout-panel,
     │   │                  flows/auto-jobs/ (9 Auto Jobs flow modules + _sai-flow base)
     │   ├── solvers/      decrypt, daily-ops, ice-wall, simple-decrypt
-    │   └── appearance/   4 CSS/DOM toggles
+    │   └── appearance/   5 modules — 4 CSS/DOM toggles + loadout-widget.js
+    │                      (LOADOUT-pill visibility bridge to MAIN)
     ├── ui/               popup.html + popup.css + shell.js + components/ + sections/
     └── entry/            content-early.js, content.js, background.js
 ```
@@ -269,7 +270,12 @@ find src -name '*.js' -exec node --check {} \;
   blocks acceptance of other servers.
 - 9 job flow types (in `src/modules/game/flows/auto-jobs/`): file_decryption,
   ip_injection, ip_cleanup, data_upload, log_deletion, log_download,
-  file_elimination, data_download, decrypt_extract.
+  file_elimination, data_download, decrypt_extract. Classification is by
+  localised-name keywords EXCEPT known canonical WS codes
+  (`pipeline.WS_JOB_TYPE_OVERRIDES`): a job NAMED "Data download" with raw
+  `jobType:'DecryptDownloadedFile'` (a real cor3.gg mislabel) is rerouted to
+  `decrypt_extract` — its completion needs the downloaded file decrypted,
+  which the plain data_download flow never does.
 - Decrypt solver: minimax algorithm against `ParameterCells` (arrow-key
   driven). Submit layer is click-on-cell + ArrowUp + click-SendButton
   (see [docs/glossary.md](docs/glossary.md) → solver-decrypt).
@@ -300,6 +306,11 @@ Quick list of every registered module ID and its world:
 **MAIN content_scripts (world: 'MAIN'):**
 - `loadout-panel` — site-embedded UI: pill anchored next to cor3.gg's
   Notifications widget (via Sentry data-attr, language-independent).
+  **Hidden by default** — injected only while the Overview "Show LOADOUT
+  widget" toggle (`STORAGE_SYNC.SHOW_LOADOUT_WIDGET`) is ON, bridged from
+  storage by the isolated `appearance-loadout-widget` module over
+  `MSG.UI.SHOW_LOADOUT_WIDGET` (the headless `COR3.game.loadout` API works
+  regardless of widget visibility).
   Opening it auto-powers the system off (`localStorage["loadout-powered"]`
   client-side flag, restored on close — toggleable via AUTO mini-pill),
   then renders equipped/owned hardware + software (each software card shows
@@ -374,7 +385,10 @@ Quick list of every registered module ID and its world:
   `auto-decrypt`, `auto-ice-wall`, `auto-simple-decrypt`, `daily-ops`,
   `auto-jobs`, `runtime-bridge` — automation
 - `appearance-system-messages`, `appearance-background`,
-  `appearance-network-fog`, `appearance-map-fx` — appearance
+  `appearance-network-fog`, `appearance-map-fx`,
+  `appearance-loadout-widget` (bridges the Overview "Show LOADOUT widget"
+  toggle `STORAGE_SYNC.SHOW_LOADOUT_WIDGET`, default OFF, to MAIN over
+  `MSG.UI.SHOW_LOADOUT_WIDGET`) — appearance
 
 Plus synthetic ID `bus` (used by Logger to record traced bus traffic) and
 `registry` (used by Registry's own warn/error logs). The Auto Jobs pipeline

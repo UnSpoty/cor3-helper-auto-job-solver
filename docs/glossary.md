@@ -47,7 +47,11 @@ runtime-bridge, auto-send-merc, the Expeditions UI); all now reference
 file names, IPs, log seqs, etc.). Statuses: `AVAILABLE`, `TAKEN` (in-progress),
 `FAILED` (surfaced on the Job List, dismissable), `COMPLETED`.
 
-**Job type** — derived from job name keywords. We support 9 types — see
+**Job type** — derived from job name keywords, except where the raw WS job's
+canonical code is known: `jobType: 'DecryptDownloadedFile'` (top-level field or
+condition item `type`) forces `decrypt_extract` even when the job is NAMED
+"Data download" — cor3.gg ships such mislabeled jobs, and their completion
+requires decrypting the downloaded file. We support 9 types — see
 [messaging.md → FLOW](messaging.md#flow--job-type-identifiers).
 
 **CRYPT RATE / encryptionLevel** — the strength of a file's encryption, i.e. the

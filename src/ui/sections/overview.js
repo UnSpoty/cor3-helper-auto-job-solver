@@ -117,7 +117,7 @@
         const [
             autoRefresh, autoDailyOps, autoDecrypt, autoIceWall, autoSimpleDecrypt,
             disableSystemMessages, disableBackground, disableNetworkFog, disableMapFx,
-            selectedTheme,
+            selectedTheme, showLoadoutWidget,
         ] = await Promise.all([
             Store.sync.getOne(C.STORAGE_SYNC.AUTO_REFRESH, { home_jobs: false, dark_jobs: false, srm_jobs: false, usol_jobs: false }),
             Store.sync.getOne(C.STORAGE_SYNC.AUTO_DAILY_OPS_ENABLED, false),
@@ -132,6 +132,7 @@
             Store.sync.getOne(C.STORAGE_SYNC.DISABLE_NETWORK_FOG, false),
             Store.sync.getOne('disableMapFxEnabled', false),
             Store.sync.getOne(C.STORAGE_SYNC.SELECTED_THEME, 'cor3'),
+            Store.sync.getOne(C.STORAGE_SYNC.SHOW_LOADOUT_WIDGET, false),
         ]);
         const ar = autoRefresh || { home_jobs: false, dark_jobs: false, srm_jobs: false, usol_jobs: false };
 
@@ -288,6 +289,10 @@
         container.appendChild(buildToggleCard(t('overview.disableBg'), C.STORAGE_SYNC.DISABLE_BACKGROUND, disableBackground));
         container.appendChild(buildToggleCard(t('overview.disableNetFog'), C.STORAGE_SYNC.DISABLE_NETWORK_FOG, disableNetworkFog));
         container.appendChild(buildToggleCard(t('overview.disableMapFx'), 'disableMapFxEnabled', disableMapFx));
+        // Site-embedded LOADOUT pill (MAIN-world loadout-panel module).
+        // Default OFF — the appearance-loadout-widget bridge relays this key
+        // to MAIN, which injects/removes the pill live (no reload needed).
+        container.appendChild(buildToggleCard(t('overview.showLoadout'), C.STORAGE_SYNC.SHOW_LOADOUT_WIDGET, showLoadoutWidget));
 
         // ─── Alarms (collapsible) ─────────────────────────────────────
         const alarmsBlock = document.createElement('details');
