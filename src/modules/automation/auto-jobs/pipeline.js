@@ -53,10 +53,12 @@
             // ── filled by GET_SERVERS ──
             home: null,
             servers: null,            // NM_GRAPH.servers (read-only copy)
+            connections: null,        // NM_GRAPH.connections (read-only copy)
 
             // ── filled by CHECK_ACCESS ──
-            // { [serverName]: { accessible, hasSaiAccess, onCooldown } }
+            // { [serverName]: { accessible, hasSaiAccess, onCooldown, hackState, noPath } }
             accessibility: null,
+            pathReachable: null,      // Set<serverName> with a live route from HOME
 
             // ── filled by UPDATE_MARKETS ──
             // [{ slot, reachable, refreshed, jobCount, takenCount, failedCount, marketId, reason }]
@@ -95,25 +97,32 @@
     // Market slot table — the markets Auto Jobs knows about. Each is a server;
     // home is always reachable, the remote markets' (dark/srm/usol) reachability
     // is the game-reported availability flag (false === "no path / market-not-reachable").
+    // serverId (from the C.MARKETS registry — slot keys match by design) lets
+    // UPDATE_MARKETS pre-gate the refresh on graph path reachability: when the
+    // route from HOME to the market's own server is cut by a maintenance
+    // transit node, the set.endpoint → get.jobs probe could only fail, so we
+    // skip it outright. home carries no serverId — it never needs a route.
     // ──────────────────────────────────────────────────────────────────────
+    const MARKET_BY_KEY = {};
+    for (const m of C.MARKETS) MARKET_BY_KEY[m.key] = m;
     const MARKET_SLOTS = [
         {
-            slot: 'home', label: 'Home',
+            slot: 'home', label: 'Home', serverId: null,
             storageKey: SL.MARKET, atKey: SL.MARKET_AT,
             refresh: C.MSG.GAME.REFRESH_MARKET, availableKey: null,
         },
         {
-            slot: 'dark', label: 'Dark',
+            slot: 'dark', label: 'Dark', serverId: MARKET_BY_KEY.dark.serverId,
             storageKey: SL.DARK_MARKET, atKey: SL.DARK_MARKET_AT,
             refresh: C.MSG.GAME.REFRESH_DARK_MARKET, availableKey: SL.DARK_MARKET_AVAILABLE,
         },
         {
-            slot: 'srm', label: 'SRM7-M',
+            slot: 'srm', label: 'SRM7-M', serverId: MARKET_BY_KEY.srm.serverId,
             storageKey: SL.SRM_MARKET, atKey: SL.SRM_MARKET_AT,
             refresh: C.MSG.GAME.REFRESH_SRM_MARKET, availableKey: SL.SRM_MARKET_AVAILABLE,
         },
         {
-            slot: 'usol', label: 'URM7-M',
+            slot: 'usol', label: 'URM7-M', serverId: MARKET_BY_KEY.usol.serverId,
             storageKey: SL.USOL_MARKET, atKey: SL.USOL_MARKET_AT,
             refresh: C.MSG.GAME.REFRESH_USOL_MARKET, availableKey: SL.USOL_MARKET_AVAILABLE,
         },
@@ -242,9 +251,11 @@
         return (rawJob && rawJob.conditions && rawJob.conditions.serverConfigId) || null;
     }
     // Can a TAKEN job be dispatched this cycle? file_decryption is local (no
-    // server → always). An SAI job needs its target server off K/D cooldown and
-    // either already accessible OR hackable (we own HACK software for its type —
-    // the flow's establishAccess connects + hacks for access). A server missing
+    // server → always). An SAI job needs its target server off K/D cooldown,
+    // on a live route from HOME (!noPath — a transit node on maintenance cuts
+    // off everything behind it, see computePathReachability) and either
+    // already accessible OR hackable (we own HACK software for its type — the
+    // flow's establishAccess connects + hacks for access). A server missing
     // from the accessibility map passes deliberately — we let the flow run and
     // surface the real error rather than silently stranding a job whose name
     // didn't match the NM graph. The orchestrator's _runJobFlows uses this to
@@ -256,7 +267,7 @@
         if (!job.serverName) return true;
         const a = accessibility[job.serverName];
         if (!a) return true;
-        return (!!a.accessible || !!a.hackState) && !a.onCooldown;
+        return (!!a.accessible || !!a.hackState) && !a.onCooldown && !a.noPath;
     }
     function ipsForJob(rawJob) {
         const out = [];
@@ -443,15 +454,54 @@
                 // retries next cycle.
                 throw new Error('GET_SERVERS: NM_GRAPH not available (open the Network Map in-game once)');
             }
+            if (!Array.isArray(graph.connections)) {
+                // Same hard requirement: path reachability (CHECK_ACCESS BFS)
+                // needs the edge list. A persisted envelope from a pre-
+                // connections build can lack it; the orchestrator's initial
+                // REQUEST_NM_MAP refreshes the envelope within seconds.
+                throw new Error('GET_SERVERS: NM_GRAPH has no connections[] (stale envelope — waiting for a Network Map refresh)');
+            }
             packet.home = graph.home || null;
             packet.servers = graph.servers.slice();
-            ctx.log.debug(`GET_SERVERS → ${packet.servers.length} servers`, {
+            packet.connections = graph.connections.slice();
+            ctx.log.debug(`GET_SERVERS → ${packet.servers.length} servers, ${packet.connections.length} edges`, {
                 home: packet.home,
                 servers: packet.servers.length,
             });
             return stamp(packet, this.id, { servers: packet.servers.length });
         },
     };
+
+    // Path reachability over the Network Map: BFS from HOME across ALL edges
+    // (hidden gateways included — the game itself routes through them, e.g.
+    // D4RK side network). A server in maintenance can be the path's ENDPOINT
+    // (its own K/D state is already the onCooldown skip) but can NOT be
+    // routed THROUGH — the game refuses to relay via a K/D'd node, so every
+    // server behind it is temporarily unreachable (the A-B-C-D case: B on
+    // maintenance cuts off C and D). Returns the Set of reachable server
+    // names; everything outside it is "no path this cycle".
+    function computePathReachability(servers, connections, homeName) {
+        const inMaintenance = new Map();
+        for (const s of servers) if (s && s.name) inMaintenance.set(s.name, !!s.isInMaintenance);
+        const adj = new Map();
+        const link = (a, b) => { let l = adj.get(a); if (!l) adj.set(a, l = []); l.push(b); };
+        for (const c of connections) {
+            if (!c || !c.a || !c.b) continue;
+            link(c.a, c.b);
+            link(c.b, c.a);
+        }
+        const reached = new Set([homeName]);
+        const queue = [homeName];
+        while (queue.length) {
+            const cur = queue.shift();
+            // Reached-but-in-maintenance: endpoint only, never a transit hop.
+            if (cur !== homeName && inMaintenance.get(cur)) continue;
+            for (const n of (adj.get(cur) || [])) {
+                if (!reached.has(n)) { reached.add(n); queue.push(n); }
+            }
+        }
+        return reached;
+    }
 
     // MODULE:CHECK_ACCESS — for each server, do we have access,
     // SAI access, and is it on K/D cooldown. Market reachability is NOT decided
@@ -460,6 +510,10 @@
         id: AJ.NODE.CHECK_ACCESS,
         async run(packet, ctx) {
             if (!packet.servers) throw new Error('CHECK_ACCESS: packet.servers missing (GET_SERVERS must run first)');
+            // Path reachability needs the BFS root. HOME detection in the
+            // interceptor is field-based (serverTypeName/faction) — a graph
+            // without it is broken input, not a degradable state.
+            if (!packet.home) throw new Error('CHECK_ACCESS: NM_GRAPH has no HOME server — cannot compute path reachability');
 
             // Hack capability per server type, read from the loadout snapshot the
             // `loadout` data module keeps current. A not-accessible server is only
@@ -469,8 +523,13 @@
             const derivedHack = loadout && loadout._derived && loadout._derived.hackServerTypes;
             const hackStateFn = root.COR3.ajEligibility.hackState;
 
+            // Live route from HOME this cycle (maintenance transit nodes cut
+            // off whole branches — the no-path-for-server case).
+            const pathReachable = computePathReachability(packet.servers, packet.connections, packet.home);
+            packet.pathReachable = pathReachable;
+
             const accessibility = {};
-            let accessible = 0, onCooldown = 0, hackable = 0;
+            let accessible = 0, onCooldown = 0, hackable = 0, noPath = 0;
             for (const s of packet.servers) {
                 if (!s || !s.name) continue;
                 const entry = {
@@ -478,18 +537,20 @@
                     hasSaiAccess: !!s.hasAdminAccess,
                     onCooldown: !!s.isInMaintenance,
                     hackState: hackStateFn(s.serverTypeName, derivedHack),  // 'active' | 'available' | null
+                    noPath: !pathReachable.has(s.name),
                 };
                 accessibility[s.name] = entry;
                 if (entry.accessible) accessible++;
                 if (entry.onCooldown) onCooldown++;
                 if (!entry.accessible && entry.hackState) hackable++;
+                if (entry.noPath) noPath++;
             }
             packet.accessibility = accessibility;
 
-            ctx.log.debug(`CHECK_ACCESS → ${accessible}/${packet.servers.length} accessible, ${onCooldown} on K/D, ${hackable} hackable`, {
-                accessible, onCooldown, hackable,
+            ctx.log.debug(`CHECK_ACCESS → ${accessible}/${packet.servers.length} accessible, ${onCooldown} on K/D, ${hackable} hackable, ${noPath} with no path`, {
+                accessible, onCooldown, hackable, noPath,
             });
-            return stamp(packet, this.id, { accessible, onCooldown });
+            return stamp(packet, this.id, { accessible, onCooldown, noPath });
         },
     };
 
@@ -516,11 +577,28 @@
     const updateMarkets = {
         id: AJ.NODE.UPDATE_MARKETS,
         async run(packet, ctx) {
+            if (!packet.pathReachable || !packet.servers) throw new Error('UPDATE_MARKETS: packet.pathReachable missing (CHECK_ACCESS must run first)');
             const timeout = AJ.LOOP.MARKET_REFRESH_TIMEOUT_MS;
             const markets = [];
             const rawJobs = [];
 
             for (const m of MARKET_SLOTS) {
+                // Route pre-gate: a remote market whose own server has no graph
+                // path from HOME this cycle (transit node on maintenance) is
+                // not refreshed at all — the set.endpoint → get.jobs probe
+                // could only fail and would burn its full timeout. Next cycle
+                // re-checks the live graph, so this self-heals the moment the
+                // route is back. A market server absent from the graph falls
+                // through to the probe (the probe is then the only authority).
+                if (m.serverId) {
+                    const srv = packet.servers.find((s) => s && s.id === m.serverId);
+                    if (srv && !packet.pathReachable.has(srv.name)) {
+                        markets.push({ slot: m.slot, reachable: false, refreshed: false, jobCount: 0, takenCount: 0, failedCount: 0, marketId: null, reason: 'no-path' });
+                        ctx.log.info(`UPDATE_MARKETS · ${m.label}: no path from HOME (transit node on maintenance) — refresh skipped`);
+                        continue;
+                    }
+                }
+
                 const prevAt = await ctx.store.local.getOne(m.atKey, 0);
                 // Subscribe-then-post (inside awaitMarketUpdate) closes the race
                 // where a fast refresh reply landed before the listener attached.
@@ -540,7 +618,7 @@
                     ? (await ctx.store.local.getOne(m.availableKey, undefined)) !== false
                     : true;
                 if (!reachable) {
-                    markets.push({ slot: m.slot, reachable: false, refreshed: false, jobCount: 0, takenCount: 0, marketId: null, reason: 'market-not-reachable' });
+                    markets.push({ slot: m.slot, reachable: false, refreshed: false, jobCount: 0, takenCount: 0, failedCount: 0, marketId: null, reason: 'market-not-reachable' });
                     ctx.log.debug(`UPDATE_MARKETS · ${m.label}: probed — no path (market-not-reachable)`);
                     continue;
                 }
@@ -735,6 +813,10 @@
                     if (!acc) dataReasons.push(`server not in Network Map: ${job.serverName}`);
                     else {
                         if (acc.onCooldown) dataReasons.push('server on K/D cooldown');
+                        // Route from HOME is broken (a transit node is on
+                        // maintenance — the A-B-C-D case). Same class as K/D:
+                        // a temporary hard skip that self-heals next cycle.
+                        if (acc.noPath) dataReasons.push('no path to server (route blocked by maintenance)');
                         if (!acc.accessible) {
                             hackState = acc.hackState || null;
                             if (hackState === 'active') dataWarnReason = 'server not accessible but can be hacked';
@@ -922,6 +1004,7 @@
         // SAI-flow target resolvers (read from the TAKEN job's condition details).
         serverConfigId,
         jobServerReachable,
+        computePathReachability,
         ipsForJob,
         fileNamesForJob,
         fileDescriptorsForJob,

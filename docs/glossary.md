@@ -66,12 +66,13 @@ across the job's decrypt items (0 when absent → no power gate, behaves as befo
 (more supply → higher ratio → higher power). A decrypt **succeeds iff** an
 equipped covering software's `computedPower ≥` the file's CRYPT RATE. The
 headless loadout API (`COR3.game.loadout.planDecrypt(ext, requiredPower)` /
-`ensureDecrypt(ext, requiredPower, log)`) is power-aware: it picks an owned tool
-whose band max can reach the bar, dedicates the rig to it, and swaps in stronger
-hardware if still short. The plan/ensure status **`underpower`** = we own covering
+`ensureDecrypt(ext, requiredPower, log)`) is power-aware: the exhaustive loadout
+optimizer picks the optimal owned software + hardware combination and dedicates
+the rig to it. The plan/ensure status **`underpower`** = we own covering
 software but no SW+HW combo can reach the bar (PERMANENT → the orchestrator bugs
-the job; other statuses: `ready`/`install`/`swap`/`none`/`unknown` and
-`installed`/`swapped`/`no-helper`/`install-failed`).
+the job; plan statuses: `ready`/`install`/`swap`/`none`/`unknown`; ensure
+statuses: `ready`/`applied` on success, `none`/`underpower`/`unknown`/
+`no-helper`/`apply-incomplete` + a `transient` retry-verdict flag on failure).
 
 **File Analysis window** — the authoritative in-game readout of a file's CRYPT
 RATE and DECRYPT POWER, opened over WS via `desktop.get.file.analysis`

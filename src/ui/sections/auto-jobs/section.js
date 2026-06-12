@@ -208,7 +208,8 @@
         // "UI Show" master switches — purely visual. Hide a panel's host without
         // tearing down its component, so the orchestrator (content world) and each
         // panel's live subscriptions keep running while hidden. Default ON
-        // (absent === shown), matching master-switches.js.
+        // (absent === shown), matching master-switches.js. Panel keys come from
+        // C.AJ.UI_PANELS — the ONE list shared with the master-switches chips.
         const VIS_HOSTS = {
             networkMap:  networkHost,
             jobs:        jobsHost,
@@ -217,16 +218,24 @@
         };
         function applyUiVisibility(switches) {
             const show = (switches && switches.uiShow) || {};
-            for (const key of Object.keys(VIS_HOSTS)) {
+            for (const key of C.AJ.UI_PANELS) {
                 VIS_HOSTS[key].style.display = show[key] === false ? 'none' : '';
             }
         }
+        // A change event always carries the freshest value, so once one has
+        // fired the initial getOne read is stale by definition — drop it. (A
+        // toggle landing while getOne is in flight would otherwise be reverted
+        // by the read-time value when the promise resolves.)
+        let visSeenChange = false;
         liveVisibilitySub = Store.local.onChanged((c) => {
             if (c[C.STORAGE_LOCAL.AJ_MASTER_SWITCHES]) {
+                visSeenChange = true;
                 applyUiVisibility(c[C.STORAGE_LOCAL.AJ_MASTER_SWITCHES].newValue || {});
             }
         });
-        Store.local.getOne(C.STORAGE_LOCAL.AJ_MASTER_SWITCHES, {}).then((s) => applyUiVisibility(s || {}));
+        Store.local.getOne(C.STORAGE_LOCAL.AJ_MASTER_SWITCHES, {}).then((s) => {
+            if (!visSeenChange) applyUiVisibility(s || {});
+        });
 
         panel = { container, headerHost, networkHost };
     }

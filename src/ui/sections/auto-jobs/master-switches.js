@@ -28,15 +28,12 @@
 
     // UI Show — purely visual: hide a popup panel without touching the
     // orchestrator (which runs in the content world, independent of this UI).
-    // Reuses the panels' own section labels as chip text. Default ON
-    // (absent === shown), like markets/jobTypes. section.js reads the same
-    // `uiShow` group and toggles each host's visibility live.
-    const UI_PANELS = [
-        { key: 'networkMap',  labelKey: 'autojobs.networkMap' },
-        { key: 'jobs',        labelKey: 'autojobs.jobs' },
-        { key: 'flowMap',     labelKey: 'autojobs.flowMap' },
-        { key: 'activityLog', labelKey: 'autojobs.activityLog' },
-    ];
+    // Panel keys come from C.AJ.UI_PANELS — the ONE list shared with
+    // section.js's host-visibility map; chip text reuses each panel's own
+    // section label (`autojobs.<key>`). Default ON (absent === shown), like
+    // markets/jobTypes. section.js reads the same `uiShow` group and toggles
+    // each host's visibility live.
+    const UI_PANELS = C.AJ.UI_PANELS;
 
     function el(tag, cls, text) {
         const e = document.createElement(tag);
@@ -122,7 +119,7 @@
             body.appendChild(group(t('autojobs.msJobTypes'), TYPES.map((tp) =>
                 chip(t('autojobs.jobType.' + tp), isOn('jobTypes', tp), (on) => setSwitch('jobTypes', tp, on)))));
             body.appendChild(group(t('autojobs.msUiShow'), UI_PANELS.map((p) =>
-                chip(t(p.labelKey), isOn('uiShow', p.key), (on) => setSwitch('uiShow', p.key, on)))));
+                chip(t('autojobs.' + p), isOn('uiShow', p), (on) => setSwitch('uiShow', p, on)))));
         }
 
         const unsub = Store.local.onChanged((c) => {

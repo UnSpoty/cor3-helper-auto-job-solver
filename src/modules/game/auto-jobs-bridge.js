@@ -207,6 +207,13 @@
                 const LO = (root.COR3.game || {}).loadout;
                 if (!LO || typeof LO.ensureHack !== 'function') { log('error', 'Open SAI — COR3.game.loadout.ensureHack unavailable'); return; }
                 if (!serverType) { log('error', 'Open SAI — no serverType in message (needed to pick HACK software)'); return; }
+                // serverDefenceRate is the power bar ensureHack must clear — a
+                // missing field would silently become "no gate" (Number(undefined)||0
+                // → 0) and wave an underpowered tool through to an unwinnable hack.
+                if (typeof status.serverDefenceRate !== 'number') {
+                    log('error', `Open SAI — sai.get.login.status carried no serverDefenceRate (got ${status.serverDefenceRate}) — cannot power-gate the hack`);
+                    return;
+                }
                 log('info', `Open SAI → ensuring HACK capability for "${serverType}" (defence ${status.serverDefenceRate})`);
                 const cap = await LO.ensureHack(serverType, status.serverDefenceRate, (lvl, m) => log(lvl, m));
                 if (!cap.ok) { log('warn', `Open SAI → cannot gain hack capability for "${serverType}" (${cap.status}${cap.reason ? ': ' + cap.reason : ''})`); return; }

@@ -153,11 +153,12 @@
     }
     // Hack the server for access. Returns { grant } on success, or
     // { retryable, reason } on failure. The retryable flag distinguishes a
-    // PERMANENT block — no owned HACK software covers this server type
-    // (ensureHack → 'none'/'install-failed') → bug the job, don't loop — from a
-    // TRANSIENT miss (window/DOM/minigame timing, snapshot/WS race) → retry next
-    // cycle. (ensureHack's 'unknown'/'no-helper' are timing races → retryable,
-    // mirroring file_decryption's classification.)
+    // PERMANENT block — no owned HACK software covers this server type, or no
+    // owned SW+HW combo reaches its defence rate (ensureHack →
+    // 'none'/'underpower') → bug the job, don't loop — from a TRANSIENT miss
+    // (window/DOM/minigame timing, snapshot/WS race) → retry next cycle.
+    // (ensureHack results carry the verdict as `transient`, mirroring
+    // file_decryption's classification.)
     const RETRY = (reason) => ({ retryable: true, reason });
     const BUG = (reason) => ({ retryable: false, reason });
     async function hackForAccess(serverName, serverId, serverType, status, say) {
@@ -175,13 +176,22 @@
             const LO = (root.COR3.game || {}).loadout;
             if (!LO || typeof LO.ensureHack !== 'function') { say('warn', 'hack: loadout API missing'); return RETRY('loadout-api-missing'); }
             if (!serverType) { say('warn', 'hack: no serverType — cannot pick HACK software'); return BUG('no-serverType'); }
+            // serverDefenceRate is the power bar ensureHack must clear — a missing
+            // field would silently become "no gate" (Number(undefined)||0 → 0) and
+            // wave an underpowered tool through to an unwinnable hack. Hard-require
+            // it (a malformed get.login.status reply is a wire anomaly → retry).
+            if (typeof status.serverDefenceRate !== 'number') {
+                say('warn', `hack: get.login.status carried no serverDefenceRate (got ${status.serverDefenceRate}) — retrying`);
+                return RETRY('no-serverDefenceRate');
+            }
             const cap = await LO.ensureHack(serverType, status.serverDefenceRate, say);
             if (!cap.ok) {
-                // 'none' (no owned HACK software covers this type) / 'underpower'
-                // (no owned SW+HW combo reaches the defence rate) → permanent, bug it.
-                // 'unknown' / 'no-helper' / 'apply-incomplete' (an equip didn't take
-                // effect this cycle) → timing/WS race → retry.
-                const transient = cap.status === 'unknown' || cap.status === 'no-helper' || cap.status === 'apply-incomplete';
+                // The ensure result itself carries the retry verdict: transient=false
+                // for 'none' (no owned HACK software covers this type) / 'underpower'
+                // (no owned SW+HW combo reaches the defence rate) → permanent, bug it;
+                // transient=true for 'unknown' / 'no-helper' / 'apply-incomplete' (an
+                // equip didn't take effect this cycle) → timing/WS race → retry.
+                const transient = cap.transient === true;
                 say('warn', `hack: no HACK capability for "${serverType}" (${cap.status}${cap.reason ? ': ' + cap.reason : ''})`);
                 return transient ? RETRY(`no-hack-capability:${cap.status}`) : BUG(`no-hack-software:${serverType}`);
             }

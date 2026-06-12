@@ -36,7 +36,14 @@ in [src/ui/sections/auto-jobs/flow-map.js](src/ui/sections/auto-jobs/flow-map.js
 
 **Planning + acceptance half (isolated world):** `GET_SERVERS → CHECK_ACCESS →
 UPDATE_MARKETS → JOB_QUEUE → QUEUE:EMPTY? → HAVE_TASKS_IN_PROGRESS? → BUGGED? →
-JOB:SKIP → CHECK_CONDITION → JOB_ACCEPTION`. UPDATE_MARKETS reads the
+JOB:SKIP → CHECK_CONDITION → JOB_ACCEPTION`. CHECK_ACCESS also computes graph
+**path reachability** (`computePathReachability`: BFS from HOME over
+`NM_GRAPH.connections`; a maintenance node can be a path's endpoint but never
+a transit hop, so a K/D'd hub cuts off everything behind it → those servers
+get `noPath` — a hard data skip + flow postpone, same class as K/D).
+UPDATE_MARKETS skips a remote market outright when its own server
+(`C.MARKETS[].serverId`) has `noPath` (`reason:'no-path'` — the refresh probe
+could only fail; self-heals next cycle), then reads the
 market envelope's `jobs[]` (status `AVAILABLE`) and the `recentJobs[]` entries
 tagged `TAKEN` (= in-progress) + `FAILED` (= failed, surfaced on the Job List
 and cleared by the auto-dismiss step / manual ✕); JOB_ACCEPTION accepts via the
@@ -44,8 +51,8 @@ generic `MSG.GAME.ACCEPT_JOB` + `REVERT_ENDPOINT_TO_HOME`. Acceptance is
 **sequential, one server at a time** (mirrors `_selectBatch` execution): it
 HOLDS — accepts nothing — while any *workable* TAKEN wired job is still in flight
 (`!bugged && pipeline.jobServerReachable`, the same predicate `_runJobFlows`
-uses, so an un-workable TAKEN job on a K/D / inaccessible server can't stall
-acceptance); else it accepts every eligible `file_decryption` across all markets
+uses, so an un-workable TAKEN job on a K/D / no-path / inaccessible server
+can't stall acceptance); else it accepts every eligible `file_decryption` across all markets
 (absolute priority, no target server); else ONE server's group of eligible SAI
 jobs (busiest `conditions.serverConfigId`). After JOB_QUEUE the orchestrator completes any `canComplete`
 TAKEN job and — iff `AJ_MASTER_SWITCHES.behaviour.autoDismissFailed` is on
@@ -257,7 +264,8 @@ find src -name '*.js' -exec node --check {} \;
   server's group of SAI jobs; JOB_FLOW (`_selectBatch`) works that same one
   server per cycle behind a single SAI login. Both sides share
   `pipeline.jobServerReachable` to decide "workable this cycle", so a TAKEN job
-  stuck on a K/D / inaccessible server is postponed (never bugged) **and** never
+  stuck on a K/D / no-path (route cut by a maintenance transit node) /
+  inaccessible server is postponed (never bugged) **and** never
   blocks acceptance of other servers.
 - 9 job flow types (in `src/modules/game/flows/auto-jobs/`): file_decryption,
   ip_injection, ip_cleanup, data_upload, log_deletion, log_download,
@@ -352,9 +360,11 @@ Quick list of every registered module ID and its world:
   inserted only when a transition would over-draw — the server rejects over-draw
   equips). Plan statuses `ready`/`install`/`swap`/`underpower`/`none`/`unknown`;
   ensure resolves `{ok:true, status:'ready'|'applied', power}` or `{ok:false,
-  status:'none'|'underpower'|'unknown'|'no-helper'|'install-failed'}` —
-  `none`/`underpower` are PERMANENT (the flow bugs the job), `unknown`/`no-helper`
-  are transient. See `reference_hack_power_model` / `reference_decrypt_power_model`.
+  status:'none'|'underpower'|'unknown'|'no-helper'|'apply-incomplete', transient}`
+  — the `transient` flag is the retry verdict the flows act on: `false`
+  (`none`/`underpower`) is PERMANENT (the flow bugs the job), `true`
+  (`unknown`/`no-helper`/`apply-incomplete`) retries next cycle.
+  See `reference_hack_power_model` / `reference_decrypt_power_model`.
 
 **Isolated content_scripts:**
 - `auth`, `expeditions`, `archived-expeditions`, `decisions`, `market`,

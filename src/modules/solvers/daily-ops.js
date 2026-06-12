@@ -370,6 +370,7 @@
             // Auto runs also close the Daily Ops + Game Center windows.
             await dom.sleep(400);
             await finishWidgets();
+            return true;
         }
     }
 
@@ -630,6 +631,7 @@
         if (closeResult) dom.clickEl(closeResult);
         await dom.sleep(300);
         await finishWidgets();
+        return true;
     }
 
     // ─── Orchestrator ─────────────────────────────────────────────────────
@@ -739,7 +741,7 @@
                 id: 'solver-daily-ops',
                 name: 'Solver: Daily Ops',
                 category: C.CATEGORY.SOLVER,
-                owns: { busTypes: [MSG.SOLVER.START_DAILY_OPS, MSG.SOLVER.DAILY_OPS_LOG] },
+                owns: { busTypes: [MSG.SOLVER.START_DAILY_OPS, MSG.SOLVER.DAILY_OPS_LOG, MSG.SOLVER.DAILY_OPS_RESULT] },
             });
             this.busy = false;
         }
@@ -747,9 +749,17 @@
             this.track(Bus.window.on(MSG.SOLVER.START_DAILY_OPS, async () => {
                 if (this.busy) { this.debug('start ignored — already running'); return; }
                 this.busy = true;
-                try { await runOnce(this); }
+                // runOnce/solve* return true ONLY on a confirmed solve; every
+                // soft-failure path returns undefined. The terminal RESULT
+                // envelope below fires on every outcome so the isolated
+                // watcher's in-flight latch never waits on the 4min watchdog.
+                let ok = false;
+                try { ok = (await runOnce(this)) === true; }
                 catch (e) { this.error('daily-ops solver crashed', { error: String(e) }); logUi(`Error: ${e.message || e}`); }
-                finally { this.busy = false; }
+                finally {
+                    this.busy = false;
+                    Bus.window.post(MSG.SOLVER.DAILY_OPS_RESULT, { ok });
+                }
             }));
         }
     }

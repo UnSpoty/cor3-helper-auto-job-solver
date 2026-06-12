@@ -117,15 +117,16 @@ the game-module helpers.
 ## MSG.SOLVER — Minigame solver lifecycle
 
 Direction: mixed. `START_*` / `STOP_*` and `ICE_WALL_DB` are isolated → MAIN;
-`DAILY_OPS_LOG`, `ICE_WALL_BUSY`, `ICE_WALL_DB_REQUEST` and `ICE_WALL_LEARN`
-are MAIN → isolated.
+`DAILY_OPS_LOG`, `DAILY_OPS_RESULT`, `ICE_WALL_BUSY`, `ICE_WALL_DB_REQUEST`
+and `ICE_WALL_LEARN` are MAIN → isolated.
 
 | Constant | Wire string | Payload | What it does |
 |---|---|---|---|
 | `SOLVER.START_DECRYPT` | `COR3_START_DECRYPT_SOLVER` | `null` | starts the watcher in `solver-decrypt` (config-hack minigame). Idempotent. |
 | `SOLVER.STOP_DECRYPT` | `COR3_STOP_DECRYPT_SOLVER` | `null` | sets `window.__solverAbort=true`. |
 | `SOLVER.START_DAILY_OPS` | `COR3_START_DAILY_OPS` | `null` | one-shot trigger for `solver-daily-ops` (MAIN). Posted by `automation/daily-ops.js` when the popup sends `solveDailyOps`, or by the Auto Daily Ops watcher. The solver navigates Game Center → Daily Ops → Start, detects puzzle type (signal vs log), and submits. |
-| `SOLVER.DAILY_OPS_LOG` | `COR3_DAILY_OPS_LOG` | `{ message }` | progress + result lines from `solver-daily-ops`. Mirrored into `STORAGE_LOCAL.DAILY_HACK_LOG` (storage key name preserved) so the Overview card can show the last line; `solved:`/`Error:` lines also drive the Auto watcher's terminal handling + a REST refetch so the streak/claimed badge flips without a Refresh click. |
+| `SOLVER.DAILY_OPS_LOG` | `COR3_DAILY_OPS_LOG` | `{ message }` | progress + result lines from `solver-daily-ops`. Pure log relay — mirrored into `STORAGE_LOCAL.DAILY_HACK_LOG` (storage key name preserved) so the Overview card can show the last line. Run lifecycle moved to `DAILY_OPS_RESULT`. |
+| `SOLVER.DAILY_OPS_RESULT` | `COR3_DAILY_OPS_RESULT` | `{ ok }` | terminal verdict of ONE `solver-daily-ops` run, posted from the START handler's `finally` — fires on EVERY outcome, including soft failures (Start button missing, puzzle never opened) that emit no `solved:`/`Error:` log line. The Auto watcher releases its in-flight latch on it (previously a soft failure leaked the latch into the 4-min watchdog); `ok:true` also triggers the REST refetch so the streak/claimed badge flips without a Refresh click. |
 | `SOLVER.START_ICE_WALL` | `COR3_START_ICE_WALL` | `null` | starts the watcher in `solver-ice-wall` (Porter-lite r4 minigame opened from SAI). |
 | `SOLVER.STOP_ICE_WALL` | `COR3_STOP_ICE_WALL` | `null` | sets `window.__iceWallAbort=true`. |
 | `SOLVER.ICE_WALL_BUSY` | `COR3_ICE_WALL_BUSY` | `{ busy, ts }` | MAIN → isolated heartbeat — posted when the solver detects an `IceWallBreakApplication` and again when that window closes. |

@@ -563,10 +563,11 @@
             const allInProgress = packet.queue.filter((j) =>
                 j.status === 'TAKEN' && !bugged[j.id] && !(j.raw && j.raw.canComplete === true));
             // #6 — postpone (do NOT dispatch) any SAI job whose target server is on
-            // K/D cooldown or not accessible this cycle: the flow would only burn a
-            // login/hack attempt failing ensureAccess. Postponing is NOT a failed
-            // attempt (the retry budget is untouched) — the job runs unchanged the
-            // moment the server is reachable again.
+            // K/D cooldown, not accessible, or cut off the route (no path from
+            // HOME — a transit node on maintenance) this cycle: the flow would
+            // only burn a login/hack attempt failing ensureAccess. Postponing is
+            // NOT a failed attempt (the retry budget is untouched) — the job runs
+            // unchanged the moment the server is reachable again.
             const acc = packet.accessibility || {};
             const inProgress = [];
             let postponed = 0;
@@ -574,7 +575,7 @@
                 if (this._jobServerReachable(j, acc)) inProgress.push(j);
                 else postponed++;
             }
-            if (postponed) this.info(`JOB_FLOW → ${postponed} in-progress SAI job(s) postponed (server on K/D / not accessible this cycle)`);
+            if (postponed) this.info(`JOB_FLOW → ${postponed} in-progress SAI job(s) postponed (server on K/D / no path / not accessible this cycle)`);
             // Returns whether a flow batch actually ran (≥1 job dispatched) — the
             // _loop uses it to chain on the SHORT active delay instead of DELAY:30s.
             if (inProgress.length === 0) { this.debug('JOB_FLOW → no resumable in-progress jobs to run this cycle'); return false; }

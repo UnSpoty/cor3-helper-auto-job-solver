@@ -142,6 +142,10 @@
         cpu: { demandKey: 'psu_total', specKey: 'cpuConsuming' },
         gpu: { demandKey: 'psu_total', specKey: 'gpuConsuming' },
     };
+    // The hardware slots, derived from SLOT_SUPPLY (the single source of which
+    // slots exist). Every slot-iterating loop below uses this list; hw.category
+    // is the slot name uppercased ('cpu' → 'CPU').
+    const HW_SLOTS = Object.keys(SLOT_SUPPLY);
 
     // ─── Style ───────────────────────────────────────────────────────────
     const CSS = `
@@ -804,7 +808,7 @@
         // Supply per consuming-resource from a {cpu,gpu,ram,psu} hardware pick.
         _supplyOf(hw) {
             const s = {};
-            for (const slot of Object.keys(SLOT_SUPPLY)) {
+            for (const slot of HW_SLOTS) {
                 const piece = hw[slot];
                 for (const { supplyKey, specKey } of SLOT_SUPPLY[slot]) {
                     s[supplyKey] = piece && piece.specs ? (Number(piece.specs[specKey]) || 0) : 0;
@@ -822,6 +826,20 @@
                 if (piece && piece.specs) draw += Number(piece.specs[specKey]) || 0;
             }
             return draw;
+        }
+        // PSU draws of the cpu↔gpu swap TRANSITION from (curCpu,curGpu) to
+        // (cpu,gpu): the peak draw along each one-slot-at-a-time order, floored
+        // by the final draw. ONE formula shared by the optimizer's feasibility
+        // pre-check and _applyHwConfig's headroom/ordering decision — the two
+        // MUST agree, or the optimizer would pick configs the applier can't
+        // physically reach (the server rejects over-draw equips).
+        _transitionDraws(curCpu, curGpu, cpu, gpu) {
+            const targetDraw = this._psuDraw({ cpu, gpu });
+            return {
+                targetDraw,
+                cpuFirst: Math.max(this._psuDraw({ cpu, gpu: curGpu }), targetDraw),
+                gpuFirst: Math.max(this._psuDraw({ cpu: curCpu, gpu }), targetDraw),
+            };
         }
         // Overall feed ratio on `supply` = min component ratio (clamped). `bands` is
         // the precomputed _consumingBands(sw) (hoisted out of the hw loop by callers).
@@ -864,10 +882,10 @@
         // Owned hardware grouped by slot (includes the currently-equipped pieces —
         // the snapshot's ownedHardware lists equipped items too).
         _ownedBySlot() {
-            const cat = { cpu: 'CPU', gpu: 'GPU', ram: 'RAM', psu: 'PSU' };
-            const out = { cpu: [], gpu: [], ram: [], psu: [] };
+            const out = {};
+            for (const slot of HW_SLOTS) out[slot] = [];
             for (const h of ((this._snapshot && this._snapshot.ownedHardware) || [])) {
-                for (const slot of Object.keys(cat)) if (h.category === cat[slot]) out[slot].push(h);
+                for (const slot of HW_SLOTS) if (h.category === slot.toUpperCase()) out[slot].push(h);
             }
             return out;
         }
@@ -902,12 +920,12 @@
             const curSw = new Set(((this._snapshot.equippedSoftware) || []).map((s) => s.id));
             const swapCount = (sw, hw) => {
                 let n = curSw.has(sw.id) ? 0 : 1;
-                for (const slot of ['cpu', 'gpu', 'ram', 'psu']) if (!curHw[slot] || curHw[slot].id !== hw[slot].id) n++;
+                for (const slot of HW_SLOTS) if (!curHw[slot] || curHw[slot].id !== hw[slot].id) n++;
                 return n;
             };
             const tierSum = (sw, hw) => (Number(sw.tier) || 0)
-                + ['cpu', 'gpu', 'ram', 'psu'].reduce((t, s) => t + (Number(hw[s].tier) || 0), 0);
-            const vulnSum = (hw) => ['cpu', 'gpu', 'ram', 'psu'].reduce((v, s) => v + (Number(hw[s].itemVulnerability) || 0), 0);
+                + HW_SLOTS.reduce((t, s) => t + (Number(hw[s].tier) || 0), 0);
+            const vulnSum = (hw) => HW_SLOTS.reduce((v, s) => v + (Number(hw[s].itemVulnerability) || 0), 0);
             // Lower cost is better: fewest swaps → lowest tier → lowest vulnerability
             // → (tie) more power. A band-less tool (power=Infinity sentinel) is treated
             // as LOWEST preference on the power tie-break — prefer a known-banded tool.
@@ -923,27 +941,28 @@
             let best = null, maxAny = null;
             for (const { sw, spec } of swCands) {
                 const bands = this._consumingBands(sw);   // invariant across the hw loop
-                for (const cpu of owned.cpu) for (const gpu of owned.gpu) for (const ram of owned.ram) for (const psu of owned.psu) {
-                    const hw = { cpu, gpu, ram, psu };
-                    const supply = this._supplyOf(hw);
-                    if (!this._bootableOn(bands, supply)) continue;
-                    if (this._psuDraw(hw) > (Number(psu.specs && psu.specs.psuPower) || 0) + 1e-9) continue;
-                    // Reject configs whose mid-swap TRANSITION peak no owned PSU can
-                    // power (the server rejects over-draw equips, so such a config can
-                    // never be physically applied — _applyHwConfig would never converge).
-                    const td = this._psuDraw(hw);
-                    const transitionPeak = Math.min(
-                        Math.max(this._psuDraw({ cpu, gpu: curGpu }), td),
-                        Math.max(this._psuDraw({ cpu: curCpu, gpu }), td));
-                    if (transitionPeak > maxPsuPower + 1e-9) continue;
-                    const p = this._powerFromSpec(spec, this._ratioFor(bands, supply));
-                    const cand = { sw, spec, hw, power: p == null ? Infinity : p,
-                        swaps: swapCount(sw, hw), tier: tierSum(sw, hw), vuln: vulnSum(hw) };
-                    // maxAny (the "best achievable" diagnostic) tracks only FINITE
-                    // powers — a band-less Infinity must not shadow a real banded ceiling.
-                    if (p != null && (maxAny == null || p > maxAny.power)) maxAny = { sw, hw, power: p };
-                    const reaches = need <= 0 || (p != null && p >= need);
-                    if (reaches && (best == null || better(cand, best))) best = cand;
+                for (const cpu of owned.cpu) for (const gpu of owned.gpu) {
+                    // PSU draw + transition feasibility depend only on (cpu,gpu) —
+                    // computed once per pair, not per ram×psu combo. Reject pairs
+                    // whose mid-swap TRANSITION peak no owned PSU can power (the
+                    // server rejects over-draw equips, so such a config can never
+                    // be physically applied — _applyHwConfig would never converge).
+                    const trans = this._transitionDraws(curCpu, curGpu, cpu, gpu);
+                    if (Math.min(trans.cpuFirst, trans.gpuFirst) > maxPsuPower + 1e-9) continue;
+                    for (const ram of owned.ram) for (const psu of owned.psu) {
+                        if (trans.targetDraw > (Number(psu.specs && psu.specs.psuPower) || 0) + 1e-9) continue;
+                        const hw = { cpu, gpu, ram, psu };
+                        const supply = this._supplyOf(hw);
+                        if (!this._bootableOn(bands, supply)) continue;
+                        const p = this._powerFromSpec(spec, this._ratioFor(bands, supply));
+                        const cand = { sw, spec, hw, power: p == null ? Infinity : p,
+                            swaps: swapCount(sw, hw), tier: tierSum(sw, hw), vuln: vulnSum(hw) };
+                        // maxAny (the "best achievable" diagnostic) tracks only FINITE
+                        // powers — a band-less Infinity must not shadow a real banded ceiling.
+                        if (p != null && (maxAny == null || p > maxAny.power)) maxAny = { sw, hw, power: p };
+                        const reaches = need <= 0 || (p != null && p >= need);
+                        if (reaches && (best == null || better(cand, best))) best = cand;
+                    }
                 }
             }
             if (best) return { status: 'apply', sw: best.sw, spec: best.spec, hw: best.hw,
@@ -979,7 +998,7 @@
             // (the rig is always dedicated to the chosen tool); 'install' = nothing
             // else moves. Both light the same UI node — the label is for the log.
             const cur = this._snapshot.equippedHardware || {};
-            const hwChanges = ['cpu', 'gpu', 'ram', 'psu'].some((s) => !cur[s] || !r.hw || cur[s].id !== r.hw[s].id);
+            const hwChanges = HW_SLOTS.some((s) => !cur[s] || !r.hw || cur[s].id !== r.hw[s].id);
             const freesOther = ((this._snapshot.equippedSoftware) || []).some((s) => !r.sw || s.id !== r.sw.id);
             return { status: (hwChanges || freesOther) ? 'swap' : 'install', sw: r.sw, hw: r.hw, power: r.power };
         }
@@ -1005,12 +1024,9 @@
             };
             await swap('ram', target.ram);   // no PSU draw — free to move first
             if ((target.cpu && eqId('cpu') !== target.cpu.id) || (target.gpu && eqId('gpu') !== target.gpu.id)) {
-                const curCpu = eq().cpu, curGpu = eq().gpu;
-                const targetDraw = this._psuDraw(target);
-                const maxCpuFirst = Math.max(this._psuDraw({ cpu: target.cpu, gpu: curGpu }), targetDraw);
-                const maxGpuFirst = Math.max(this._psuDraw({ cpu: curCpu, gpu: target.gpu }), targetDraw);
-                const headroom = Math.min(maxCpuFirst, maxGpuFirst);
-                const seq = maxCpuFirst <= maxGpuFirst ? ['cpu', 'gpu'] : ['gpu', 'cpu'];
+                const trans = this._transitionDraws(eq().cpu, eq().gpu, target.cpu, target.gpu);
+                const headroom = Math.min(trans.cpuFirst, trans.gpuFirst);
+                const seq = trans.cpuFirst <= trans.gpuFirst ? ['cpu', 'gpu'] : ['gpu', 'cpu'];
                 // Insert PSU headroom ONLY if the current PSU can't cover the swap.
                 if (psuP(eq().psu) + 1e-9 < headroom) {
                     const owned = this._ownedBySlot();
@@ -1025,7 +1041,7 @@
                 }
             }
             await swap('psu', target.psu);   // settle the target PSU last
-            return ['cpu', 'gpu', 'ram', 'psu'].every((slot) => !target[slot] || eqId(slot) === target[slot].id);
+            return HW_SLOTS.every((slot) => !target[slot] || eqId(slot) === target[slot].id);
         }
         // Execute an optimizer 'apply' plan: dedicate the rig to the chosen tool,
         // apply its optimal hardware, equip it, then VERIFY the live power clears
@@ -1035,41 +1051,51 @@
             // front so a missing hardware helper is a clean transient 'no-helper',
             // not a half-stripped rig + a false permanent verdict.
             if (typeof root.__cor3LoadoutEquipSoftware !== 'function' || typeof root.__cor3LoadoutEquipHardware !== 'function')
-                return { ok: false, status: 'no-helper', reason: 'equip-helper-missing' };
+                return { ok: false, status: 'no-helper', transient: true, reason: 'equip-helper-missing' };
             const { sw, hw } = plan;
             await this._freeAllSoftwareExcept(sw.id, say);
             // An equip that didn't take effect (transient over-draw rejection, WS /
             // snapshot lag, or a transition no PSU can power) is RETRYABLE — never let
-            // a partial rig masquerade as a permanent 'underpower'/'install-failed' that
-            // bugs a feasible job. Permanent 'underpower' is the optimizer's pre-apply
+            // a partial rig masquerade as a permanent 'underpower' that bugs a
+            // feasible job. Permanent 'underpower' is the optimizer's pre-apply
             // verdict (handled in _ensureCapability), not an apply-time miss.
             if (!await this._applyHwConfig(hw, say)) {
                 say('warn', `hardware for "${sw.name}" did not fully apply — retrying next cycle`);
-                return { ok: false, status: 'apply-incomplete', reason: 'hardware-not-applied' };
+                return { ok: false, status: 'apply-incomplete', transient: true, reason: 'hardware-not-applied' };
             }
             if (!this._isEquipped(sw.id)) {
                 root.__cor3LoadoutEquipSoftware(sw.id);
                 if (!await this._waitEquipped(sw.id, true, 8000)) {
                     say('warn', `install of "${sw.name}" did not take effect — retrying next cycle`);
-                    return { ok: false, status: 'apply-incomplete', reason: 'install-not-applied' };
+                    return { ok: false, status: 'apply-incomplete', transient: true, reason: 'install-not-applied' };
                 }
             }
             if (need <= 0) return { ok: true, status: 'applied', power: this._equippedPowerFor(capType, matchKey, target) };
             // Poll the live server-computed power: equippedSoftware membership can update
             // a frame before resources.softwarePower recomputes, so a single read may be
-            // null/stale. Settle before judging.
+            // null/stale. Settle before judging — the loop re-reads once more AFTER the
+            // final sleep so a value landing in that last window isn't missed.
             let live = null;
             const end = Date.now() + 4000;
-            do {
+            for (;;) {
                 live = this._equippedPowerFor(capType, matchKey, target);
                 if (live != null && live >= need) return { ok: true, status: 'applied', power: live };
+                if (Date.now() >= end) break;
                 await dom.sleep(300);
-            } while (Date.now() < end);
-            // The optimal config IS fully applied yet power stays short — the prediction
-            // diverged for this exact config, so retrying it is futile → genuine permanent
-            // shortfall (the optimizer already enumerated every alternative).
+            }
+            // live === null at timeout means the power never became READABLE — the
+            // softwarePower recompute is still in flight (snapshot lag), NOT a power
+            // verdict. Transient: retry next cycle instead of bugging a feasible job.
+            if (live == null) {
+                say('warn', `applied "${sw.name}" but its live ${capType} power never appeared in the snapshot — retrying next cycle`);
+                return { ok: false, status: 'apply-incomplete', transient: true, reason: 'live-power-not-readable' };
+            }
+            // The optimal config IS fully applied and READS a number short of the bar —
+            // the prediction diverged for this exact config, so retrying it is futile →
+            // genuine permanent shortfall (the optimizer already enumerated every
+            // alternative).
             say('warn', `applied "${sw.name}" (optimal config) but live power ${live} < required ${need}`);
-            return { ok: false, status: 'underpower', reason: `power-unreachable:${target}:${need}` };
+            return { ok: false, status: 'underpower', transient: false, reason: `power-unreachable:${target}:${need}` };
         }
         // Shared ensure: plan → (ready/none/underpower/unknown short-circuit) →
         // apply the optimal config. Used by apiEnsureDecrypt / apiEnsureHack.
@@ -1077,9 +1103,9 @@
             const verb = capType === 'HACK' ? 'hack' : capType === 'DECRYPT' ? 'decrypt' : capType.toLowerCase();
             const plan = this._planCapability(capType, matchKey, target, need);
             if (plan.status === 'ready')      { say('info', `loadout already ${verb}s ${target}${need ? ` (power ≥ ${need})` : ''}`); return { ok: true, status: 'ready', power: plan.power }; }
-            if (plan.status === 'unknown')    { say('warn', 'loadout snapshot still not loaded after request'); return { ok: false, status: 'unknown', reason: 'no-loadout-snapshot' }; }
-            if (plan.status === 'none')       { say('warn', `no owned software can ${verb} ${target}`); return { ok: false, status: 'none', reason: `no-software:${capType}:${target}` }; }
-            if (plan.status === 'underpower') { say('warn', `no owned software+hardware can ${verb} ${target} at power ${need} (best achievable ${plan.maxPower})`); return { ok: false, status: 'underpower', reason: `power-too-high:${target}:${need}`, maxPower: plan.maxPower }; }
+            if (plan.status === 'unknown')    { say('warn', 'loadout snapshot still not loaded after request'); return { ok: false, status: 'unknown', transient: true, reason: 'no-loadout-snapshot' }; }
+            if (plan.status === 'none')       { say('warn', `no owned software can ${verb} ${target}`); return { ok: false, status: 'none', transient: false, reason: `no-software:${capType}:${target}` }; }
+            if (plan.status === 'underpower') { say('warn', `no owned software+hardware can ${verb} ${target} at power ${need} (best achievable ${plan.maxPower})`); return { ok: false, status: 'underpower', transient: false, reason: `power-too-high:${target}:${need}`, maxPower: plan.maxPower }; }
             say('info', `optimal loadout to ${verb} ${target}${need ? ` (need ${need})` : ''}: "${plan.sw.name}" on [${plan.hw.cpu.name} · ${plan.hw.gpu.name} · ${plan.hw.ram.name} · ${plan.hw.psu.name}] → predicted power ${plan.power} (${plan.swaps} swap${plan.swaps === 1 ? '' : 's'})`);
             return this._applyOptimized(plan, capType, matchKey, target, need, say);
         }
@@ -1150,10 +1176,12 @@
         // CRYPT RATE), OPTIMALLY — the exhaustive optimizer picks the best owned
         // software + hardware. Resolves to
         //   { ok:true,  status:'ready'|'applied', power }
-        //   { ok:false, status:'none'|'underpower'|'unknown'|'no-helper'|'install-failed', reason }
-        // 'none'/'underpower' are PERMANENT (the orchestrator bugs the job);
-        // 'unknown'/'no-helper' are transient (retry). Back-compat: an old
-        // (ext, log) call (log fn in arg 2) ⇒ no power gate.
+        //   { ok:false, status:'none'|'underpower'|'unknown'|'no-helper'|'apply-incomplete',
+        //     transient, reason }
+        // `transient` is the retry verdict the flows act on: false for
+        // 'none'/'underpower' (PERMANENT — the orchestrator bugs the job), true
+        // for 'unknown'/'no-helper'/'apply-incomplete' (retry next cycle).
+        // Back-compat: an old (ext, log) call (log fn in arg 2) ⇒ no power gate.
         async apiEnsureDecrypt(ext, requiredPower, log) {
             if (typeof requiredPower === 'function' && log === undefined) { log = requiredPower; requiredPower = 0; }
             const say = typeof log === 'function' ? log : () => {};

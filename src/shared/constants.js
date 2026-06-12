@@ -150,6 +150,14 @@
             // Daily Ops one-shot solver (Game Center module).
             START_DAILY_OPS: 'COR3_START_DAILY_OPS',
             DAILY_OPS_LOG: 'COR3_DAILY_OPS_LOG',
+            // Terminal verdict of ONE solver run: { ok: bool }. Posted from the
+            // START handler's finally — fires on EVERY outcome, including the
+            // soft failures (Start button missing, puzzle never opened) that
+            // emit no "solved:"/"Error:" log line. The isolated daily-ops
+            // watcher releases its auto in-flight latch on this instead of
+            // regex-matching log lines (which leaked the latch into the 4min
+            // watchdog on every soft failure).
+            DAILY_OPS_RESULT: 'COR3_DAILY_OPS_RESULT',
             // Ice Wall solver — SAI's Porter-lite r4 minigame. Toggle-driven
             // watcher (same pattern as solver-decrypt): MAIN watches for
             // [data-sentry-component="IceWallBreakApplication"], then matches
@@ -563,6 +571,12 @@
             MARK_AS_BUGGED: 'mark-as-bugged',      // job can't be done → written to AJ_BUGGED_JOBS
             DELAY_CYCLE: 'delay-cycle',
         },
+
+        // "UI Show" master switches — popup panel visibility keys (the `uiShow`
+        // group in AJ_MASTER_SWITCHES). ONE list shared by the chip row
+        // (master-switches.js, chip label = i18n `autojobs.<key>`) and the
+        // host-visibility map (section.js) so the two can't drift apart.
+        UI_PANELS: ['networkMap', 'jobs', 'flowMap', 'activityLog'],
 
         // Loop cadence (matches the START→DELAY:10s→…→DELAY:30s flowchart).
         LOOP: {

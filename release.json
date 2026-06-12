@@ -1,13 +1,13 @@
 {
-  "version": "1.4.2",
+  "version": "1.4.3",
   "changes": [
-    "Auto Jobs: decrypt jobs now read the file's required decryption power (CRYPT RATE) and automatically install/swap the right software — and, when needed, the strongest owned hardware — to meet it. A job no owned gear can power is bugged instead of failing the minigame.",
-    "Auto Jobs: Decrypt & Extract and Data Upload now locate their target file even when cor3.gg names it differently in the job, on the server, and in your Downloads (matched by file id and base name) — fixing jobs that previously couldn't find the file.",
-    "Loadout panel: each software card now lists its capabilities (type · power · the file types / server types it covers), and every capability target is clickable to install or remove the software that provides it.",
-    "Expeditions: new per-market \"Markets & mercenaries\" view — each faction market's mercenaries (regular and elite, with unlock progress), your faction reputation, mercenary trust and hire slots, all in one place.",
-    "Expeditions: fixed launching expeditions after the latest cor3.gg content patch (objective→goal rename, market-scoped config) and restored the per-mercenary cost/risk/outcome preview.",
-    "Expeditions: the whole tab is now translated and follows your chosen language.",
-    "Overview: market countdown timers no longer flicker or reset when market data refreshes in the background; Daily Ops clears the previous day's puzzle info when the timer rolls over to a new day.",
-    "Internal: a single market registry is the source of truth for market/faction ids (home/dark/srm/usol), and the expeditions mercenary fetch is hardened against mis-tagged data. Tested against cor3.gg web version 1.20.35."
+    "Loadout: one exhaustive power-aware optimizer now drives both HACK and DECRYPT — it searches every owned software × CPU × GPU × RAM × PSU combination and applies the optimal one (fewest swaps that clears the required defence/crypt rate), instead of blindly maxing hardware. \"Underpower\" is only reported when no combination can clear the bar.",
+    "Loadout: a timed-out power readout after an apply no longer permanently bugs the job as underpowered — it is retried next cycle (transient vs permanent failures are now told apart across all loadout-driven flows).",
+    "Auto Jobs: server availability now accounts for broken routes — a hub server on maintenance (K/D) cuts off every server behind it. Jobs for those servers are skipped from acceptance with an explicit \"no path\" reason, and already-taken jobs are postponed (never bugged) until the route is back.",
+    "Auto Jobs: a market whose server has no route from HOME is not refreshed at all that cycle (no more burned refresh timeouts) and is marked \"no-path\" on the Job List.",
+    "Auto Jobs: new \"UI Show\" master switches to hide individual popup panels (Network Map, Jobs, Flow Map, Activity Log).",
+    "Daily Ops: the Auto toggle now actually solves the new day even when the background status check fails (e.g. the session token expired during a long play session) — the rolled-over reset timer itself triggers the solver, and the in-game screen decides claimed/unclaimed. Every solver run now reports a terminal result, so soft failures retry promptly instead of stalling the watcher.",
+    "ICE WALL solver: the overlay no longer vanishes for 1–2 seconds when the game re-renders the puzzle window — it re-attaches and redraws within a frame.",
+    "Tested against cor3.gg web version 1.20.51."
   ]
 }

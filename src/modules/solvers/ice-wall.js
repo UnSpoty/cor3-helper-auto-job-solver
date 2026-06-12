@@ -1043,8 +1043,19 @@
 
             const check = () => {
                 if (done) return;
+                // App gone = the minigame window really closed → stop watching.
+                // Wall missing while the app is still there = a transient React
+                // re-mount of the board subtree (window drag / state churn): our
+                // overlay died with the old wall node, so DON'T treat it as
+                // app-closed (that ended solveRound and parked the loop in a
+                // 1.5s retry sleep — the user-visible "overlay vanishes for
+                // 1–2s"). Skip this tick; the observer/periodic re-check finds
+                // the remounted wall and ensureOverlayLayers redraws on it.
+                const app = document.querySelector(SEL.APP);
+                if (!app) return finish(null);
+                attachObserver();   // re-arm if React replaced the observed node
                 const wall = document.querySelector(SEL.WALL);
-                if (!wall) return finish(null);
+                if (!wall) return;
 
                 // Always-on UX overlays — both memoize internally so they
                 // don't retrigger the MutationObserver when state is stable.
@@ -1173,11 +1184,27 @@
                 debounceTimer = setTimeout(check, 80);
             };
 
-            const wall = document.querySelector(SEL.WALL);
-            if (!wall) return finish(null);
+            // Observe the APP container, not the WALL svg: React re-mounts the
+            // wall subtree wholesale (taking our overlay with it), and an
+            // observer attached to the OLD wall node goes silent — the redraw
+            // then waited on the 500ms periodic tick. Watching the stable app
+            // root fires scheduleCheck the instant the wall is replaced, so the
+            // overlay is rebuilt within one 80ms debounce. attachObserver()
+            // re-arms onto the current app element if even THAT gets replaced
+            // (check() calls it every tick; the periodic timer keeps ticking
+            // while the observer is dark).
+            let observedEl = null;
+            const attachObserver = () => {
+                const app = document.querySelector(SEL.APP);
+                if (!app || app === observedEl) return;
+                if (observer) observer.disconnect();
+                observer = new MutationObserver(scheduleCheck);
+                observer.observe(app, { subtree: true, childList: true, attributes: true });
+                observedEl = app;
+            };
 
-            observer = new MutationObserver(scheduleCheck);
-            observer.observe(wall, { subtree: true, childList: true, attributes: true });
+            if (!document.querySelector(SEL.APP)) return finish(null);
+            attachObserver();
 
             // Safety-net periodic check so the stable-partial timer can
             // still fire when the board stops mutating (reveal cadence
