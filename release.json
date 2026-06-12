@@ -1,13 +1,11 @@
 {
-  "version": "1.4.3",
+  "version": "1.4.4",
   "changes": [
-    "Loadout: one exhaustive power-aware optimizer now drives both HACK and DECRYPT — it searches every owned software × CPU × GPU × RAM × PSU combination and applies the optimal one (fewest swaps that clears the required defence/crypt rate), instead of blindly maxing hardware. \"Underpower\" is only reported when no combination can clear the bar.",
-    "Loadout: a timed-out power readout after an apply no longer permanently bugs the job as underpowered — it is retried next cycle (transient vs permanent failures are now told apart across all loadout-driven flows).",
-    "Auto Jobs: server availability now accounts for broken routes — a hub server on maintenance (K/D) cuts off every server behind it. Jobs for those servers are skipped from acceptance with an explicit \"no path\" reason, and already-taken jobs are postponed (never bugged) until the route is back.",
-    "Auto Jobs: a market whose server has no route from HOME is not refreshed at all that cycle (no more burned refresh timeouts) and is marked \"no-path\" on the Job List.",
-    "Auto Jobs: new \"UI Show\" master switches to hide individual popup panels (Network Map, Jobs, Flow Map, Activity Log).",
-    "Daily Ops: the Auto toggle now actually solves the new day even when the background status check fails (e.g. the session token expired during a long play session) — the rolled-over reset timer itself triggers the solver, and the in-game screen decides claimed/unclaimed. Every solver run now reports a terminal result, so soft failures retry promptly instead of stalling the watcher.",
-    "ICE WALL solver: the overlay no longer vanishes for 1–2 seconds when the game re-renders the puzzle window — it re-attaches and redraws within a frame.",
+    "Overview: new \"Show LOADOUT widget\" toggle (Game appearance section). The in-game LOADOUT pill is now hidden by default — flip the toggle to show it; it appears/disappears live, and Auto Jobs' automatic software/hardware management keeps working either way.",
+    "LOADOUT pill: drag it anywhere — free drag with snap spots (next to Notifications, beside the app launcher bar with a matching dock skin, hanging under the account HUD, or any custom spot on the bottom edge). The position is remembered.",
+    "Auto Jobs: fixed mislabeled jobs the site ships — a job NAMED \"Data download\" that actually requires decrypting the downloaded file is now recognised by its underlying type and run as Decrypt & Extract (download by base name, then decrypt by the file's real extension), instead of sitting in progress forever.",
+    "Auto Jobs: navigation hardening — job accepts/completes and SAI server sessions no longer race each other over the network-map endpoint; a timed-out IP/log list fetch is no longer mistaken for an empty list; transient upload/decrypt failures retry next cycle instead of being bugged.",
+    "Expeditions — Items: stash cards show craft/use chips, plus a sort bar (name/price/tier/quantity/category/flags/newest) and a \"hide craftable\" filter with a shown/total counter; view preferences are remembered.",
     "Tested against cor3.gg web version 1.20.51."
   ]
 }
