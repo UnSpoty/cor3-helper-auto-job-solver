@@ -56,9 +56,11 @@
             connections: null,        // NM_GRAPH.connections (read-only copy)
 
             // ── filled by CHECK_ACCESS ──
-            // { [serverName]: { accessible, hasSaiAccess, onCooldown, hackState, noPath } }
+            // { [serverName]: { accessible, hasSaiAccess, onCooldown, hackState,
+            //   noPath, gate, gateOpenable } } — gate/{gateOpenable} set only when
+            //   transit-hack (hackTransitNodes) is ON for a noPath server.
             accessibility: null,
-            pathReachable: null,      // Set<serverName> with a live route from HOME
+            pathReachable: null,      // Set<serverName> connectable now (transit-rule BFS, NOT the stale canSetEndpoint flag)
 
             // ── filled by UPDATE_MARKETS ──
             // [{ slot, reachable, refreshed, jobCount, takenCount, failedCount, marketId, reason }]
@@ -277,14 +279,15 @@
     }
     // Can a TAKEN job be dispatched this cycle? file_decryption is local (no
     // server → always). An SAI job needs its target server off K/D cooldown,
-    // on a live route from HOME (!noPath — a transit node on maintenance cuts
-    // off everything behind it, see computePathReachability) and either
-    // already accessible OR hackable (we own HACK software for its type — the
-    // flow's establishAccess connects + hacks for access). A server missing
-    // from the accessibility map passes deliberately — we let the flow run and
-    // surface the real error rather than silently stranding a job whose name
-    // didn't match the NM graph. The orchestrator's _runJobFlows uses this to
-    // decide which TAKEN jobs to work, and JOB_ACCEPTION uses it so its hold-gate
+    // on a live route from HOME (!noPath — the transit-rule BFS verdict;
+    // OR reachable via a hackable transit gate when transit-hack is ON, baked
+    // into gateOpenable) and either already accessible OR hackable (we own HACK
+    // software for its type — the flow's establishAccess connects + hacks for
+    // access). A server missing from the accessibility map passes deliberately —
+    // we let the flow run and surface the real error rather than silently
+    // stranding a job whose name didn't match the NM graph. The orchestrator's
+    // _runJobFlows uses this to decide which TAKEN jobs to work (and to open the
+    // route first when gateOpenable), and JOB_ACCEPTION uses it so its hold-gate
     // only counts jobs that are actually workable (an unreachable TAKEN job must
     // NOT block fresh accepts).
     function jobServerReachable(job, accessibility) {
@@ -292,7 +295,15 @@
         if (!job.serverName) return true;
         const a = accessibility[job.serverName];
         if (!a) return true;
-        return (!!a.accessible || !!a.hackState) && !a.onCooldown && !a.noPath;
+        if (a.onCooldown) return false;
+        // No current route from HOME → workable only if a hackable transit gate
+        // can open it (switch ON, baked into gateOpenable). The orchestrator hacks
+        // the gate before working the server; if it can't, the server stays
+        // postponed (never bugged here).
+        if (a.noPath && !a.gateOpenable) return false;
+        // Route exists (or will, via the gate) → still need to access the server
+        // itself: already accessible OR we own HACK software for its type.
+        return (!!a.accessible || !!a.hackState);
     }
     function ipsForJob(rawJob) {
         const out = [];
@@ -497,36 +508,16 @@
         },
     };
 
-    // Path reachability over the Network Map: BFS from HOME across ALL edges
-    // (hidden gateways included — the game itself routes through them, e.g.
-    // D4RK side network). A server in maintenance can be the path's ENDPOINT
-    // (its own K/D state is already the onCooldown skip) but can NOT be
-    // routed THROUGH — the game refuses to relay via a K/D'd node, so every
-    // server behind it is temporarily unreachable (the A-B-C-D case: B on
-    // maintenance cuts off C and D). Returns the Set of reachable server
-    // names; everything outside it is "no path this cycle".
-    function computePathReachability(servers, connections, homeName) {
-        const inMaintenance = new Map();
-        for (const s of servers) if (s && s.name) inMaintenance.set(s.name, !!s.isInMaintenance);
-        const adj = new Map();
-        const link = (a, b) => { let l = adj.get(a); if (!l) adj.set(a, l = []); l.push(b); };
-        for (const c of connections) {
-            if (!c || !c.a || !c.b) continue;
-            link(c.a, c.b);
-            link(c.b, c.a);
-        }
-        const reached = new Set([homeName]);
-        const queue = [homeName];
-        while (queue.length) {
-            const cur = queue.shift();
-            // Reached-but-in-maintenance: endpoint only, never a transit hop.
-            if (cur !== homeName && inMaintenance.get(cur)) continue;
-            for (const n of (adj.get(cur) || [])) {
-                if (!reached.has(n)) { reached.add(n); queue.push(n); }
-            }
-        }
-        return reached;
-    }
+    // Path reachability is a transit-rule BFS from HOME (shared
+    // COR3.autoJobs.reachability.reachableSet — one copy, also used by the popup
+    // Network Map), NOT the game's canSetEndpoint flag: that flag is stale on
+    // transient K/D (a server behind a freshly-K/D'd transit node keeps
+    // canSetEndpoint:true while set.endpoint returns no-path — verified live), so
+    // we recompute each cycle off the live isInMaintenance/transitType/accessType.
+    // The transit-gate model (which non-public/no-access node blocks the route to
+    // an unreachable server, and could be hacked to open it) lives in the same
+    // shared module's gateOnPath. See src/shared/aj-reachability.js.
+    const reachability = () => root.COR3.autoJobs.reachability;
 
     // MODULE:CHECK_ACCESS — for each server, do we have access,
     // SAI access, and is it on K/D cooldown. Market reachability is NOT decided
@@ -547,14 +538,38 @@
             const loadout = await ctx.store.local.getOne(SL.LOADOUT, null);
             const derivedHack = loadout && loadout._derived && loadout._derived.hackServerTypes;
             const hackStateFn = root.COR3.ajEligibility.hackState;
+            // Gates the MAIN hack proved permanently un-openable (planHack
+            // none/underpower) — keyed by gate server name. A gate listed here is
+            // NOT offered as openable, so the server behind it stays a hard noPath
+            // instead of being accepted-then-postponed forever.
+            const buggedGates = await ctx.store.local.getOne(SL.AJ_BUGGED_GATES, {});
+            // The transit-gate HACK is opt-in (default OFF, behaviour group). When
+            // OFF, behaviour is exactly as before: an unreachable server is a hard
+            // noPath skip. When ON, a server reachable only through a hackable gate
+            // becomes workable (the orchestrator opens the route before working it).
+            const switches = await ctx.store.local.getOne(SL.AJ_MASTER_SWITCHES, {});
+            const hackTransitOn = !!(switches.behaviour && switches.behaviour.hackTransitNodes === true);
+            const R = reachability();
+            if (!R) throw new Error('CHECK_ACCESS: aj-reachability module not loaded');
 
-            // Live route from HOME this cycle (maintenance transit nodes cut
-            // off whole branches — the no-path-for-server case).
-            const pathReachable = computePathReachability(packet.servers, packet.connections, packet.home);
+            // Reachability is a transit-rule BFS from HOME over the LIVE graph
+            // (isInMaintenance/transitType/accessType), NOT the game's
+            // `canSetEndpoint` flag — that flag is stale on transient K/D (a server
+            // behind a freshly-K/D'd transit node keeps canSetEndpoint:true while
+            // set.endpoint returns no-path; verified live). noPath === a server is
+            // NOT currently connectable (route cut by a K/D transit node OR by a
+            // non-public/no-access node we can't relay through).
+            const pathReachable = R.reachableSet(packet.servers, packet.connections, packet.home);
             packet.pathReachable = pathReachable;
+            // HOME seeds the BFS — an empty/missing result means the HOME name is
+            // not in servers[] (stale/broken envelope). Fail loudly; the
+            // orchestrator's REQUEST_NM_MAP refreshes it within seconds.
+            if (!pathReachable.has(packet.home)) {
+                throw new Error('CHECK_ACCESS: HOME not found in NM_GRAPH servers[] (stale/broken envelope) — waiting for a Network Map refresh');
+            }
 
             const accessibility = {};
-            let accessible = 0, onCooldown = 0, hackable = 0, noPath = 0;
+            let accessible = 0, onCooldown = 0, hackable = 0, noPath = 0, gated = 0;
             for (const s of packet.servers) {
                 if (!s || !s.name) continue;
                 const entry = {
@@ -563,7 +578,26 @@
                     onCooldown: !!s.isInMaintenance,
                     hackState: hackStateFn(s.serverTypeName, derivedHack),  // 'active' | 'available' | null
                     noPath: !pathReachable.has(s.name),
+                    gate: null,         // {id,name,serverType,serverDefenceRate,hackable} — the transit gate to hack (detection)
+                    gateOpenable: false, // policy: switch ON AND gate owned-hackable → treat noPath as workable
                 };
+                // For an unreachable server (switch ON), find the transit gate on
+                // its route we could hack to open it (the user's A-B-C-D case where
+                // B is a non-public/no-access node, not a K/D one). `hackable` is
+                // the OWNERSHIP pre-filter (do we own HACK software for the gate's
+                // type) — the authoritative power-vs-hardware feasibility runs in
+                // MAIN (COR3.game.loadout.planHack) at hack time; a gate that proves
+                // un-openable there is recorded in AJ_BUGGED_GATES and skipped here.
+                // gateOpenable (switch+hackable) is the policy flag CHECK_CONDITION
+                // and jobServerReachable read to treat the route as workable.
+                if (entry.noPath && hackTransitOn) {
+                    const gate = R.gateOnPath(packet.servers, packet.connections, packet.home, s.name);
+                    if (gate && !buggedGates[gate.name]) {
+                        gate.hackable = !!hackStateFn(gate.serverType, derivedHack);
+                        entry.gate = gate;
+                        if (gate.hackable) { entry.gateOpenable = true; gated++; }
+                    }
+                }
                 accessibility[s.name] = entry;
                 if (entry.accessible) accessible++;
                 if (entry.onCooldown) onCooldown++;
@@ -572,8 +606,8 @@
             }
             packet.accessibility = accessibility;
 
-            ctx.log.debug(`CHECK_ACCESS → ${accessible}/${packet.servers.length} accessible, ${onCooldown} on K/D, ${hackable} hackable, ${noPath} with no path`, {
-                accessible, onCooldown, hackable, noPath,
+            ctx.log.debug(`CHECK_ACCESS → ${accessible}/${packet.servers.length} accessible, ${onCooldown} on K/D, ${hackable} hackable, ${noPath} with no path (${gated} openable via gate hack)`, {
+                accessible, onCooldown, hackable, noPath, gated,
             });
             return stamp(packet, this.id, { accessible, onCooldown, noPath });
         },
@@ -832,26 +866,39 @@
                 //   hackState 'active'    — equipped tool covers it (hack now)
                 //   hackState 'available' — owned-not-equipped (ensureHack installs)
                 const dataReasons = [];
-                let dataWarnReason = null;
+                // Both the route-gate and the server-access checks can WARN on the
+                // SAME job (a never-before-reached server is typically behind a gate
+                // AND not directly accessible) — accumulate so neither message
+                // clobbers the other; the job row then shows both steps in order
+                // (open the route, then hack the server).
+                const dataWarnReasons = [];
                 let hackState = null;
                 if (job.serverName) {
                     const acc = packet.accessibility[job.serverName];
                     if (!acc) dataReasons.push(`server not in Network Map: ${job.serverName}`);
                     else {
                         if (acc.onCooldown) dataReasons.push('server on K/D cooldown');
-                        // Route from HOME is broken (a transit node is on
-                        // maintenance — the A-B-C-D case). Same class as K/D:
-                        // a temporary hard skip that self-heals next cycle.
-                        if (acc.noPath) dataReasons.push('no path to server (route blocked by maintenance)');
+                        // Route from HOME is broken (a maintenance transit node OR a
+                        // non-public/no-access node we can't relay through). Normally
+                        // a hard skip that self-heals next cycle — BUT when a hackable
+                        // transit gate can open the route (switch ON → gateOpenable),
+                        // it is a non-blocking WARN instead, mirroring the
+                        // not-accessible-but-hackable case: the job stays eligible and
+                        // the orchestrator opens the route before working it.
+                        if (acc.noPath) {
+                            if (acc.gateOpenable && acc.gate) dataWarnReasons.push(`route blocked — gate "${acc.gate.name}" can be hacked to open it`);
+                            else dataReasons.push('no path to server (route blocked)');
+                        }
                         if (!acc.accessible) {
                             hackState = acc.hackState || null;
-                            if (hackState === 'active') dataWarnReason = 'server not accessible but can be hacked';
-                            else if (hackState === 'available') dataWarnReason = 'server not accessible but can be hacked (install HACK software)';
+                            if (hackState === 'active') dataWarnReasons.push('server not accessible but can be hacked');
+                            else if (hackState === 'available') dataWarnReasons.push('server not accessible but can be hacked (install HACK software)');
                             else dataReasons.push('server not accessible');
                         }
                     }
                 }
                 const dataSkipReason = dataReasons.length ? dataReasons.join('; ') : null;
+                const dataWarnReason = dataWarnReasons.length ? dataWarnReasons.join('; ') : null;
 
                 // ── CONFIG reason (shared with the popup) + bugged registry ──
                 // Both are storage-backed, so the popup re-derives them live;
@@ -1031,7 +1078,6 @@
         // SAI-flow target resolvers (read from the TAKEN job's condition details).
         serverConfigId,
         jobServerReachable,
-        computePathReachability,
         ipsForJob,
         fileNamesForJob,
         fileDescriptorsForJob,

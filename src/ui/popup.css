@@ -1098,6 +1098,15 @@ input[type="range"] { width: 100%; accent-color: var(--os-color-primary-hex); }
     stroke-dasharray: 2 3;
 }
 .nm-state-nopath .nm-name { opacity: 0.6; }
+/* No route now, BUT a non-public/no-access transit gate on the path can be
+   hacked to open it (the hackTransitNodes feature). Dashed like nopath, but a
+   warning (amber) stroke rather than danger — it is recoverable. */
+.nm-state-gate-hackable .nm-card {
+    stroke: var(--os-color-warning) !important;
+    stroke-width: 1.6 !important;
+    stroke-dasharray: 2 3;
+}
+.nm-state-gate-hackable .nm-name { opacity: 0.75; }
 .nm-state-skip .nm-name { text-decoration: line-through; opacity: 0.7; }
 .nm-state-off  .nm-card { stroke-dasharray: 3 3; }
 .nm-state-off  .nm-name { opacity: 0.55; }

@@ -90,46 +90,30 @@
         return { positions, worldW, worldH };
     }
 
-    // Pipeline reason string for a route cut by a maintenance transit node —
+    // Pipeline reason string for a server with no current route from HOME —
     // shown raw (English) like the Job List's skip reasons. Keep in sync with
     // CHECK_CONDITION's dataReasons in src/modules/automation/auto-jobs/pipeline.js.
-    const NO_PATH_REASON = 'no path to server (route blocked by maintenance)';
+    const NO_PATH_REASON = 'no path to server (route blocked)';
 
-    // BFS from HOME over ALL edges (hidden gateways included): a server in
-    // maintenance may be reached as an ENDPOINT but is never expanded as a
-    // transit hop (HOME itself is expanded even while in maintenance).
-    // pipeline.js is not loaded in the popup — keep in sync with
-    // computePathReachability in src/modules/automation/auto-jobs/pipeline.js.
-    function computePathReachability(servers, connections, homeName) {
-        const inMaintenance = new Map();
-        for (const s of servers) if (s && s.name) inMaintenance.set(s.name, !!s.isInMaintenance);
-        const adj = new Map();
-        const link = (a, b) => { let l = adj.get(a); if (!l) adj.set(a, l = []); l.push(b); };
-        for (const c of connections) {
-            if (!c || !c.a || !c.b) continue;
-            link(c.a, c.b);
-            link(c.b, c.a);
-        }
-        const reached = new Set([homeName]);
-        const queue = [homeName];
-        while (queue.length) {
-            const cur = queue.shift();
-            // Reached-but-in-maintenance: endpoint only, never a transit hop.
-            if (cur !== homeName && inMaintenance.get(cur)) continue;
-            for (const n of (adj.get(cur) || [])) {
-                if (!reached.has(n)) { reached.add(n); queue.push(n); }
-            }
-        }
-        return reached;
-    }
+    // Reachability is a transit-rule BFS from HOME via the shared
+    // COR3.autoJobs.reachability.reachableSet (see src/shared/aj-reachability.js)
+    // — the SAME source the pipeline's CHECK_ACCESS uses, so the displayed and
+    // enforced verdicts can't drift. (NOT the game's canSetEndpoint flag: that is
+    // stale on transient K/D — a server behind a freshly-K/D'd transit node keeps
+    // canSetEndpoint:true while set.endpoint returns no-path.)
 
     function classifyNode(node, ctx) {
         if (!node) return 'ok';
         if (node.name === ctx.homeName) return 'home';
         if (node.isInMaintenance) return 'kd';
-        // Route from HOME cut by a maintenance transit node — the same verdict
-        // the pipeline's CHECK_ACCESS stamps as `noPath` (hard skip + postpone).
-        if (ctx.pathReachable && !ctx.pathReachable.has(node.name)) return 'nopath';
+        // No current route from HOME — same verdict the pipeline's CHECK_ACCESS
+        // stamps as `noPath` (a maintenance transit node OR a non-public/no-access
+        // node we can't relay through). 'gate-hackable' when an openable transit
+        // gate sits on the route (the orchestrator can hack it to open the path).
+        if (ctx.pathReachable && !ctx.pathReachable.has(node.name)) {
+            const g = ctx.gateByServer && ctx.gateByServer[node.name];
+            return (g && g.hackable) ? 'gate-hackable' : 'nopath';
+        }
         return 'ok';
     }
 
@@ -433,7 +417,7 @@
             // returns false on cooldown/noPath). The K/D badge / no-path styling
             // already marks the block.
             let nodeHackState = null;
-            if (!isHome && !s.isAccessible && cls !== 'kd' && cls !== 'nopath') {
+            if (!isHome && !s.isAccessible && cls !== 'kd' && cls !== 'nopath' && cls !== 'gate-hackable') {
                 nodeHackState = (root.COR3.ajEligibility && root.COR3.ajEligibility.hackState)
                     ? root.COR3.ajEligibility.hackState(s.serverTypeName, ctx.hackDerived) : null;
                 if (nodeHackState === 'active' || nodeHackState === 'available') {
@@ -459,9 +443,13 @@
             if (isActiveEndpoint)        parts.push(t('autojobs.tipCurrentEndpoint'));
             if (cls === 'kd')            parts.push(t('autojobs.tipKd'));
             else if (cls === 'nopath')   parts.push(NO_PATH_REASON);
+            else if (cls === 'gate-hackable') {
+                const g = ctx.gateByServer && ctx.gateByServer[s.name];
+                parts.push(t('autojobs.tipGateHackable', { gate: (g && g.name) || '?' }));
+            }
             if (nodeHackState === 'active')         parts.push(t('autojobs.tipHackActive'));
             else if (nodeHackState === 'available') parts.push(t('autojobs.tipHackAvailable'));
-            else if (nodeHackState === null && !isHome && !s.isAccessible && cls !== 'kd' && cls !== 'nopath') parts.push(t('autojobs.tipNotAccessible'));
+            else if (nodeHackState === null && !isHome && !s.isAccessible && cls !== 'kd' && cls !== 'nopath' && cls !== 'gate-hackable') parts.push(t('autojobs.tipNotAccessible'));
             if (jobs > 0)                parts.push(t('autojobs.tipJobsAvail', { n: jobs }));
             if (ov && ov.skip)           parts.push(t('autojobs.tipSkipped'));
             else if (disabledCount > 0)  parts.push(t('autojobs.tipTypesDisabled', { n: disabledCount }));
@@ -828,7 +816,7 @@
             // envelope yields no verdict here (the orchestrator's REQUEST_NM_MAP
             // refreshes it within seconds).
             pathReachable = (graph && graph.home && Array.isArray(graph.servers) && Array.isArray(graph.connections))
-                ? computePathReachability(graph.servers, graph.connections, graph.home)
+                ? root.COR3.autoJobs.reachability.reachableSet(graph.servers, graph.connections, graph.home)
                 : null;
 
             // Map each market server to its slot so we can dim it when its
@@ -853,6 +841,25 @@
                 else if (s.marketId && marketIdToSlot[s.marketId]) marketSlotByName[s.name] = marketIdToSlot[s.marketId];
             }
 
+            const hackDerived = (loadout && loadout._derived && loadout._derived.hackServerTypes) || null;
+
+            // Transit gate per unreachable server — which non-public/no-access node
+            // on its route could be hacked to open the path (mirrors CHECK_ACCESS).
+            // hackable = OWNERSHIP pre-filter (do we own HACK software for the
+            // gate's type); the authoritative power feasibility is decided in MAIN
+            // at hack time. Detection is independent of the master switch so the
+            // map can SHOW an openable gate even when auto-hacking is off.
+            const gateByServer = {};
+            if (pathReachable && graph && Array.isArray(graph.servers) && Array.isArray(graph.connections)) {
+                const R = root.COR3.autoJobs.reachability;
+                const hs = root.COR3.ajEligibility.hackState;
+                for (const s of graph.servers) {
+                    if (!s || !s.name || pathReachable.has(s.name)) continue;
+                    const gate = R.gateOnPath(graph.servers, graph.connections, graph.home, s.name);
+                    if (gate) { gate.hackable = !!hs(gate.serverType, hackDerived); gateByServer[s.name] = gate; }
+                }
+            }
+
             const ctx = {
                 graph,
                 homeName: graph?.home || null,
@@ -862,9 +869,10 @@
                 switches: switches || {},
                 marketSlotByName,
                 pathReachable,
+                gateByServer,
                 // HACK capability per server type (from the loadout snapshot) —
                 // lets us highlight a not-accessible-but-hackable server.
-                hackDerived: (loadout && loadout._derived && loadout._derived.hackServerTypes) || null,
+                hackDerived,
             };
 
             // Index servers for the context menu (name → server object, so the

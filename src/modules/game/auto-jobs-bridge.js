@@ -185,14 +185,25 @@
     //   no grant → hack: install HACK software if the Hack-Tools section is empty
     //   (loadout.ensureHack), click the hack tool (mounts the minigame), let the
     //   solver win, then the granted access logs us in. Password/passhack unused.
-    async function saiAccess(D, serverName, serverId, serverType) {
+    // Returns a result so callers (Open SAI; the route-open gate hack) can act on
+    // it: { ok:true } | { ok:false, retryable, reason }. `retryable:false` is a
+    // PERMANENT verdict (the orchestrator bugs the gate) — the only such case for
+    // a gate is ensureHack none/underpower (no owned software / too weak for the
+    // hardware) and a structurally-broken input (no serverType / no React
+    // onClick); everything else is transient (retry next cycle).
+    // opts.loginAfter (default true) logs in via the grant; a route-open gate
+    // hack passes false — only the access GRANT is needed to relay through the
+    // node, not a live SAI session. opts.label prefixes the log lines.
+    async function saiAccess(D, serverName, serverId, serverType, opts) {
+        const loginAfter = !opts || opts.loginAfter !== false;
+        const label = (opts && opts.label) || 'Open SAI';
         if (typeof root.__cor3SaiGetLoginStatus !== 'function' || typeof root.__cor3SaiLoginWithAccess !== 'function') {
-            log('error', 'Open SAI — SAI WS helpers missing'); return;
+            log('error', `${label} — SAI WS helpers missing`); return { ok: false, retryable: true, reason: 'SAI WS helpers missing' };
         }
         await dom.sleep(600);   // let the SAI terminal mount before the status query
 
         let status = await root.__cor3SaiGetLoginStatus(serverId);
-        if (!status) { log('error', 'Open SAI — no sai.get.login.status reply'); return; }
+        if (!status) { log('error', `${label} — no sai.get.login.status reply`); return { ok: false, retryable: true, reason: 'no login.status reply' }; }
         let grant = pickSaiGrant(status);
 
         if (!grant) {
@@ -205,34 +216,37 @@
             //    sufficiency check here. See [[reference_hack_power_model]].
             {
                 const LO = (root.COR3.game || {}).loadout;
-                if (!LO || typeof LO.ensureHack !== 'function') { log('error', 'Open SAI — COR3.game.loadout.ensureHack unavailable'); return; }
-                if (!serverType) { log('error', 'Open SAI — no serverType in message (needed to pick HACK software)'); return; }
+                if (!LO || typeof LO.ensureHack !== 'function') { log('error', `${label} — COR3.game.loadout.ensureHack unavailable`); return { ok: false, retryable: true, reason: 'ensureHack unavailable' }; }
+                if (!serverType) { log('error', `${label} — no serverType in message (needed to pick HACK software)`); return { ok: false, retryable: false, reason: 'no serverType' }; }
                 // serverDefenceRate is the power bar ensureHack must clear — a
                 // missing field would silently become "no gate" (Number(undefined)||0
                 // → 0) and wave an underpowered tool through to an unwinnable hack.
                 if (typeof status.serverDefenceRate !== 'number') {
-                    log('error', `Open SAI — sai.get.login.status carried no serverDefenceRate (got ${status.serverDefenceRate}) — cannot power-gate the hack`);
-                    return;
+                    log('error', `${label} — sai.get.login.status carried no serverDefenceRate (got ${status.serverDefenceRate}) — cannot power-gate the hack`);
+                    return { ok: false, retryable: true, reason: 'no serverDefenceRate' };
                 }
-                log('info', `Open SAI → ensuring HACK capability for "${serverType}" (defence ${status.serverDefenceRate})`);
+                log('info', `${label} → ensuring HACK capability for "${serverType}" (defence ${status.serverDefenceRate})`);
                 const cap = await LO.ensureHack(serverType, status.serverDefenceRate, (lvl, m) => log(lvl, m));
-                if (!cap.ok) { log('warn', `Open SAI → cannot gain hack capability for "${serverType}" (${cap.status}${cap.reason ? ': ' + cap.reason : ''})`); return; }
+                // cap.transient is the retry verdict: false (none/underpower) is
+                // PERMANENT → caller bugs the gate; true (unknown/apply-incomplete)
+                // retries next cycle.
+                if (!cap.ok) { log('warn', `${label} → cannot gain hack capability for "${serverType}" (${cap.status}${cap.reason ? ': ' + cap.reason : ''})`); return { ok: false, retryable: !!cap.transient, reason: `hack capability ${cap.status}` }; }
                 status = await root.__cor3SaiGetLoginStatus(serverId);
-                if (!status || !(status.hackTools && status.hackTools.length)) { log('warn', 'Open SAI → Hack Tool still absent after install'); return; }
+                if (!status || !(status.hackTools && status.hackTools.length)) { log('warn', `${label} → Hack Tool still absent after install`); return { ok: false, retryable: true, reason: 'hack tool absent after install' }; }
             }
             // 2. Launch the hack: click the hack-tool row in the SAI terminal
             //    (mounts the minigame window) and run the solvers.
             const tool = status.hackTools[0];
             const toolEl = await D.waitFor(() => findHackToolRow(D, tool.moduleName), 8000);
-            if (!toolEl) { log('error', `Open SAI — hack tool "${tool.moduleName}" not found in the SAI terminal`); return; }
-            log('info', `Open SAI → hacking "${serverName}" with "${tool.moduleName}" (power ${tool.hackPower} vs defence ${status.serverDefenceRate})`);
+            if (!toolEl) { log('error', `${label} — hack tool "${tool.moduleName}" not found in the SAI terminal`); return { ok: false, retryable: true, reason: 'hack tool row not found' }; }
+            log('info', `${label} → hacking "${serverName}" with "${tool.moduleName}" (power ${tool.hackPower} vs defence ${status.serverDefenceRate})`);
             startSolvers();
             try {
                 const clickAt = Date.now();
-                if (!D.invokeReactClick(toolEl)) { log('error', 'Open SAI — hack tool row has no React onClick'); return; }
+                if (!D.invokeReactClick(toolEl)) { log('error', `${label} — hack tool row has no React onClick`); return { ok: false, retryable: false, reason: 'hack tool no onClick' }; }
                 // Confirm the hack minigame launched (else don't poll for a grant
                 // that will never come).
-                if (!(await D.waitFor(() => findMinigame(), 30000))) { log('warn', 'Open SAI → hack minigame did not appear after clicking the tool'); return; }
+                if (!(await D.waitFor(() => findMinigame(), 30000))) { log('warn', `${label} → hack minigame did not appear after clicking the tool`); return { ok: false, retryable: true, reason: 'hack minigame did not appear' }; }
                 // Size the grant-poll budget to the LAUNCHED minigame's OWN timer
                 // (the interceptor captures timerDurationMs from
                 // minigames.start.minigame) + a buffer for the async grant write —
@@ -240,23 +254,53 @@
                 // duration, so this is no longer a hardcoded ceiling.
                 const mg = root.__cor3LastMinigame;
                 let timerMs = (mg && mg.at >= clickAt - 1500 && mg.timerDurationMs) ? mg.timerDurationMs : null;
-                if (!timerMs) { log('warn', 'Open SAI → could not read the hack minigame timer — using 300s'); timerMs = 300000; }
+                if (!timerMs) { log('warn', `${label} → could not read the hack minigame timer — using 300s`); timerMs = 300000; }
                 const budget = timerMs + 15000;
-                log('debug', `Open SAI → hack minigame open (timer ${Math.round(timerMs / 1000)}s) — solver running, polling for the grant`);
+                log('debug', `${label} → hack minigame open (timer ${Math.round(timerMs / 1000)}s) — solver running, polling for the grant`);
                 // The solver wins the minigame in the background; the access grant
                 // lands ASYNC after the win, so poll for it (a single immediate
                 // query raced the grant and missed it — that was the bug). The poll
                 // returns the instant the grant appears, well before `budget`.
                 grant = await pollForGrant(serverId, budget);
-                if (!grant) { log('warn', `Open SAI → hack did not grant access within ${Math.round(budget / 1000)}s (lost / timed out?)`); return; }
+                if (!grant) { log('warn', `${label} → hack did not grant access within ${Math.round(budget / 1000)}s (lost / timed out?)`); return { ok: false, retryable: true, reason: 'hack grant timeout' }; }
             } finally { stopSolvers(); }
-            log('info', 'Open SAI → hack succeeded — access granted');
+            log('info', `${label} → hack succeeded — access granted`);
         }
 
         // Log in with the grant (Active Access — no password / passhack). The
-        // server's verdict is surfaced by the `sai` inbound handler.
-        if (!root.__cor3SaiLoginWithAccess(serverId, grant.id)) { log('error', 'Open SAI — login.with-access send failed'); return; }
-        log('info', `Open SAI → logged in via Active Access (sai.login.with-access) for "${serverName}"`);
+        // server's verdict is surfaced by the `sai` inbound handler. A route-open
+        // gate hack skips this (loginAfter=false): the minted access grant alone
+        // lets the game relay THROUGH the node — no SAI session is needed.
+        if (loginAfter) {
+            if (!root.__cor3SaiLoginWithAccess(serverId, grant.id)) { log('error', `${label} — login.with-access send failed`); return { ok: false, retryable: true, reason: 'login.with-access send failed' }; }
+            log('info', `${label} → logged in via Active Access (sai.login.with-access) for "${serverName}"`);
+        }
+        return { ok: true };
+    }
+
+    // Connect to a server, open its SAI terminal, and gain access (grant or hack)
+    // — the shared body of Open SAI and the route-open gate hack. Returns
+    // saiAccess's result ({ ok, retryable, reason }). opts.loginAfter /
+    // opts.label flow through to saiAccess.
+    async function connectAndAccessSai(serverName, serverId, serverType, opts) {
+        const label = (opts && opts.label) || 'Open SAI';
+        const D = desktop();
+        if (!(await navigateToServer(serverName, serverId, label))) {
+            return { ok: false, retryable: true, reason: 'navigate/connect failed' };
+        }
+        // Open the SAI terminal via the panel's Login/access control (client fn —
+        // mounts the SaiLogin window; the hack-tool row lives inside it).
+        const loginBtn = await D.waitFor(() => D.findPanelButton({ onb: 'ServerInfoPanelLoginButton' }), 12000);
+        if (!loginBtn) {
+            log('warn', `${label} → connected to "${serverName}", but the SAI/Login control never appeared (server may need access granted first)`);
+            return { ok: false, retryable: true, reason: 'SAI/Login control not found' };
+        }
+        if (!D.invokeReactClick(loginBtn)) {
+            log('error', `${label} — SAI/Login control has no React onClick handler`);
+            return { ok: false, retryable: false, reason: 'SAI/Login no onClick' };
+        }
+        log('info', `${label} → SAI terminal open for "${serverName}"`);
+        return await saiAccess(D, serverName, serverId, serverType, opts);
     }
 
     // ── Open SAI ────────────────────────────────────────────────────────────
@@ -274,28 +318,44 @@
 
         try {
             await withGameLogMirror(async () => {
-                const D = desktop();
-                if (!(await navigateToServer(serverName, serverId, 'Open SAI'))) return;
-
-                // Open the SAI terminal via the panel's Login/access control
-                // (client fn — mounts the SaiLogin window).
-                const loginBtn = await D.waitFor(() => D.findPanelButton({ onb: 'ServerInfoPanelLoginButton' }), 12000);
-                if (!loginBtn) {
-                    log('warn', `Open SAI → connected to "${serverName}", but the SAI/Login control never appeared (server may need access granted first)`);
-                    return;
-                }
-                if (!D.invokeReactClick(loginBtn)) {
-                    log('error', 'Open SAI — SAI/Login control has no React onClick handler');
-                    return;
-                }
-                log('info', `Open SAI → SAI terminal open for "${serverName}"`);
-
-                // Gain access — Active Access, or hack the server (install HACK
-                // software → run the hack minigame → use the granted access).
-                await saiAccess(D, serverName, serverId, serverType);
+                // Connect → open the SAI terminal → gain access (Active Access, or
+                // hack the server: install HACK software → run the hack minigame →
+                // use the granted access).
+                await connectAndAccessSai(serverName, serverId, serverType, { loginAfter: true, label: 'Open SAI' });
             });
         } catch (e) {
             log('error', `Open SAI threw for "${serverName}": ${(e && e.message) || e}`, { stack: e && e.stack });
+        }
+    });
+
+    // ── Hack transit gate (route-opening) ─────────────────────────────────────
+    // Orchestrator → here: hack a non-public/no-access transit GATE node so the
+    // game will relay THROUGH it to a server behind it (the hackTransitNodes
+    // feature). Same connect + hack as Open SAI, but loginAfter:false — only the
+    // minted access GRANT is needed to open the route, not a SAI session. Replies
+    // HACK_RESULT { gateServerName, success, retryable, reason } so the
+    // orchestrator can park on it (and bug a permanently-un-openable gate).
+    Bus.window.on(AJ.HACK_TRANSIT, async (env) => {
+        const gateServerName = env && env.gateServerName;
+        const gateServerId = env && env.gateServerId;
+        const gateServerType = env && env.gateServerType;
+        const reply = (r) => Bus.window.post(AJ.HACK_RESULT, Object.assign({ gateServerName }, r));
+        if (!gateServerName || !gateServerId) {
+            log('error', 'Hack Gate aborted — no gate server name/id in message');
+            reply({ success: false, retryable: false, reason: 'missing gate server name/id' });
+            return;
+        }
+        log('info', `Hack Gate → opening route via "${gateServerName}"`);
+        try {
+            const res = await withGameLogMirror(async () =>
+                connectAndAccessSai(gateServerName, gateServerId, gateServerType, { loginAfter: false, label: 'Hack Gate' }));
+            // Revert to HOME so the freshly-opened route is exercised from a clean
+            // endpoint by the destination flow next (mirrors the accept/flow dances).
+            Bus.window.post(MSG.GAME.REVERT_ENDPOINT_TO_HOME, null);
+            reply({ success: !!(res && res.ok), retryable: !!(res && res.retryable), reason: (res && res.reason) || null });
+        } catch (e) {
+            log('error', `Hack Gate threw for "${gateServerName}": ${(e && e.message) || e}`, { stack: e && e.stack });
+            reply({ success: false, retryable: true, reason: 'exception during gate hack' });
         }
     });
 

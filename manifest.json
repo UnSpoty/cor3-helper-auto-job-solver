@@ -108,6 +108,7 @@
         "src/shared/i18n.js",
         "src/shared/i18n-bridge.js",
         "src/shared/aj-eligibility.js",
+        "src/shared/aj-reachability.js",
         "src/modules/data/auth.js",
         "src/modules/data/expeditions.js",
         "src/modules/data/archived-expeditions.js",

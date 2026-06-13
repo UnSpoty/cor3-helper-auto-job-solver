@@ -281,6 +281,18 @@
             //                                  next cycle (NOT bugged). Absent or
             //                                  retryable:false → MARK bugged.
             FLOW_RESULT: 'COR3_AJ_FLOW_RESULT',
+
+            // Route-opening: isolated orchestrator → MAIN bridge "hack this
+            // transit GATE node to open the route to a server behind it" (the
+            // hackTransitNodes feature). Payload: { gateServerId, gateServerType,
+            // gateServerName }. The bridge connects + hacks the gate (no SAI login
+            // after — only the access GRANT is needed to relay through it) and
+            // replies HACK_RESULT: { gateServerName, success, retryable, reason }.
+            // retryable:false === permanently un-openable (planHack none/underpower)
+            // → the orchestrator records it in AJ_BUGGED_GATES so CHECK_ACCESS
+            // stops offering it as openable.
+            HACK_TRANSIT: 'COR3_AJ_HACK_TRANSIT',
+            HACK_RESULT: 'COR3_AJ_HACK_RESULT',
         },
     };
 
@@ -390,6 +402,11 @@
         // behaviour.autoDismissFailed defaults OFF (absent === off) — it gates
         // the orchestrator's auto-dismiss of FAILED jobs.
         AJ_MASTER_SWITCHES: 'ajMasterSwitches',
+        // Transit gates the MAIN hack proved permanently un-openable (planHack
+        // none/underpower) — keyed by gate server name. Read by CHECK_ACCESS to
+        // demote a server behind such a gate back to a hard noPath (so it is not
+        // accepted-then-postponed forever). Shape: { [gateName]: { reason, since } }.
+        AJ_BUGGED_GATES: 'ajBuggedGates',
         // ICE WALL solver's learned shape→click-cell database (persisted by the
         // isolated auto-ice-wall bridge on behalf of the MAIN solver).
         // Shape: { [shapeKey]: { cells:[{dc,dr,mirror,revealed,g}], click:{dc,dr,mirror}, learnedAt, hits } }
@@ -594,6 +611,7 @@
             LD_ACCESS: 'ld-access', LD_DELETE: 'ld-delete', LD_COMPLETE: 'ld-complete',
             // decrypt_extract (SAI download + decrypt-SW install/swap + minigame solve)
             DE_ACCESS: 'de-access', DE_DOWNLOAD: 'de-download', DE_INSTALL_SW: 'de-install-sw', DE_SOLVE: 'de-solve', DE_COMPLETE: 'de-complete',
+            OPEN_ROUTE: 'open-route',              // hacking a transit gate to open the route to a server behind it (hackTransitNodes)
             MARK_AS_BUGGED: 'mark-as-bugged',      // job can't be done → written to AJ_BUGGED_JOBS
             DELAY_CYCLE: 'delay-cycle',
         },

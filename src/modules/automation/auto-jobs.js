@@ -255,6 +255,13 @@
         _startLoop() {
             this._running = true;
             const token = ++this._runToken;
+            // Bugged transit gates are per-run: a gate marked un-openable
+            // (planHack none/underpower) depends on the loadout, which the user
+            // may have upgraded between runs — so re-evaluate fresh each START.
+            // Re-bugging a still-un-openable gate is cheap (ensureHack returns
+            // none/underpower before any minigame launches). Commits well before
+            // the first cycle (DELAY_INITIAL).
+            Store.local.setOne(SL.AJ_BUGGED_GATES, {}).catch(() => { /* noop */ });
             this.info('START — launching pipeline loop');
             this._loop(token).catch((e) => {
                 this.error('pipeline loop crashed', { error: String(e), stack: e && e.stack });
@@ -584,6 +591,29 @@
             if (batch.jobs.length === 0) {
                 this.info(`JOB_FLOW → ${inProgress.length} in-progress job(s), none of a wired type yet — skipping`);
                 return false;
+            }
+            // Route-opening (hackTransitNodes): if the selected server is reachable
+            // only through a hackable transit gate (CHECK_ACCESS stamped
+            // gateOpenable + the gate), HACK that gate first so the game will relay
+            // through it — otherwise the flow's set.endpoint to this server would
+            // fail. Done once per cycle, only for the server we're about to work
+            // (no wasted hacks). If the route can't be opened this cycle, postpone
+            // the whole batch (a permanently-un-openable gate is bugged inside
+            // _openRoute, so CHECK_ACCESS stops offering it next cycle).
+            if (batch.serverId) {
+                const sName = (batch.jobs[0] && batch.jobs[0].serverName) || null;
+                const a = sName ? acc[sName] : null;
+                if (a && a.noPath && a.gateOpenable && a.gate) {
+                    const opened = await this._openRoute(a.gate, token);
+                    if (!this._alive(token)) return false;
+                    if (!opened) {
+                        this.info(`JOB_FLOW → route to "${sName}" not opened this cycle — postponing its ${batch.jobs.length} job(s)`);
+                        return false;
+                    }
+                    // Route opened — refresh the map so the next cycle's
+                    // CHECK_ACCESS sees the now-connectable server.
+                    Bus.window.post(C.MSG.GAME.REQUEST_NM_MAP, null);
+                }
             }
             // batchKey scopes the SAI login reuse: every SAI job in this batch
             // shares ONE server, so the first establishes access and the rest
@@ -918,6 +948,75 @@
             reg[job.id] = { reason: String(reason), since: Date.now() };
             await Store.local.setOne(SL.AJ_BUGGED_JOBS, reg);
             this.warn(`MARK_AS_BUGGED ${job.id}: ${reason}`);
+        }
+
+        // ── route opening (hackTransitNodes) ──────────────────────────────────
+        // Open the route to a server behind a hackable transit gate by hacking
+        // the gate (MAIN bridge HACK_TRANSIT). Returns true once the route is
+        // open. Retry/bug budget mirrors job flows: a TRANSIENT failure retries up
+        // to MAX_FLOW_ATTEMPTS (keyed 'gate:<name>'); a PERMANENT one (planHack
+        // none/underpower → retryable:false) records the gate in AJ_BUGGED_GATES
+        // so CHECK_ACCESS stops offering it and the server behind it reverts to a
+        // hard noPath skip (no accept-then-postpone-forever).
+        async _openRoute(gate, token) {
+            await this._setNode(NODE.OPEN_ROUTE, token, { gate: gate.name });
+            this.info(`OPEN_ROUTE → hacking transit gate "${gate.name}" (${gate.serverType || '?'}, defence ${gate.serverDefenceRate}) to open the route`);
+            const result = await this._dispatchHackTransit(gate, token);
+            if (!this._alive(token) || result.cancelled) return false;
+            if (result.success) {
+                this._flowAttempts.delete(`gate:${gate.name}`);
+                this.info(`OPEN_ROUTE → gate "${gate.name}" hacked — route open`);
+                return true;
+            }
+            if (result.retryable) {
+                const key = `gate:${gate.name}`;
+                const n = (this._flowAttempts.get(key) || 0) + 1;
+                this._flowAttempts.set(key, n);
+                if (n < LOOP.MAX_FLOW_ATTEMPTS) {
+                    this.info(`OPEN_ROUTE → gate "${gate.name}" not opened (${result.reason || 'transient'}) — attempt ${n}/${LOOP.MAX_FLOW_ATTEMPTS}, will retry`);
+                    return false;
+                }
+                await this._markGateBugged(gate, `failed after ${n} attempts: ${result.reason || 'transient'}`);
+                return false;
+            }
+            // Non-retryable → permanently un-openable (planHack none/underpower).
+            await this._markGateBugged(gate, result.reason || 'gate cannot be hacked');
+            return false;
+        }
+
+        // Post HACK_TRANSIT to MAIN and resolve with the matching HACK_RESULT —
+        // the same post-and-park pattern as _dispatchFlow (STOP-cancellable,
+        // FLOW_TIMEOUT_MS ceiling). Always resolves an object: the HACK_RESULT
+        // envelope, { cancelled:true }, or a retryable timeout.
+        _dispatchHackTransit(gate, token) {
+            return new Promise((resolve) => {
+                let settled = false;
+                const finish = (v) => {
+                    if (settled) return;
+                    settled = true;
+                    try { unsub(); } catch (_) { /* noop */ }
+                    clearTimeout(timer);
+                    clearInterval(watch);
+                    resolve(v);
+                };
+                const unsub = Bus.window.on(C.MSG.AUTOJOBS.HACK_RESULT, (env) => {
+                    if (env && env.gateServerName === gate.name) finish(env);
+                });
+                const watch = setInterval(() => { if (!this._alive(token)) finish({ cancelled: true }); }, 200);
+                const timer = setTimeout(
+                    () => finish({ success: false, retryable: true, reason: 'hack-transit timed out — no HACK_RESULT' }),
+                    LOOP.FLOW_TIMEOUT_MS,
+                );
+                Bus.window.post(C.MSG.AUTOJOBS.HACK_TRANSIT, { gateServerId: gate.id, gateServerType: gate.serverType, gateServerName: gate.name });
+            });
+        }
+
+        async _markGateBugged(gate, reason) {
+            this._flowAttempts.delete(`gate:${gate.name}`);
+            const reg = await Store.local.getOne(SL.AJ_BUGGED_GATES, {});
+            reg[gate.name] = { reason: String(reason), since: Date.now() };
+            await Store.local.setOne(SL.AJ_BUGGED_GATES, reg);
+            this.warn(`OPEN_ROUTE → gate "${gate.name}" marked un-openable: ${reason}`);
         }
 
         // One-shot board rebuild for the popup Jobs "refresh" button: run the

@@ -116,11 +116,18 @@
             // `off` counts markets/jobTypes (default-on) that are disabled; the
             // behaviour toggle is default-off, so flag it separately when active.
             const auto = isBehaviourOn('autoDismissFailed') ? ' · ' + t('autojobs.msAutoDismissTag') : '';
-            summary.textContent = (off ? t('autojobs.msNOff', { n: off }) : t('autojobs.msAllOn')) + auto;
+            const hackT = isBehaviourOn('hackTransitNodes') ? ' · ' + t('autojobs.msHackTransitTag') : '';
+            summary.textContent = (off ? t('autojobs.msNOff', { n: off }) : t('autojobs.msAllOn')) + auto + hackT;
 
             body.appendChild(group(t('autojobs.msBehaviour'), [
                 chip(t('autojobs.msAutoDismissChip'), isBehaviourOn('autoDismissFailed'),
                     (on) => setSwitch('behaviour', 'autoDismissFailed', on)),
+                // Hack transit gates: opt-in. When ON, a server reachable only
+                // through a non-public/no-access transit node is worked by first
+                // hacking that gate to open the route (the orchestrator's
+                // _openRoute). Default OFF — risky automation, opted into.
+                chip(t('autojobs.msHackTransitChip'), isBehaviourOn('hackTransitNodes'),
+                    (on) => setSwitch('behaviour', 'hackTransitNodes', on)),
             ]));
             body.appendChild(group(t('autojobs.msMarkets'), MARKETS.map((slot) =>
                 chip(t('autojobs.market.' + slot), isOn('markets', slot), (on) => setSwitch('markets', slot, on)))));

@@ -36,12 +36,30 @@ in [src/ui/sections/auto-jobs/flow-map.js](src/ui/sections/auto-jobs/flow-map.js
 
 **Planning + acceptance half (isolated world):** `GET_SERVERS → CHECK_ACCESS →
 UPDATE_MARKETS → JOB_QUEUE → QUEUE:EMPTY? → HAVE_TASKS_IN_PROGRESS? → BUGGED? →
-JOB:SKIP → CHECK_CONDITION → JOB_ACCEPTION`. CHECK_ACCESS also computes graph
-**path reachability** (`computePathReachability`: BFS from HOME over
-`NM_GRAPH.connections`; a maintenance node can be a path's endpoint but never
-a transit hop, so a K/D'd hub cuts off everything behind it → those servers
-get `noPath` — a hard data skip + flow postpone, same class as K/D).
-UPDATE_MARKETS skips a remote market outright when its own server
+JOB:SKIP → CHECK_CONDITION → JOB_ACCEPTION`. CHECK_ACCESS computes
+**path reachability** with a transit-rule BFS from HOME
+(`COR3.autoJobs.reachability.reachableSet` in
+[src/shared/aj-reachability.js](src/shared/aj-reachability.js) — shared with the
+popup Network Map): relay THROUGH a node only if it is **transitable**
+(`!isInMaintenance && (transitType==='public' || accessType!=='none')`); a
+non-transitable node can be an endpoint but never a transit hop. NOT the game's
+`canSetEndpoint` flag — that is **stale on transient K/D** (a server behind a
+freshly-K/D'd transit node keeps `canSetEndpoint:true` while `set.endpoint`
+returns `no-path`; verified live), so we recompute off the live
+`isInMaintenance`/`transitType`/`accessType` each cycle. A server the BFS can't
+reach gets `noPath` — a hard data skip + flow postpone, same class as K/D.
+**Transit-hack
+(`hackTransitNodes`, default OFF):** the game won't relay THROUGH a non-public
+node you lack transit/SAI access to (`accessType:'none'`), so servers behind it
+are `noPath`. When the switch is ON, CHECK_ACCESS runs `gateOnPath` (a transit-
+rule BFS) to find the nearest such *openable* gate on the route, stamps
+`accessibility[server].gate` + `gateOpenable` (ownership pre-filter via
+`ajEligibility.hackState`), and `noPath` is downgraded to a non-blocking WARN
+(mirroring not-accessible-but-hackable) so the job is accepted. Before working
+that server, the orchestrator's `_openRoute` posts `MSG.AUTOJOBS.HACK_TRANSIT` →
+the bridge hacks the gate (the authoritative `planHack` power-feasibility runs
+there; `none`/`underpower` records the gate in `AJ_BUGGED_GATES`, cleared each
+START). UPDATE_MARKETS skips a remote market outright when its own server
 (`C.MARKETS[].serverId`) has `noPath` (`reason:'no-path'` — the refresh probe
 could only fail; self-heals next cycle), then reads the
 market envelope's `jobs[]` (status `AVAILABLE`) and the `recentJobs[]` entries

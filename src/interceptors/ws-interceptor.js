@@ -800,6 +800,21 @@
                     isNew: !!s.isNew,
                     isAccessible: !!s.isAccessible,
                     hasAdminAccess: !!s.hasAdminAccess,
+                    // ── Routing fields the game computes for us (read-only) ──
+                    // canSetEndpoint (above) is the game's own per-server "can I
+                    // connect" verdict — Auto Jobs' reachability uses it directly
+                    // instead of re-predicting with a BFS. These two feed the
+                    // transit-gate model (see aj-reachability.js): accessType tells
+                    // whether we have transit/SAI access to relay THROUGH a node;
+                    // serverDefenceRate is the hack-difficulty hint for planning a
+                    // gate hack (the true value is re-read live from
+                    // sai.get.login.status at hack time). No-fallback: a missing
+                    // field is `null` (broken input surfaced), never a fabricated
+                    // 0/false that would mask a real gap or wave an underpowered
+                    // hack through. (isReachable is also shipped by the game but
+                    // we don't keep it — canSetEndpoint is the verdict we use.)
+                    accessType: (typeof s.accessType === 'string') ? s.accessType : null,
+                    serverDefenceRate: Number.isFinite(s.serverDefenceRate) ? s.serverDefenceRate : null,
                 };
             }),
         };
