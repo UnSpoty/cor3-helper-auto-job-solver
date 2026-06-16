@@ -7,7 +7,7 @@
       "strict_min_version": "128.0"
     }
   },
-  "version": "1.4.4",
+  "version": "1.4.5",
   "description": "Monitor markets, expeditions, daily ops, and get timer alerts for cor3.gg.",
   "permissions": [
     "storage",

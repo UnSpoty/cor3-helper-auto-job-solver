@@ -1,11 +1,8 @@
 {
-  "version": "1.4.4",
+  "version": "1.4.5",
   "changes": [
-    "Overview: new \"Show LOADOUT widget\" toggle (Game appearance section). The in-game LOADOUT pill is now hidden by default — flip the toggle to show it; it appears/disappears live, and Auto Jobs' automatic software/hardware management keeps working either way.",
-    "LOADOUT pill: drag it anywhere — free drag with snap spots (next to Notifications, beside the app launcher bar with a matching dock skin, hanging under the account HUD, or any custom spot on the bottom edge). The position is remembered.",
-    "Auto Jobs: fixed mislabeled jobs the site ships — a job NAMED \"Data download\" that actually requires decrypting the downloaded file is now recognised by its underlying type and run as Decrypt & Extract (download by base name, then decrypt by the file's real extension), instead of sitting in progress forever.",
-    "Auto Jobs: navigation hardening — job accepts/completes and SAI server sessions no longer race each other over the network-map endpoint; a timed-out IP/log list fetch is no longer mistaken for an empty list; transient upload/decrypt failures retry next cycle instead of being bugged.",
-    "Expeditions — Items: stash cards show craft/use chips, plus a sort bar (name/price/tier/quantity/category/flags/newest) and a \"hide craftable\" filter with a shown/total counter; view preferences are remembered.",
-    "Tested against cor3.gg web version 1.20.51."
+    "Auto Jobs: smarter path reachability — routes to a job's server are now recomputed live from each relay's maintenance/access state instead of trusting the game's reachability flag (which goes stale right after a relay is knocked down). A job behind a freshly K/D'd or restricted relay is now correctly postponed instead of failing on accept.",
+    "Auto Jobs: new optional \"hack transit nodes\" switch (off by default). When on, Auto Jobs will hack a restricted relay that sits on the route to a job's server to open the path, then carry on with the job.",
+    "Tested against cor3.gg web version 1.20.57."
   ]
 }
