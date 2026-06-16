@@ -13,7 +13,7 @@
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
     root.COR3 = root.COR3 || {};
     root.COR3.buildInfo = {
-        commit: 'b4dd8d5',
+        commit: 'e9ebe65',
         date: '2026-06-16',
     };
 })();
