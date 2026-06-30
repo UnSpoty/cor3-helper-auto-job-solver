@@ -1685,6 +1685,20 @@ body.theme-neon a { text-shadow: 0 0 6px rgba(0, 240, 255, 0.45); }
 .exp-status { font-size: 12px; color: var(--os-color-text-secondary); }
 .exp-armed { color: var(--os-color-success); }
 
+/* Per-market auto-send toggles (which markets the pool may draw from) */
+.exp-market-toggles { display: flex; flex-wrap: wrap; gap: 6px; }
+.exp-market-chip {
+    display: flex; align-items: center; gap: 5px;
+    padding: 3px 8px; border-radius: 12px;
+    background: var(--os-color-bg-tertiary); border: 1px solid var(--os-color-divider);
+    font-size: 11px; color: var(--os-color-text-secondary);
+    cursor: pointer; white-space: nowrap; user-select: none;
+}
+.exp-market-chip input { margin: 0; accent-color: var(--os-color-primary-hex); }
+.exp-market-chip:has(input:checked) {
+    color: var(--os-color-text); border-color: var(--os-color-primary-hex);
+}
+
 .exp-bar { height: 6px; background: var(--os-color-bg-tertiary); border-radius: 3px; overflow: hidden; }
 .exp-bar-fill { height: 100%; width: 0; background: var(--os-color-primary-hex); transition: width .3s; }
 .exp-bar-fill.warn { background: var(--os-color-warning); }

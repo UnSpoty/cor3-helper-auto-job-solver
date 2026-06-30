@@ -42,6 +42,7 @@
             fwd('requestMercenaries',         'COR3_REQUEST_MERCENARIES');
             fwd('requestAllMercenaries',      'COR3_REQUEST_ALL_MERCENARIES');
             fwd('requestExpeditionConfig',    'COR3_REQUEST_EXPEDITION_CONFIG');
+            fwd('requestAllExpeditionConfigs', 'COR3_REQUEST_ALL_EXPEDITION_CONFIGS');
             fwd('requestProfile',             MSG.GAME.REQUEST_PROFILE);
 
             this.track(Bus.runtime.on('sellItem', (p) => {
@@ -68,15 +69,23 @@
                 return { success: true };
             }));
 
-            // Manual "Send now" from the Mercenary roster: build the launch
-            // config from the cached expedition config (default location/zone/
-            // objective — the same one the auto-send engine uses) and launch.
+            // Manual "Send now" from the Mercenary roster: launch the merc FROM
+            // ITS market. The merc card carries the marketId (the roster spans
+            // several markets now). Use that market's expedition config — the
+            // home "Skylift" set differs from USOL's "Koute" set, so launching a
+            // non-home merc with the home config would target the wrong location.
             this.track(Bus.runtime.on('sendMercNow', async (p) => {
                 if (!p || !p.mercenaryId) return { error: 'no mercenaryId' };
-                const cfg = await root.COR3.Store.local.getOne(C.STORAGE_LOCAL.EXPEDITION_CONFIG);
+                const marketId = p.marketId || C.HOME_MARKET_ID;
+                const configs = (await root.COR3.Store.local.getOne(C.STORAGE_LOCAL.EXPEDITION_CONFIGS, {})) || {};
+                // Fall back to the legacy single config only for HOME.
+                const cfg = configs[marketId]
+                    || (marketId === C.HOME_MARKET_ID
+                        ? await root.COR3.Store.local.getOne(C.STORAGE_LOCAL.EXPEDITION_CONFIG)
+                        : null);
                 if (!cfg || !Array.isArray(cfg.locations) || cfg.locations.length === 0) {
-                    Bus.window.post('COR3_REQUEST_EXPEDITION_CONFIG', null);
-                    return { error: 'no expedition config' };
+                    Bus.window.post('COR3_REQUEST_ALL_EXPEDITION_CONFIGS', null);
+                    return { error: 'no expedition config for market' };
                 }
                 const loc = cfg.locations[0];
                 const zone = loc.zones && loc.zones[0];
@@ -85,7 +94,7 @@
                 if (!zone || !goal) return { error: 'incomplete expedition config' };
                 const launch = {
                     mercenaryId: p.mercenaryId,
-                    marketId: C.HOME_MARKET_ID,
+                    marketId,
                     locationConfigId: loc.id, zoneConfigId: zone.id, goalId: goal.id,
                     hasInsurance: false,
                 };

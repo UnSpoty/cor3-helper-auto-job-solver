@@ -2,13 +2,21 @@
 // Expeditions auto-send engine (reworked).
 //
 // Driven by STORAGE_SYNC.EXPEDITIONS_SETTINGS:
-//   { masterEnabled, autoSend:{ enabled, moneyMin, moneyMax }, disabledReason }
+//   { masterEnabled,
+//     autoSend:{ enabled, moneyMin, moneyMax, maxCost, marketsDisabled[] },
+//     disabledReason }
 //
 //   • masterEnabled — the tab master switch; gates ALL expedition automation.
 //   • autoSend.enabled + moneyMin/moneyMax — the min/max latch:
 //       arm at  CR balance ≥ moneyMax,
 //       keep sending the cheapest AVAILABLE merc (one expedition at a time —
 //       the server allows max 1 active) until balance ≤ moneyMin, then disarm.
+//   • The candidate pool spans ALL markets the player can launch from (a market
+//     is launchable iff get.config returned ≥1 location). marketsDisabled[] is
+//     the set of market ids turned OFF for auto-send (absent === enabled);
+//     maxCost (0 === no cap) drops any merc whose totalCost exceeds it. The
+//     cheapest surviving merc is launched FROM ITS market with that market's
+//     location/zone/goal.
 //
 // The engine NEVER turns itself off: when no merc is free (all RESTING /
 // CONTRACTED) it just waits and a periodic poll re-checks as mercs return.
@@ -28,7 +36,6 @@
     const { Module, Bus, Store, Registry, constants: C } = root.COR3;
     const MSG = C.MSG;
 
-    const HOME_MARKET_ID = C.HOME_MARKET_ID;
     const POLL_MS = 20000;            // re-check balance + merc availability
     const BUSY_MS = 25000;            // max time a launch/collect RPC holds the lock
 
@@ -69,35 +76,50 @@
             { armed: !!cur.armed, ...cur, ...patch, updatedAt: Date.now() });
     }
 
-    function mercList(raw) {
-        return (raw && (Array.isArray(raw) ? raw : raw.mercenaries)) || [];
-    }
-    function cheapestAvailable(mercs, configs) {
-        const avail = mercs.filter((m) => m.status === 'AVAILABLE' && configs[m.id]);
-        avail.sort((a, b) => {
-            const ca = configs[a.id], cb = configs[b.id];
-            const costA = Number.isFinite(ca.totalCost) ? ca.totalCost : Infinity;
-            const costB = Number.isFinite(cb.totalCost) ? cb.totalCost : Infinity;
-            if (costA !== costB) return costA - costB;
-            const ra = Number.isFinite(ca.riskScore) ? ca.riskScore : 0;
-            const rb = Number.isFinite(cb.riskScore) ? cb.riskScore : 0;
-            return ra - rb;
-        });
-        return avail[0] || null;
-    }
-    async function buildLaunchConfig(merc) {
-        const cfg = await Store.local.getOne(C.STORAGE_LOCAL.EXPEDITION_CONFIG);
-        if (!cfg || !Array.isArray(cfg.locations) || cfg.locations.length === 0) return null;
-        const loc = cfg.locations[0];
-        const zone = loc.zones && loc.zones[0];
+    const marketLabel = (id) => {
+        const m = (C.MARKETS || []).find((x) => x.id === id);
+        return m ? m.label : id;
+    };
+
+    // First launchable (location, zone, goal) triple of a market's config.
+    // A market whose get.config returned 0 locations (live: DARK/SRM) yields
+    // null → that market is NOT a launch target.
+    function launchTriple(cfg) {
+        const loc = cfg && Array.isArray(cfg.locations) && cfg.locations[0];
+        const zone = loc && loc.zones && loc.zones[0];
         // Post-patch: zone.goals (was zone.objectives); launch DTO field is goalId.
         const goal = zone && zone.goals && zone.goals[0];
-        if (!zone || !goal) return null;
-        return {
-            mercenaryId: merc.id, marketId: HOME_MARKET_ID,
-            locationConfigId: loc.id, zoneConfigId: zone.id, goalId: goal.id,
-            hasInsurance: false,
-        };
+        if (!loc || !zone || !goal) return null;
+        return { locationConfigId: loc.id, zoneConfigId: zone.id, goalId: goal.id };
+    }
+
+    // Build the auto-send candidate pool across ENABLED, launchable markets.
+    // A candidate is an AVAILABLE merc whose totalCost is known (from the
+    // configure cost-preview). Returns the priced pool plus counts so the
+    // caller can explain an empty pool (no free merc / costs still loading /
+    // all over the cap).
+    function buildCandidates(mercMarkets, configs, expConfigs, disabledSet) {
+        const candidates = [];
+        let availableCount = 0;
+        for (const m of (C.MARKETS || [])) {
+            if (disabledSet.has(m.id)) continue;
+            const triple = launchTriple(expConfigs[m.id]);
+            if (!triple) continue;  // market not launchable (or its config not fetched yet)
+            const data = mercMarkets[m.id];
+            const mercs = (data && Array.isArray(data.mercenaries)) ? data.mercenaries : [];
+            for (const merc of mercs) {
+                if (merc.status !== 'AVAILABLE') continue;
+                availableCount++;
+                const mc = configs[merc.id];
+                if (!mc || !Number.isFinite(mc.totalCost)) continue;  // cost preview pending
+                candidates.push({
+                    merc, marketId: m.id, triple,
+                    cost: mc.totalCost,
+                    risk: Number.isFinite(mc.riskScore) ? mc.riskScore : 0,
+                });
+            }
+        }
+        return { candidates, availableCount, pricedCount: candidates.length };
     }
 
     // ── auto-collect: open container → collect, banking loot + freeing slot ──
@@ -189,38 +211,53 @@
             return;
         }
 
-        // 4) cheapest AVAILABLE merc
-        const [mercsRaw, configs] = await Promise.all([
-            Store.local.getOne(C.STORAGE_LOCAL.MERCENARIES),
+        // 4) cheapest AVAILABLE merc across ENABLED markets, within the max-cost cap.
+        const [mercMarkets, configs, expConfigs] = await Promise.all([
+            Store.local.getOne(C.STORAGE_LOCAL.MERC_MARKETS, {}),
             Store.local.getOne(C.STORAGE_LOCAL.MERC_CONFIG, {}),
+            Store.local.getOne(C.STORAGE_LOCAL.EXPEDITION_CONFIGS, {}),
         ]);
-        const mercs = mercList(mercsRaw);
-        const pick = cheapestAvailable(mercs, configs || {});
+        const disabledSet = new Set(Array.isArray(s.autoSend.marketsDisabled) ? s.autoSend.marketsDisabled : []);
+        const maxCost = Math.max(0, Math.floor(Number(s.autoSend.maxCost) || 0));  // 0 = no cap
+        const { candidates, availableCount, pricedCount } =
+            buildCandidates(mercMarkets || {}, configs || {}, expConfigs || {}, disabledSet);
+        let pool = candidates;
+        if (maxCost > 0) pool = pool.filter((c) => c.cost <= maxCost);
+        pool.sort((a, b) => (a.cost - b.cost) || (a.risk - b.risk));
+        const pick = pool[0] || null;
         if (!pick) {
-            Bus.window.post('COR3_REQUEST_MERCENARIES', null);
-            await setState({ armed: true, balance, status: 'waiting for a free merc (resting)…' });
+            // Refresh all rosters — delivering a market's mercs lazily fetches
+            // that market's config (and re-cascades cost previews), so this one
+            // request heals both a missing launch triple and missing costs.
+            Bus.window.post('COR3_REQUEST_ALL_MERCENARIES', null);
+            let status;
+            if (availableCount === 0) status = 'waiting for a free merc (resting)…';
+            else if (pricedCount === 0) status = 'loading merc costs…';
+            else status = maxCost > 0 ? `all ${pricedCount} free merc(s) over max ${maxCost} CR` : 'no eligible merc';
+            await setState({ armed: true, balance, status });
             return;
         }
 
-        // 5) launch (cheapest), then spend down toward Min
-        const cfg = await buildLaunchConfig(pick);
-        if (!cfg) {
-            Bus.window.post('COR3_REQUEST_EXPEDITION_CONFIG', null);
-            await setState({ armed: true, balance, status: 'loading expedition config…' });
-            return;
-        }
+        // 5) launch the cheapest pick from ITS market, then spend down toward Min.
         if (isBusy()) return;
         lock();
-        const cost = (configs && configs[pick.id] && configs[pick.id].totalCost) || '?';
-        mod.info(`auto-send: launching ${pick.callsign} (cost ${cost}); balance ${balance} → spend toward ${min}`);
-        await setState({ armed: true, balance, status: `sending ${pick.callsign}…` });
+        mod.info(`auto-send: launching ${pick.merc.callsign} from ${marketLabel(pick.marketId)} `
+            + `(cost ${pick.cost}); balance ${balance} → spend toward ${min}`);
+        await setState({ armed: true, balance, status: `sending ${pick.merc.callsign}…` });
+        const cfg = {
+            mercenaryId: pick.merc.id, marketId: pick.marketId,
+            locationConfigId: pick.triple.locationConfigId,
+            zoneConfigId: pick.triple.zoneConfigId,
+            goalId: pick.triple.goalId,
+            hasInsurance: false,
+        };
         Store.local.setOne(C.STORAGE_LOCAL.LAST_LAUNCH, cfg);
         Bus.window.post(MSG.GAME.LAUNCH_EXPEDITION, { config: cfg });
         // refresh shortly after; unlock so the next cycle can proceed.
         setTimeout(() => {
             unlock();
             Bus.window.post(MSG.GAME.REQUEST_EXPEDITIONS, null);
-            Bus.window.post('COR3_REQUEST_MERCENARIES', null);
+            Bus.window.post('COR3_REQUEST_ALL_MERCENARIES', null);
             Bus.window.post(MSG.GAME.REQUEST_PROFILE, null);
         }, 4000);
     }
@@ -300,16 +337,20 @@
                 Bus.window.post(MSG.GAME.REQUEST_EXPEDITIONS, null);
                 if (s.autoSend.enabled) {
                     Bus.window.post(MSG.GAME.REQUEST_PROFILE, null);
-                    Bus.window.post('COR3_REQUEST_MERCENARIES', null);
+                    Bus.window.post('COR3_REQUEST_ALL_MERCENARIES', null);
                 }
                 setTimeout(ev, 1500);
             }, POLL_MS);
             this.track(() => clearInterval(poll));
 
-            // Seed a profile snapshot once on start.
+            // Seed a profile snapshot + all-market rosters once on start. Each
+            // roster delivery lazily fetches its market's config + prices its
+            // mercs, so the multi-market pool fills in without a separate config
+            // sweep here.
             Bus.window.post(MSG.GAME.REQUEST_PROFILE, null);
+            Bus.window.post('COR3_REQUEST_ALL_MERCENARIES', null);
             await evaluate(this);
-            this.info('auto-send engine ready (min/max latch)');
+            this.info('auto-send engine ready (min/max latch · multi-market)');
         }
     }
 

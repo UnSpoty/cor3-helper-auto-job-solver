@@ -329,6 +329,13 @@
         MERC_MARKETS_AT: 'mercMarketsUpdatedAt',
         EXPEDITION_CONFIG: 'expeditionConfigData',
         EXPEDITION_CONFIG_AT: 'expeditionConfigUpdatedAt',
+        // Per-market expedition config (locations/zones/goals) keyed by marketId.
+        // get.config is now per-market (the home "Skylift" set differs from the
+        // USOL "Koute" set; some markets have 0 locations = not launchable).
+        // Multi-market auto-send launches a non-home merc from THIS market's
+        // location/zone/goal. EXPEDITION_CONFIG (above) still mirrors HOME.
+        EXPEDITION_CONFIGS: 'expeditionConfigsData',
+        EXPEDITION_CONFIGS_AT: 'expeditionConfigsUpdatedAt',
         MERC_CONFIG: 'mercConfigData',
         MERC_CONFIG_AT: 'mercConfigUpdatedAt',
         DAILY_OPS: 'dailyOpsData',

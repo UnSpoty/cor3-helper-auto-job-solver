@@ -47,11 +47,11 @@
         chrome.tabs.sendMessage(tab.id, Object.assign({ action }, extra)).catch(() => {});
     }
 
-    const DEFAULT_SETTINGS = { masterEnabled: false, autoSend: { enabled: false, moneyMin: 0, moneyMax: 0 }, disabledReason: null };
+    const DEFAULT_SETTINGS = { masterEnabled: false, autoSend: { enabled: false, moneyMin: 0, moneyMax: 0, maxCost: 0, marketsDisabled: [] }, disabledReason: null };
     async function getSettings() {
         const s = await Store.sync.getOne(C.STORAGE_SYNC.EXPEDITIONS_SETTINGS, null);
         if (!s) return JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
-        if (!s.autoSend) s.autoSend = { enabled: false, moneyMin: 0, moneyMax: 0 };
+        if (!s.autoSend) s.autoSend = { enabled: false, moneyMin: 0, moneyMax: 0, maxCost: 0, marketsDisabled: [] };
         return s;
     }
     // Serialise the read-modify-write of EXPEDITIONS_SETTINGS — rapid edits
@@ -71,7 +71,7 @@
     }
     function patchAutoSend(patch) {
         return queueSettingsWrite((s) => {
-            s.autoSend = Object.assign({ enabled: false, moneyMin: 0, moneyMax: 0 }, s.autoSend, patch);
+            s.autoSend = Object.assign({ enabled: false, moneyMin: 0, moneyMax: 0, maxCost: 0, marketsDisabled: [] }, s.autoSend, patch);
         });
     }
 
@@ -184,7 +184,7 @@
         panel = {
             container, timers: [],
             master: { input: null, hint: null },
-            autoSend: { input: null, minMaxRow: null, minInput: null, maxInput: null, status: null, warn: null },
+            autoSend: { input: null, minMaxRow: null, minInput: null, maxInput: null, maxCostRow: null, maxCostInput: null, marketsRow: null, marketToggles: {}, status: null, warn: null },
             autoChoose: { enabledInput: null, sliderInput: null, label: null },
             active: { listHost: null, timers: [] },
             pending: { title: null, listHost: null, timers: [] },
@@ -235,6 +235,45 @@
         mmRow.appendChild(minWrap); mmRow.appendChild(maxWrap);
         asCard.appendChild(mmRow);
 
+        // Max cost per merc (skip any merc costing more than this; 0/empty = no cap).
+        // Plain block (not exp-minmax/flex) so the hint stacks BELOW the input.
+        const mcRow = el('div', 'mt-sm');
+        const mcWrap = el('label', 'exp-minmax-field');
+        mcWrap.appendChild(el('span', 'card-label', t('expeditions.autoSend.maxCost')));
+        const maxCostInput = document.createElement('input');
+        maxCostInput.type = 'number'; maxCostInput.min = '0'; maxCostInput.className = 'exp-num'; maxCostInput.placeholder = '0';
+        mcWrap.appendChild(maxCostInput);
+        mcRow.appendChild(mcWrap);
+        asCard.appendChild(mcRow);
+        const mcHint = el('div', 'muted xs mt-sm', t('expeditions.autoSend.maxCostHint'));
+        mcRow.appendChild(mcHint);
+
+        // Per-market on/off — which markets auto-send may draw mercs from.
+        const mkRow = el('div', 'mt-sm');
+        mkRow.appendChild(el('span', 'card-label', t('expeditions.autoSend.markets')));
+        const mkChips = el('div', 'exp-market-toggles mt-sm');
+        const marketToggles = {};
+        const commitMarkets = () => {
+            const disabled = [];
+            for (const m of MARKETS) {
+                const cb = marketToggles[m.id];
+                if (cb && !cb.checked) disabled.push(m.id);
+            }
+            patchAutoSend({ marketsDisabled: disabled });
+        };
+        for (const m of MARKETS) {
+            const lab = el('label', 'exp-market-chip');
+            const cb = document.createElement('input');
+            cb.type = 'checkbox'; cb.dataset.market = m.id;
+            cb.addEventListener('change', commitMarkets);
+            lab.appendChild(cb);
+            lab.appendChild(el('span', '', escape(m.label)));
+            mkChips.appendChild(lab);
+            marketToggles[m.id] = cb;
+        }
+        mkRow.appendChild(mkChips);
+        asCard.appendChild(mkRow);
+
         const asStatus = el('div', 'exp-status mt-sm', '');
         asCard.appendChild(asStatus);
         const asWarn = el('div', 'warn sm mt-sm', '');
@@ -245,9 +284,11 @@
         asInput.addEventListener('change', (e) => patchAutoSend({ enabled: e.target.checked }));
         const commitMin = () => patchAutoSend({ moneyMin: Math.max(0, Math.floor(Number(minInput.value) || 0)) });
         const commitMax = () => patchAutoSend({ moneyMax: Math.max(0, Math.floor(Number(maxInput.value) || 0)) });
+        const commitMaxCost = () => patchAutoSend({ maxCost: Math.max(0, Math.floor(Number(maxCostInput.value) || 0)) });
         minInput.addEventListener('change', commitMin);
         maxInput.addEventListener('change', commitMax);
-        panel.autoSend = { input: asInput, minMaxRow: mmRow, minInput, maxInput, status: asStatus, warn: asWarn };
+        maxCostInput.addEventListener('change', commitMaxCost);
+        panel.autoSend = { input: asInput, minMaxRow: mmRow, minInput, maxInput, maxCostRow: mcRow, maxCostInput, marketsRow: mkRow, marketToggles, status: asStatus, warn: asWarn };
 
         // ─── Auto-choose decision ─────────────────────────────────────
         container.appendChild(el('div', 'section-title', t('expeditions.section.autoChoose')));
@@ -311,7 +352,7 @@
         const mRefresh = el('button', 'btn small', t('common.refresh'));
         mRefresh.addEventListener('click', () => {
             sendToContent('requestAllMercenaries');
-            sendToContent('requestExpeditionConfig');
+            sendToContent('requestAllExpeditionConfigs');
             sendToContent('requestProfile');
         });
         mHead.appendChild(mRefresh);
@@ -321,7 +362,7 @@
         mHost.addEventListener('click', (e) => {
             const b = e.target.closest('button[data-send]');
             if (!b || b.disabled) return;
-            sendToContent('sendMercNow', { mercenaryId: b.dataset.send });
+            sendToContent('sendMercNow', { mercenaryId: b.dataset.send, marketId: b.dataset.market });
             b.disabled = true; b.textContent = t('expeditions.markets.sending');
         });
         panel.markets = { host: mHost };
@@ -459,8 +500,18 @@
         const enabled = !!(s.autoSend && s.autoSend.enabled);
         if (n.input.checked !== enabled) n.input.checked = enabled;
         n.minMaxRow.style.display = enabled ? '' : 'none';
+        n.maxCostRow.style.display = enabled ? '' : 'none';
+        n.marketsRow.style.display = enabled ? '' : 'none';
         if (document.activeElement !== n.minInput) n.minInput.value = (s.autoSend.moneyMin || 0) || '';
         if (document.activeElement !== n.maxInput) n.maxInput.value = (s.autoSend.moneyMax || 0) || '';
+        if (document.activeElement !== n.maxCostInput) n.maxCostInput.value = (s.autoSend.maxCost || 0) || '';
+        // Per-market toggles: checked === enabled (absent from marketsDisabled).
+        const disabledSet = new Set(Array.isArray(s.autoSend.marketsDisabled) ? s.autoSend.marketsDisabled : []);
+        for (const id of Object.keys(n.marketToggles)) {
+            const cb = n.marketToggles[id];
+            const on = !disabledSet.has(id);
+            if (cb.checked !== on) cb.checked = on;
+        }
 
         const bal = profile && typeof profile.balance === 'number' ? profile.balance : null;
         const balTxt = bal != null ? `${num(bal)} CR` : '—';
@@ -603,7 +654,7 @@
 
     // A regular (hireable) mercenary card. `hasActive` disables "Send now" while
     // an expedition is already running (max 1 at a time).
-    function mercCardEl(m, cfg, hasActive) {
+    function mercCardEl(m, cfg, hasActive, marketId) {
         const avail = m.status === 'AVAILABLE';
         const card = el('div', 'exp-merc-card' + (avail ? '' : ' unavail'));
         const av = document.createElement('img');
@@ -634,6 +685,7 @@
         const label = !avail ? (m.status === 'RESTING' ? t('expeditions.markets.resting') : t('expeditions.markets.busy')) : (hasActive ? t('expeditions.markets.busy') : t('expeditions.markets.sendNow'));
         const btn = el('button', 'btn small', label);
         btn.dataset.send = m.id;
+        if (marketId) btn.dataset.market = marketId;
         if (!canSend) btn.disabled = true;
         if (avail && hasActive) btn.title = t('expeditions.markets.alreadyRunning');
         card.appendChild(btn);
@@ -725,7 +777,7 @@
 
         if (regulars.length) {
             const wrap = el('div', 'mt-sm');
-            for (const m of regulars) wrap.appendChild(mercCardEl(m, (configs || {})[m.id] || {}, hasActive));
+            for (const m of regulars) wrap.appendChild(mercCardEl(m, (configs || {})[m.id] || {}, hasActive, market.id));
             block.appendChild(wrap);
         }
         if (elites.length) {
@@ -952,10 +1004,10 @@
         async activate(container) {
             build(container);
             await refreshAll();
-            // seed fresh profile + all-market mercenaries/config + expeditions on open.
+            // seed fresh profile + all-market mercenaries/configs + expeditions on open.
             sendToContent('requestProfile');
             sendToContent('requestAllMercenaries');
-            sendToContent('requestExpeditionConfig');
+            sendToContent('requestAllExpeditionConfigs');
             sendToContent('requestExpeditions');
         },
         deactivate() { tearDown(); },

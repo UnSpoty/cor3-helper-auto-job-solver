@@ -122,11 +122,13 @@
                 // this socket; without this hook we'd attribute get.jobs to
                 // the wrong slot, and we'd lose track of the user's current
                 // endpoint (needed to revert after our preflight dance).
-                // Parsers: captureOutboundGetJobs / captureOutboundSetEndpoint.
+                // Parsers: captureOutboundGetJobs / captureOutboundSetEndpoint /
+                // captureOutboundGetConfig.
                 const origWsSend = ws.send.bind(ws);
                 ws.send = function (data) {
                     try { captureOutboundGetJobs(data); } catch (_) { /* silent */ }
                     try { captureOutboundSetEndpoint(data); } catch (_) { /* silent */ }
+                    try { captureOutboundGetConfig(data); } catch (_) { /* silent */ }
                     return origWsSend(data);
                 };
 
@@ -306,20 +308,35 @@
             }
 
             if (action === 'get.config') {
+                // The reply carries NO marketId (verified live: data keys are
+                // just locations/zoneTypes). Attribute it to the oldest
+                // outstanding outbound get.config — OURS or the game's (the
+                // wrapped ws.send captures both via captureOutboundGetConfig),
+                // same FIFO+expiry scheme as get.jobs. get.config has no server
+                // push, so every reply maps to a request. Fall back to the
+                // last-touched market / HOME if the FIFO is empty.
+                const cfgReq = popPendingConfigRequest();
+                const cfgMid = (cfgReq && cfgReq.marketId) || root.__cor3LastMarketId || HOME_MARKET_ID;
+                let cfgIds = null;
                 if (payload.data && payload.data.locations && payload.data.locations.length > 0) {
                     const loc = payload.data.locations[0];
                     // Post-patch: zones carry `goals` (was `objectives`), and the
                     // configure/launch DTO field is `goalId` (was `objectiveId`).
                     const zone = loc.zones && loc.zones[0];
                     const goal = zone && zone.goals && zone.goals[0];
-                    root.__cor3ExpConfigIds = {
+                    cfgIds = {
                         locationConfigId: loc.id,
                         zoneConfigId: zone ? zone.id : null,
                         goalId: goal ? goal.id : null,
                     };
                 }
-                post(MSG.WS.EXPEDITION_CONFIG, { data: payload.data });
-                if (root.__cor3CachedMercIds && root.__cor3ExpConfigIds) cascadeMercConfigure();
+                // A market with 0 locations (e.g. DARK/SRM live) → cfgIds:null:
+                // not launchable, no cascade. We still publish the (empty) config.
+                root.__cor3ExpConfigIdsByMarket[cfgMid] = cfgIds;
+                if (cfgMid === HOME_MARKET_ID) root.__cor3ExpConfigIds = cfgIds;
+                post(MSG.WS.EXPEDITION_CONFIG, { data: payload.data, marketId: cfgMid });
+                // Run THIS market's cost-preview cascade now that its ids landed.
+                if (cfgIds && root.__cor3CachedMercIdsByMarket[cfgMid]) cascadeMercConfigure(cfgMid);
                 return;
             }
 
@@ -361,9 +378,17 @@
             }
 
             if (action === 'configure') {
-                const mercId = (root.__cor3PendingMercConfigures && root.__cor3PendingMercConfigures.length > 0)
-                    ? root.__cor3PendingMercConfigures.shift() : null;
-                post(MSG.WS.MERC_CONFIGURE, { mercenaryId: mercId, data: payload.data });
+                // The cost-preview reply carries NO mercenaryId. Attribute it to
+                // the single in-flight configure we serialized (mirrors
+                // get.mercenaries). The OLD blind FIFO desynced whenever a
+                // configure reply was dropped (429 under bursts): the next reply
+                // popped the wrong merc id, so one merc inherited another's
+                // totalCost — which let an over-budget merc slip past auto-send's
+                // maxCost filter (Surge launched at Hex's 1890 instead of 5179).
+                // A dropped reply now just times out (settle(undefined)) and that
+                // merc is left UNPRICED → excluded from auto-send, never mispriced.
+                // An unsolicited (game-initiated) reply with no in-flight is dropped.
+                if (configureInflight) configureInflight.settle(payload.data);
                 return;
             }
 
@@ -820,16 +845,19 @@
         };
     }
 
-    function cascadeMercConfigure() {
-        const ids = root.__cor3ExpConfigIds;
-        const mercIds = (root.__cor3CachedMercIds || []).slice();
-        (function next(i) {
-            if (i >= mercIds.length) return;
-            setTimeout(() => {
-                root.__cor3RequestMercConfigure(mercIds[i], null, ids.locationConfigId, ids.zoneConfigId, ids.goalId);
-                next(i + 1);
-            }, humanDelay() + 400);
-        })(0);
+    // Cost-preview cascade for ONE market: configure each of that market's
+    // regular mercs (using THAT market's location/zone/goal) so the isolated
+    // world learns each merc's totalCost. Paced (rate-limiter + per-step delay).
+    function cascadeMercConfigure(marketId) {
+        const mid = marketId || HOME_MARKET_ID;
+        const ids = root.__cor3ExpConfigIdsByMarket[mid];
+        if (!ids) return;
+        const mercIds = (root.__cor3CachedMercIdsByMarket[mid] || []).slice();
+        // No setTimeout pacing needed — __cor3RequestMercConfigure serializes
+        // through configureChain (one reply at a time) and wsSend rate-limits.
+        for (const id of mercIds) {
+            root.__cor3RequestMercConfigure(id, mid, ids.locationConfigId, ids.zoneConfigId, ids.goalId);
+        }
     }
 
     // ──────────────────────────────────────────────────────────────────────
@@ -969,9 +997,14 @@
     // ──────────────────────────────────────────────────────────────────────
     // Outbound helpers — exposed on window.__cor3* for isolated-world callers.
     // ──────────────────────────────────────────────────────────────────────
-    root.__cor3PendingMercConfigures = [];
-    root.__cor3CachedMercIds = null;
-    root.__cor3ExpConfigIds = null;
+    root.__cor3CachedMercIds = null;          // HOME alias (back-compat / external probes)
+    root.__cor3ExpConfigIds = null;           // HOME alias (back-compat / external probes)
+    // Per-market parallels of the two singles above. Multi-market auto-send
+    // needs EACH market's location/zone/goal ids to launch a non-home merc and
+    // EACH market's regular-merc id list to cascade cost previews. Keyed by
+    // marketId. HOME also mirrors into the singles above.
+    root.__cor3ExpConfigIdsByMarket = {};     // { [marketId]: {locationConfigId, zoneConfigId, goalId} }
+    root.__cor3CachedMercIdsByMarket = {};    // { [marketId]: string[] }
     root.__cor3LastMarketId = null;
     root.__cor3WebVersion = null;
     root.__cor3SystemVersion = null;
@@ -1047,16 +1080,33 @@
     // timeout), and unsolicited server pushes (dropped — see the handler).
     let mercFetchChain = Promise.resolve();
     let mercInflight = null;   // { marketId, settle } while one request awaits its reply
+    // configure (cost-preview) request↔reply correlation — serialize-one, same as
+    // get.mercenaries. The reply has no mercId, so a blind FIFO desynced on a
+    // dropped/429 reply and mis-attributed costs (see the configure handler).
+    let configureChain = Promise.resolve();
+    let configureInflight = null; // { mercId, settle } while one configure awaits its reply
 
     function deliverMercenaries(mid, data) {
         post(MSG.WS.MERCENARIES, { data, marketId: mid });
-        // The per-merc configure-preview cascade is HOME-only: __cor3ExpConfigIds
-        // holds HOME's location/zone/goal, and HOME is the only market with
-        // hireable regular mercs.
-        if (mid === HOME_MARKET_ID && data && data.mercenaries) {
-            root.__cor3CachedMercIds = data.mercenaries.map((m) => m.id);
-            if (!root.__cor3ExpConfigIds) setTimeout(() => root.__cor3RequestExpeditionConfig(), 500);
-            else cascadeMercConfigure();
+        // Cost-preview cascade per market: ANY market with regular hireable mercs
+        // (live: HOME 6, USOL 3; DARK/SRM 0) needs each merc's totalCost for
+        // multi-market auto-send. Cache this market's merc ids, then cascade using
+        // its OWN config — fetching that config first if we lack it (the
+        // get.config reply re-triggers this market's cascade).
+        const mercs = (data && data.mercenaries) || [];
+        if (mercs.length) {
+            const mercIds = mercs.map((m) => m.id);
+            root.__cor3CachedMercIdsByMarket[mid] = mercIds;
+            if (mid === HOME_MARKET_ID) root.__cor3CachedMercIds = mercIds;  // back-compat alias
+            if (root.__cor3ExpConfigIdsByMarket[mid]) {
+                cascadeMercConfigure(mid);
+            } else if (!(mid in root.__cor3ExpConfigIdsByMarket)) {
+                // Never fetched this market's config (key absent). A market whose
+                // config landed with 0 locations stores `null` (key present) —
+                // not launchable, so we don't re-request it. (A rare duplicate
+                // request before the reply lands is harmless — same data.)
+                setTimeout(() => root.__cor3RequestExpeditionConfig(mid), 500);
+            }
         }
     }
 
@@ -1094,18 +1144,46 @@
         // Post-patch the server REQUIRES a marketId on get.config ("Validation
         // failed: marketId must be a string") — same as get.mercenaries. Default
         // to the last-opened market / HOME, mirroring __cor3RequestMercenaries.
-        const mid = marketId || root.__cor3LastMarketId || '019d3ea4-85bd-7389-904d-8f7c85841134';
+        // Don't push the FIFO here — the wrapped ws.send captures the outbound
+        // marketId via captureOutboundGetConfig (which also catches the game's
+        // own get.config), so the reply is attributed correctly; pushing here
+        // too would double-count.
+        const mid = marketId || root.__cor3LastMarketId || HOME_MARKET_ID;
         wsSendRpc('expeditions', 'get.config', { marketId: mid });
         return true;
     };
 
+    // Fetch the expedition config for EVERY market — multi-market auto-send needs
+    // each launchable market's location/zone/goal. Each reply is FIFO-attributed
+    // to its market via the captureOutboundGetConfig hook.
+    root.__cor3RequestAllExpeditionConfigs = function () {
+        for (const m of (C.MARKETS || [])) root.__cor3RequestExpeditionConfig(m.id);
+        return true;
+    };
+
     root.__cor3RequestMercConfigure = function (mercenaryId, marketId, locationConfigId, zoneConfigId, goalId) {
-        const mid = marketId || root.__cor3LastMarketId || '019d3ea4-85bd-7389-904d-8f7c85841134';
-        root.__cor3PendingMercConfigures.push(mercenaryId);
-        // Post-patch DTO uses `goalId` — the server rejects `objectiveId`
-        // ("property objectiveId should not exist; goalId must be a string").
-        const data = { mercenaryId, marketId: mid, locationConfigId, zoneConfigId, goalId, hasInsurance: false };
-        wsSendRpc('expeditions', 'configure', data);
+        const mid = marketId || root.__cor3LastMarketId || HOME_MARKET_ID;
+        // Serialize through configureChain (one in-flight) so the reply — which
+        // carries no mercId — is attributed to THIS merc. A dropped/429 reply
+        // times out and leaves the merc UNPRICED (never mis-priced from another
+        // merc's reply, the bug that let an over-budget merc pass the maxCost cap).
+        configureChain = configureChain.then(() => new Promise((resolve) => {
+            let done = false;
+            const settle = (replyData) => {
+                if (done) return;
+                done = true;
+                configureInflight = null;
+                clearTimeout(timer);
+                if (replyData !== undefined) post(MSG.WS.MERC_CONFIGURE, { mercenaryId, data: replyData });
+                resolve();
+            };
+            configureInflight = { mercId: mercenaryId, settle };
+            const timer = setTimeout(() => settle(undefined), 12000);
+            // Post-patch DTO uses `goalId` — the server rejects `objectiveId`
+            // ("property objectiveId should not exist; goalId must be a string").
+            const data = { mercenaryId, marketId: mid, locationConfigId, zoneConfigId, goalId, hasInsurance: false };
+            wsSendRpc('expeditions', 'configure', data);
+        }));
         return true;
     };
 
@@ -1581,6 +1659,28 @@
         if (typeof marketId === 'string') pushPendingMarketJobsRequest(marketId);
     }
 
+    // get.config reply carries no marketId echo either, and get.config is now
+    // per-market. FIFO-attribute by outbound request order — OURS and the
+    // game's own (e.g. opening a non-home Hire tab in-game) both pass through
+    // the wrapped ws.send, so a non-home config can't be mis-stored as HOME.
+    const pendingConfigRequests = [];
+    function pushPendingConfigRequest(marketId) {
+        pendingConfigRequests.push({ marketId, sentAt: Date.now() });
+    }
+    function popPendingConfigRequest() {
+        const cutoff = Date.now() - 30_000;
+        while (pendingConfigRequests.length && pendingConfigRequests[0].sentAt < cutoff) {
+            pendingConfigRequests.shift();
+        }
+        return pendingConfigRequests.shift() || null;
+    }
+    function captureOutboundGetConfig(rawData) {
+        const ev = decodeOutboundEvent(rawData);
+        if (!ev || ev.name !== 'expeditions' || ev.action !== 'get.config') return;
+        const marketId = ev.data && ev.data.marketId;
+        if (typeof marketId === 'string') pushPendingConfigRequest(marketId);
+    }
+
     // Optimistically update currentEndpoint on every observed outbound
     // set.endpoint (ours OR cor3.gg's) — the server response corrects us
     // via the data.servers parse if the request fails. Without this, our
@@ -1849,6 +1949,7 @@
         'COR3_REQUEST_MERCENARIES': () => root.__cor3RequestMercenaries(),
         'COR3_REQUEST_ALL_MERCENARIES': () => root.__cor3RequestAllMercenaries(),
         'COR3_REQUEST_EXPEDITION_CONFIG': () => root.__cor3RequestExpeditionConfig(),
+        'COR3_REQUEST_ALL_EXPEDITION_CONFIGS': () => root.__cor3RequestAllExpeditionConfigs(),
         [MSG.GAME.LAUNCH_EXPEDITION]: (e) => root.__cor3LaunchExpedition(e.config),
         'COR3_RELAUNCH_EXPEDITION': (e) => root.__cor3LaunchExpedition(e.data),
         [MSG.GAME.OPEN_CONTAINER]: (e) => root.__cor3OpenContainer(e.expeditionId),
