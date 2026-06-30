@@ -1,8 +1,9 @@
 {
-  "version": "1.4.5",
+  "version": "1.4.6",
   "changes": [
-    "Auto Jobs: smarter path reachability — routes to a job's server are now recomputed live from each relay's maintenance/access state instead of trusting the game's reachability flag (which goes stale right after a relay is knocked down). A job behind a freshly K/D'd or restricted relay is now correctly postponed instead of failing on accept.",
-    "Auto Jobs: new optional \"hack transit nodes\" switch (off by default). When on, Auto Jobs will hack a restricted relay that sits on the route to a job's server to open the path, then carry on with the job.",
-    "Tested against cor3.gg web version 1.20.57."
+    "Expeditions: auto-send mercenary now works across every market you enable, not just the home market. Each market has its own on/off toggle, and the cheapest available mercenary is launched from its own market.",
+    "Expeditions: new \"max cost per mercenary\" limit for auto-send — mercenaries that cost more than the amount you set are skipped.",
+    "Fix: auto-send could occasionally launch a mercenary over your cost limit when a cost-preview response was dropped and prices got mixed up between mercenaries; previews are now matched reliably, so the limit always holds.",
+    "Tested against cor3.gg web version 1.21.33."
   ]
 }
