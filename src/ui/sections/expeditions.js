@@ -47,11 +47,12 @@
         chrome.tabs.sendMessage(tab.id, Object.assign({ action }, extra)).catch(() => {});
     }
 
-    const DEFAULT_SETTINGS = { masterEnabled: false, autoSend: { enabled: false, moneyMin: 0, moneyMax: 0, maxCost: 0, marketsDisabled: [] }, disabledReason: null };
+    const DEFAULT_AUTOSEND = { enabled: false, moneyMin: 0, moneyMax: 0, minCost: 0, maxCost: 0, insurance: false, includeElite: true, marketsDisabled: [] };
+    const DEFAULT_SETTINGS = { masterEnabled: false, autoSend: { ...DEFAULT_AUTOSEND }, disabledReason: null };
     async function getSettings() {
         const s = await Store.sync.getOne(C.STORAGE_SYNC.EXPEDITIONS_SETTINGS, null);
         if (!s) return JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
-        if (!s.autoSend) s.autoSend = { enabled: false, moneyMin: 0, moneyMax: 0, maxCost: 0, marketsDisabled: [] };
+        s.autoSend = Object.assign({ ...DEFAULT_AUTOSEND }, s.autoSend);
         return s;
     }
     // Serialise the read-modify-write of EXPEDITIONS_SETTINGS — rapid edits
@@ -71,7 +72,7 @@
     }
     function patchAutoSend(patch) {
         return queueSettingsWrite((s) => {
-            s.autoSend = Object.assign({ enabled: false, moneyMin: 0, moneyMax: 0, maxCost: 0, marketsDisabled: [] }, s.autoSend, patch);
+            s.autoSend = Object.assign({ ...DEFAULT_AUTOSEND }, s.autoSend, patch);
         });
     }
 
@@ -184,7 +185,7 @@
         panel = {
             container, timers: [],
             master: { input: null, hint: null },
-            autoSend: { input: null, minMaxRow: null, minInput: null, maxInput: null, maxCostRow: null, maxCostInput: null, marketsRow: null, marketToggles: {}, status: null, warn: null },
+            autoSend: { input: null, minMaxRow: null, minInput: null, maxInput: null, maxCostRow: null, minCostInput: null, maxCostInput: null, insuranceRow: null, insuranceHint: null, insuranceInput: null, eliteRow: null, eliteInput: null, marketsRow: null, marketToggles: {}, status: null, warn: null },
             autoChoose: { enabledInput: null, sliderInput: null, label: null },
             active: { listHost: null, timers: [] },
             pending: { title: null, listHost: null, timers: [] },
@@ -235,18 +236,46 @@
         mmRow.appendChild(minWrap); mmRow.appendChild(maxWrap);
         asCard.appendChild(mmRow);
 
-        // Max cost per merc (skip any merc costing more than this; 0/empty = no cap).
-        // Plain block (not exp-minmax/flex) so the hint stacks BELOW the input.
+        // Min/Max cost per merc (skip a merc whose totalCost is outside the
+        // band; 0/empty = that side of the band is off). Hint stacks below.
         const mcRow = el('div', 'mt-sm');
+        const mcPair = el('div', 'exp-minmax');
+        const minCostWrap = el('label', 'exp-minmax-field');
+        minCostWrap.appendChild(el('span', 'card-label', t('expeditions.autoSend.minCost')));
+        const minCostInput = document.createElement('input');
+        minCostInput.type = 'number'; minCostInput.min = '0'; minCostInput.className = 'exp-num'; minCostInput.placeholder = '0';
+        minCostWrap.appendChild(minCostInput);
         const mcWrap = el('label', 'exp-minmax-field');
         mcWrap.appendChild(el('span', 'card-label', t('expeditions.autoSend.maxCost')));
         const maxCostInput = document.createElement('input');
         maxCostInput.type = 'number'; maxCostInput.min = '0'; maxCostInput.className = 'exp-num'; maxCostInput.placeholder = '0';
         mcWrap.appendChild(maxCostInput);
-        mcRow.appendChild(mcWrap);
+        mcPair.appendChild(minCostWrap); mcPair.appendChild(mcWrap);
+        mcRow.appendChild(mcPair);
         asCard.appendChild(mcRow);
-        const mcHint = el('div', 'muted xs mt-sm', t('expeditions.autoSend.maxCostHint'));
+        const mcHint = el('div', 'muted xs mt-sm', t('expeditions.autoSend.costHint'));
         mcRow.appendChild(mcHint);
+
+        // Insurance + elite-pool switches.
+        const insRow = el('div', 'card-row mt-sm');
+        insRow.appendChild(el('span', 'card-label', t('expeditions.autoSend.insurance')));
+        const insSw = el('label', 'switch');
+        const insInput = document.createElement('input');
+        insInput.type = 'checkbox';
+        insSw.appendChild(insInput); insSw.appendChild(el('span', 'switch-slider'));
+        insRow.appendChild(insSw);
+        asCard.appendChild(insRow);
+        const insHint = el('div', 'muted xs mt-sm', t('expeditions.autoSend.insuranceHint'));
+        asCard.appendChild(insHint);
+
+        const elRow = el('div', 'card-row mt-sm');
+        elRow.appendChild(el('span', 'card-label', t('expeditions.autoSend.includeElite')));
+        const elSw = el('label', 'switch');
+        const elInput = document.createElement('input');
+        elInput.type = 'checkbox';
+        elSw.appendChild(elInput); elSw.appendChild(el('span', 'switch-slider'));
+        elRow.appendChild(elSw);
+        asCard.appendChild(elRow);
 
         // Per-market on/off — which markets auto-send may draw mercs from.
         const mkRow = el('div', 'mt-sm');
@@ -282,13 +311,20 @@
         container.appendChild(asCard);
 
         asInput.addEventListener('change', (e) => patchAutoSend({ enabled: e.target.checked }));
-        const commitMin = () => patchAutoSend({ moneyMin: Math.max(0, Math.floor(Number(minInput.value) || 0)) });
-        const commitMax = () => patchAutoSend({ moneyMax: Math.max(0, Math.floor(Number(maxInput.value) || 0)) });
-        const commitMaxCost = () => patchAutoSend({ maxCost: Math.max(0, Math.floor(Number(maxCostInput.value) || 0)) });
-        minInput.addEventListener('change', commitMin);
-        maxInput.addEventListener('change', commitMax);
-        maxCostInput.addEventListener('change', commitMaxCost);
-        panel.autoSend = { input: asInput, minMaxRow: mmRow, minInput, maxInput, maxCostRow: mcRow, maxCostInput, marketsRow: mkRow, marketToggles, status: asStatus, warn: asWarn };
+        const commitNum = (input, field) => () => patchAutoSend({ [field]: Math.max(0, Math.floor(Number(input.value) || 0)) });
+        minInput.addEventListener('change', commitNum(minInput, 'moneyMin'));
+        maxInput.addEventListener('change', commitNum(maxInput, 'moneyMax'));
+        minCostInput.addEventListener('change', commitNum(minCostInput, 'minCost'));
+        maxCostInput.addEventListener('change', commitNum(maxCostInput, 'maxCost'));
+        insInput.addEventListener('change', (e) => patchAutoSend({ insurance: e.target.checked }));
+        elInput.addEventListener('change', (e) => patchAutoSend({ includeElite: e.target.checked }));
+        panel.autoSend = {
+            input: asInput, minMaxRow: mmRow, minInput, maxInput,
+            maxCostRow: mcRow, minCostInput, maxCostInput,
+            insuranceRow: insRow, insuranceHint: insHint, insuranceInput: insInput,
+            eliteRow: elRow, eliteInput: elInput,
+            marketsRow: mkRow, marketToggles, status: asStatus, warn: asWarn,
+        };
 
         // ─── Auto-choose decision ─────────────────────────────────────
         container.appendChild(el('div', 'section-title', t('expeditions.section.autoChoose')));
@@ -501,10 +537,18 @@
         if (n.input.checked !== enabled) n.input.checked = enabled;
         n.minMaxRow.style.display = enabled ? '' : 'none';
         n.maxCostRow.style.display = enabled ? '' : 'none';
+        n.eliteRow.style.display = enabled ? '' : 'none';
         n.marketsRow.style.display = enabled ? '' : 'none';
+        // Insurance governs EVERY plugin launch (auto-send AND the manual
+        // "Send now" buttons), so it stays visible even with auto-send off.
         if (document.activeElement !== n.minInput) n.minInput.value = (s.autoSend.moneyMin || 0) || '';
         if (document.activeElement !== n.maxInput) n.maxInput.value = (s.autoSend.moneyMax || 0) || '';
+        if (document.activeElement !== n.minCostInput) n.minCostInput.value = (s.autoSend.minCost || 0) || '';
         if (document.activeElement !== n.maxCostInput) n.maxCostInput.value = (s.autoSend.maxCost || 0) || '';
+        const insured = !!s.autoSend.insurance;
+        if (n.insuranceInput.checked !== insured) n.insuranceInput.checked = insured;
+        const eliteOn = s.autoSend.includeElite !== false;
+        if (n.eliteInput.checked !== eliteOn) n.eliteInput.checked = eliteOn;
         // Per-market toggles: checked === enabled (absent from marketsDisabled).
         const disabledSet = new Set(Array.isArray(s.autoSend.marketsDisabled) ? s.autoSend.marketsDisabled : []);
         for (const id of Object.keys(n.marketToggles)) {
@@ -617,8 +661,11 @@
 
     async function refreshPending() {
         if (!panel) return;
-        const decisions = (await Store.local.getOne(C.STORAGE_LOCAL.DECISIONS, [])) || [];
-        const pending = decisions.filter((d) => !d.isResolved && Array.isArray(d.decisionOptions));
+        const [decisions, threshold] = await Promise.all([
+            Store.local.getOne(C.STORAGE_LOCAL.DECISIONS, []),
+            Store.sync.getOne(C.STORAGE_SYNC.RISK_THRESHOLD, 5),
+        ]);
+        const pending = (decisions || []).filter((d) => !d.isResolved && Array.isArray(d.decisionOptions));
         dropSectionTimers(panel.pending);
         if (!pending.length) {
             panel.pending.title.style.display = 'none';
@@ -631,17 +678,24 @@
             const card = el('div', 'card');
             card.appendChild(el('div', 'sm', `<strong>${escape(d.mercenaryCallsign || '?')}</strong>${d.locationName ? ' · ' + escape(d.locationName) : ''}`));
             if (d.content) card.appendChild(el('div', 'sm muted mt-sm', escape(d.content)));
-            for (const opt of d.decisionOptions) {
+            // Per-option score from the SHARED formula (exp-decision-score.js) —
+            // the ✓-highlighted option is EXACTLY what auto-choose would answer
+            // at the current Risk-threshold slider position.
+            const { best, scores } = root.COR3.expDecision.pick(d.decisionOptions, threshold);
+            d.decisionOptions.forEach((opt, i) => {
                 const parts = [];
                 if (opt.riskModifier) parts.push(t('expeditions.pending.risk', { n: `${opt.riskModifier > 0 ? '+' : ''}${opt.riskModifier}` }));
                 if (opt.lootModifier) parts.push(t('expeditions.pending.loot', { n: `${opt.lootModifier > 0 ? '+' : ''}${opt.lootModifier}` }));
-                const btn = el('button', 'btn small mt-sm btn-block',
-                    `${escape(opt.label || opt.id)}${parts.length ? ' — ' + parts.join(', ') : ''}`);
+                parts.push(t('expeditions.pending.score', { n: `${scores[i] > 0 ? '+' : ''}${scores[i]}` }));
+                const isBest = opt === best;
+                const btn = el('button', 'btn small mt-sm btn-block' + (isBest ? ' btn-success' : ''),
+                    `${escape(opt.label || opt.id)} — ${parts.join(', ')}${isBest ? ' ✓' : ''}`);
+                if (isBest) btn.title = t('expeditions.pending.autoPick');
                 btn.addEventListener('click', () => sendToContent('respondDecision', {
                     expeditionId: d.expeditionId, messageId: d.messageId, selectedOption: opt.id,
                 }));
                 card.appendChild(btn);
-            }
+            });
             cards.push(card);
         }
         panel.pending.listHost.replaceChildren(...cards);
@@ -651,6 +705,18 @@
     // Each is its own faction (distinct rep + elite mercs). Future/unknown
     // markets present in the data map are appended after these.
     const MARKETS = (C.MARKETS || []).map((m) => ({ id: m.id, label: `${m.key.toUpperCase()} · ${m.label}` }));
+
+    // Shared cost/risk stat line for merc cards. When the cost preview was
+    // priced WITH insurance (cfg._insured), the total already includes the
+    // premium — surface it with a 🛡 chip.
+    function costRiskStat(cfg) {
+        const stat = [];
+        if (cfg.totalCost != null) stat.push(`💸 ${num(cfg.totalCost)} (${t('expeditions.markets.deposit', { n: num(cfg.prepaymentAmount) })})`);
+        if (cfg._insured && cfg.insuranceCost != null) stat.push(`🛡 ${t('expeditions.markets.insured', { n: num(cfg.insuranceCost) })}`);
+        if (cfg.riskScore != null) stat.push(`⚠ ${t('expeditions.markets.risk', { n: cfg.riskScore })}${cfg.riskLevel ? ' (' + escape(cfg.riskLevel) + ')' : ''}`);
+        if (cfg.outcomeChances && cfg.outcomeChances.fullSuccessChance != null) stat.push(`✓ ${cfg.outcomeChances.fullSuccessChance}%`);
+        return stat.join(' · ');
+    }
 
     // A regular (hireable) mercenary card. `hasActive` disables "Send now" while
     // an expedition is already running (max 1 at a time).
@@ -673,11 +739,7 @@
         if (m.traitName) traits.push(`<strong>${escape(m.traitName)}</strong>: ${escape(m.traitDescription || '')}`);
         if (traits.length) body.appendChild(el('div', 'xs muted mt-sm', traits.join(' · ')));
         if (cfg && (cfg.totalCost != null || cfg.riskScore != null)) {
-            const stat = [];
-            if (cfg.totalCost != null) stat.push(`💸 ${num(cfg.totalCost)} (${t('expeditions.markets.deposit', { n: num(cfg.prepaymentAmount) })})`);
-            if (cfg.riskScore != null) stat.push(`⚠ ${t('expeditions.markets.risk', { n: cfg.riskScore })}${cfg.riskLevel ? ' (' + escape(cfg.riskLevel) + ')' : ''}`);
-            if (cfg.outcomeChances && cfg.outcomeChances.fullSuccessChance != null) stat.push(`✓ ${cfg.outcomeChances.fullSuccessChance}%`);
-            body.appendChild(el('div', 'xs mt-sm', stat.join(' · ')));
+            body.appendChild(el('div', 'xs mt-sm', costRiskStat(cfg)));
         }
         if (m.reputationRequirement != null) body.appendChild(el('div', 'xs muted mt-sm', t('expeditions.markets.repReq', { n: m.reputationRequirement })));
         card.appendChild(body);
@@ -692,11 +754,16 @@
         return card;
     }
 
-    // An ELITE mercenary card — different shape: eliteConfigId/state + unlock
-    // (faction-rep level + side quest) and the player's current progress.
-    function eliteCardEl(e) {
+    // An ELITE mercenary card — eliteConfigId/state + unlock (faction-rep
+    // level + side quest) and the player's current progress. An UNLOCKED slot
+    // embeds a full standard `mercenary` object that hires/launches through
+    // the ordinary configure/launch RPCs (verified live 2026-07-05), so it
+    // gets the same cost/risk line + "Send now" button as a regular merc.
+    function eliteCardEl(e, cfg, hasActive, marketId) {
         const info = e.info || {};
-        const card = el('div', 'exp-merc-card unavail');
+        const em = (e.state === 'UNLOCKED' && e.mercenary) ? e.mercenary : null;
+        const avail = !!(em && em.status === 'AVAILABLE');
+        const card = el('div', 'exp-merc-card' + (avail ? '' : ' unavail'));
         const av = document.createElement('img');
         av.className = 'exp-avatar'; av.src = e.avatarSeed || ''; av.alt = e.callsign || '';
         av.referrerPolicy = 'no-referrer'; av.loading = 'lazy';
@@ -704,25 +771,46 @@
         const body = el('div', 'exp-merc-body');
         const nameRow = el('div', 'exp-merc-namerow');
         nameRow.appendChild(el('span', 'exp-merc-name', `★ ${escape(e.callsign || '?')}`));
-        const stateCls = e.state === 'AVAILABLE' ? 'ok' : (e.state === 'QUEST_IN_PROGRESS' ? 'warn' : 'idle');
-        nameRow.appendChild(el('span', `pill ${stateCls}`, escape(String(e.state || 'ELITE').replace(/_/g, ' '))));
+        // The slot state stays UNLOCKED even while the elite is on a raid — the
+        // embedded merc's status (AVAILABLE/CONTRACTED/RESTING) is the live one.
+        const pillText = em ? em.status : String(e.state || 'ELITE');
+        const pillCls = avail ? 'ok' : (em ? 'active' : (e.state === 'QUEST_IN_PROGRESS' ? 'warn' : 'idle'));
+        nameRow.appendChild(el('span', `pill ${pillCls}`, escape(pillText.replace(/_/g, ' '))));
         body.appendChild(nameRow);
-        body.appendChild(el('div', 'sm muted',
-            `${escape(info.specializationName || e.specialization || '')}${(info.traitName || e.trait) ? ' · ' + escape(info.traitName || e.trait) : ''}`));
+        const rankBits = [escape(info.specializationName || e.specialization || '')];
+        if (em && em.rank) rankBits.push(escape(em.rank));
+        if (em && em.missionsCompleted != null) rankBits.push(t('expeditions.markets.raids', { n: em.missionsCompleted }));
+        else if (info.traitName || e.trait) rankBits.push(escape(info.traitName || e.trait));
+        body.appendChild(el('div', 'sm muted', rankBits.filter(Boolean).join(' · ')));
         const traits = [];
         if (info.specializationDescription) traits.push(escape(info.specializationDescription));
         if (info.traitName) traits.push(`<strong>${escape(info.traitName)}</strong>: ${escape(info.traitDescription || '')}`);
         if (traits.length) body.appendChild(el('div', 'xs muted mt-sm', traits.join(' · ')));
-        const u = e.unlock || {}, p = e.progress || {};
-        const reqs = [];
-        if (u.requiredFactionReputationLevel != null) {
-            const have = p.factionReputationLevel;
-            const ok = (have != null && have >= u.requiredFactionReputationLevel);
-            reqs.push(t('expeditions.markets.factionRep', { n: u.requiredFactionReputationLevel }) + `${have != null ? ` (${have}${ok ? ' ✓' : ' ✗'})` : ''}`);
+        if (em && cfg && (cfg.totalCost != null || cfg.riskScore != null)) {
+            body.appendChild(el('div', 'xs mt-sm', costRiskStat(cfg)));
         }
-        if (u.sideQuestId != null) reqs.push(`${t('expeditions.markets.sideQuest')} ${p.sideQuestCompleted ? t('expeditions.markets.questDone') + ' ✓' : t('expeditions.markets.questInProgress') + ' ✗'}`);
-        if (reqs.length) body.appendChild(el('div', 'xs mt-sm', t('expeditions.markets.unlock') + reqs.join(' · ')));
+        if (!em) {
+            const u = e.unlock || {}, p = e.progress || {};
+            const reqs = [];
+            if (u.requiredFactionReputationLevel != null) {
+                const have = p.factionReputationLevel;
+                const ok = (have != null && have >= u.requiredFactionReputationLevel);
+                reqs.push(t('expeditions.markets.factionRep', { n: u.requiredFactionReputationLevel }) + `${have != null ? ` (${have}${ok ? ' ✓' : ' ✗'})` : ''}`);
+            }
+            if (u.sideQuestId != null) reqs.push(`${t('expeditions.markets.sideQuest')} ${p.sideQuestCompleted ? t('expeditions.markets.questDone') + ' ✓' : t('expeditions.markets.questInProgress') + ' ✗'}`);
+            if (reqs.length) body.appendChild(el('div', 'xs mt-sm', t('expeditions.markets.unlock') + reqs.join(' · ')));
+        }
         card.appendChild(body);
+        if (em) {
+            const canSend = avail && !hasActive;
+            const label = !avail ? (em.status === 'RESTING' ? t('expeditions.markets.resting') : t('expeditions.markets.busy')) : (hasActive ? t('expeditions.markets.busy') : t('expeditions.markets.sendNow'));
+            const btn = el('button', 'btn small', label);
+            btn.dataset.send = em.id;
+            if (marketId) btn.dataset.market = marketId;
+            if (!canSend) btn.disabled = true;
+            if (avail && hasActive) btn.title = t('expeditions.markets.alreadyRunning');
+            card.appendChild(btn);
+        }
         return card;
     }
 
@@ -783,7 +871,10 @@
         if (elites.length) {
             block.appendChild(el('div', 'xs mt-sm', `<strong>${escape(t('expeditions.markets.eliteMercs'))}</strong>`));
             const wrap = el('div');
-            for (const e of elites) wrap.appendChild(eliteCardEl(e));
+            for (const e of elites) {
+                const cfg = (e.mercenary && (configs || {})[e.mercenary.id]) || {};
+                wrap.appendChild(eliteCardEl(e, cfg, hasActive, market.id));
+            }
             block.appendChild(wrap);
         }
         if (!regulars.length && !elites.length) {
@@ -997,7 +1088,9 @@
             unsubSync = Store.sync.onChanged((changes) => {
                 if (!container.classList.contains('active')) return;
                 if (changes[C.STORAGE_SYNC.EXPEDITIONS_SETTINGS]) { refreshMaster(); refreshAutoSend(); }
-                if (changes[C.STORAGE_SYNC.AUTO_CHOOSE_ENABLED] || changes[C.STORAGE_SYNC.RISK_THRESHOLD]) refreshAutoChoose();
+                // Threshold moves also re-score the Pending list (per-option
+                // score badges + the ✓ auto-pick highlight track the slider).
+                if (changes[C.STORAGE_SYNC.AUTO_CHOOSE_ENABLED] || changes[C.STORAGE_SYNC.RISK_THRESHOLD]) { refreshAutoChoose(); refreshPending(); }
                 if (changes[C.STORAGE_SYNC.EXP_STASH_SORT]) refreshStash();
             });
         },

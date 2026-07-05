@@ -92,11 +92,14 @@
                 // Post-patch: zone.goals (was zone.objectives); launch DTO field is goalId.
                 const goal = zone && zone.goals && zone.goals[0];
                 if (!zone || !goal) return { error: 'incomplete expedition config' };
+                // Manual sends follow the same insurance preference as auto-send
+                // (autoSend.insurance) — one switch governs every plugin launch.
+                const settings = (await root.COR3.Store.sync.getOne(C.STORAGE_SYNC.EXPEDITIONS_SETTINGS, null)) || {};
                 const launch = {
                     mercenaryId: p.mercenaryId,
                     marketId,
                     locationConfigId: loc.id, zoneConfigId: zone.id, goalId: goal.id,
-                    hasInsurance: false,
+                    hasInsurance: !!(settings.autoSend && settings.autoSend.insurance),
                 };
                 root.COR3.Store.local.setOne(C.STORAGE_LOCAL.LAST_LAUNCH, launch);
                 Bus.window.post(MSG.GAME.LAUNCH_EXPEDITION, { config: launch });

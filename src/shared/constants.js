@@ -111,6 +111,14 @@
             // Expeditions min/max auto-send; live deltas then arrive via
             // profile.receive.credits.
             REQUEST_PROFILE: 'COR3_REQUEST_PROFILE',
+            // Expedition cost-preview preferences (isolated → MAIN). Payload
+            // { insurance:boolean } — when true, the interceptor's per-merc
+            // configure cascade prices WITH insurance (hasInsurance:true), so
+            // MERC_CONFIG totals include the premium (the reply's
+            // insuranceCost is 0 unless the preview asked for insurance —
+            // verified live). Posted by auto-send-merc on start and on every
+            // EXPEDITIONS_SETTINGS change.
+            EXP_PREVIEW_PREFS: 'COR3_EXP_PREVIEW_PREFS',
             // stash.delete.item { itemId, quantity } — "Throw Away" in the
             // in-game Stash item-info panel. Captured live; sell uses the
             // pre-existing literal 'COR3_SELL_ITEM'.

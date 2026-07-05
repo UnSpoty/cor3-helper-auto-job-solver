@@ -314,6 +314,16 @@ find src -name '*.js' -exec node --check {} \;
   matcher re-runs; up to 20 retries per round. Overlay outlines every
   cell of the predicted shape and brightens the click cell.
 - Auto-send-merc with cheapest-AVAILABLE selection + stash-full re-enable.
+  The pool spans regular mercs AND unlocked elite slots (an UNLOCKED elite
+  embeds a standard `mercenary` object and launches via the ordinary
+  configure/launch — verified live); minCost/maxCost band on totalCost
+  (each side 0=off; risk only tie-breaks equal costs — raid risk appetite
+  is the auto-choose Risk-threshold slider's job).
+  `autoSend.insurance` orders the in-game insurance on every plugin launch
+  AND switches the interceptor's cost-preview cascade to insured pricing
+  (`MSG.GAME.EXP_PREVIEW_PREFS` → configure with `hasInsurance:true`;
+  `MERC_CONFIG` entries carry `_insured` and are only trusted when the flag
+  matches the setting). See docs/pipelines.md → Auto-send-merc.
 - Multi-alarm system (alarms tick every second, audio via Web Audio API).
 - Pop-out window mode (`?mode=popout`).
 

@@ -29,7 +29,12 @@
                 if (!env.mercenaryId || !env.data) return;
                 writeChain = writeChain.then(async () => {
                     const configs = (await Store.local.getOne(C.STORAGE_LOCAL.MERC_CONFIG, {})) || {};
-                    configs[env.mercenaryId] = env.data;
+                    // `_insured` = the hasInsurance flag the preview was REQUESTED
+                    // with (the reply doesn't echo it; the interceptor stamps the
+                    // envelope). Auto-send only trusts entries whose flag matches
+                    // the current insurance setting, so flipping the setting
+                    // invalidates stale prices instead of mixing pools.
+                    configs[env.mercenaryId] = Object.assign({}, env.data, { _insured: !!env.insured });
                     await Store.local.set({
                         [C.STORAGE_LOCAL.MERC_CONFIG]: configs,
                         [C.STORAGE_LOCAL.MERC_CONFIG_AT]: Date.now(),

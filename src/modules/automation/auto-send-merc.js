@@ -3,7 +3,8 @@
 //
 // Driven by STORAGE_SYNC.EXPEDITIONS_SETTINGS:
 //   { masterEnabled,
-//     autoSend:{ enabled, moneyMin, moneyMax, maxCost, marketsDisabled[] },
+//     autoSend:{ enabled, moneyMin, moneyMax, minCost, maxCost,
+//                insurance, includeElite, marketsDisabled[] },
 //     disabledReason }
 //
 //   • masterEnabled — the tab master switch; gates ALL expedition automation.
@@ -13,10 +14,22 @@
 //       the server allows max 1 active) until balance ≤ moneyMin, then disarm.
 //   • The candidate pool spans ALL markets the player can launch from (a market
 //     is launchable iff get.config returned ≥1 location). marketsDisabled[] is
-//     the set of market ids turned OFF for auto-send (absent === enabled);
-//     maxCost (0 === no cap) drops any merc whose totalCost exceeds it. The
-//     cheapest surviving merc is launched FROM ITS market with that market's
-//     location/zone/goal.
+//     the set of market ids turned OFF for auto-send (absent === enabled).
+//     includeElite (default ON, absent === on) also pools each market's
+//     UNLOCKED elite slots — an unlocked elite embeds a full standard
+//     mercenary object and launches through the ordinary configure/launch
+//     RPCs (verified live 2026-07-05, Vector/USOL).
+//   • Cost band on the priced pool (each side 0 === off): minCost/maxCost
+//     drop a merc whose totalCost is outside the band. The cheapest surviving
+//     merc is launched FROM ITS market with that market's location/zone/goal
+//     (risk only tie-breaks equal costs — raid-time risk appetite is the
+//     auto-choose Risk-threshold slider's job, not a second send-side knob).
+//   • insurance (default OFF) — order the in-game insurance on every launch:
+//     the cost-preview cascade prices WITH hasInsurance:true (the premium is
+//     included in totalCost, so the cost band filters the REAL spend) and the
+//     launch payload carries hasInsurance:true. The engine only trusts prices
+//     whose stored `_insured` flag matches the setting; flipping it re-prices
+//     the pool (stale entries are treated as unpriced, never mixed).
 //
 // The engine NEVER turns itself off: when no merc is free (all RESTING /
 // CONTRACTED) it just waits and a periodic poll re-checks as mercs return.
@@ -94,13 +107,28 @@
     }
 
     // Build the auto-send candidate pool across ENABLED, launchable markets.
-    // A candidate is an AVAILABLE merc whose totalCost is known (from the
-    // configure cost-preview). Returns the priced pool plus counts so the
-    // caller can explain an empty pool (no free merc / costs still loading /
-    // all over the cap).
-    function buildCandidates(mercMarkets, configs, expConfigs, disabledSet) {
+    // A candidate is an AVAILABLE merc (regular, or an UNLOCKED elite slot's
+    // embedded merc when includeElite) whose totalCost is known from a
+    // configure cost-preview PRICED WITH the current insurance setting
+    // (entry `_insured` must match — a price from the other insurance mode is
+    // treated as pending, never mixed in). Returns the priced pool plus
+    // counts so the caller can explain an empty pool (no free merc / costs
+    // still loading / all outside the cost/risk gates).
+    function buildCandidates(mercMarkets, configs, expConfigs, disabledSet, opts) {
         const candidates = [];
         let availableCount = 0;
+        const wantInsured = !!opts.insurance;
+        const push = (merc, marketId, triple, elite) => {
+            availableCount++;
+            const mc = configs[merc.id];
+            if (!mc || !Number.isFinite(mc.totalCost)) return;   // cost preview pending
+            if (!!mc._insured !== wantInsured) return;           // priced in the other insurance mode
+            candidates.push({
+                merc, marketId, triple, elite,
+                cost: mc.totalCost,
+                risk: Number.isFinite(mc.riskScore) ? mc.riskScore : 0,
+            });
+        };
         for (const m of (C.MARKETS || [])) {
             if (disabledSet.has(m.id)) continue;
             const triple = launchTriple(expConfigs[m.id]);
@@ -109,14 +137,17 @@
             const mercs = (data && Array.isArray(data.mercenaries)) ? data.mercenaries : [];
             for (const merc of mercs) {
                 if (merc.status !== 'AVAILABLE') continue;
-                availableCount++;
-                const mc = configs[merc.id];
-                if (!mc || !Number.isFinite(mc.totalCost)) continue;  // cost preview pending
-                candidates.push({
-                    merc, marketId: m.id, triple,
-                    cost: mc.totalCost,
-                    risk: Number.isFinite(mc.riskScore) ? mc.riskScore : 0,
-                });
+                push(merc, m.id, triple, false);
+            }
+            if (opts.includeElite) {
+                const elites = (data && Array.isArray(data.eliteSlots)) ? data.eliteSlots : [];
+                for (const slot of elites) {
+                    // After a launch the slot stays UNLOCKED and only the embedded
+                    // mercenary.status flips to CONTRACTED (verified live).
+                    if (!slot || slot.state !== 'UNLOCKED' || !slot.mercenary) continue;
+                    if (slot.mercenary.status !== 'AVAILABLE') continue;
+                    push(slot.mercenary, m.id, triple, true);
+                }
             }
         }
         return { candidates, availableCount, pricedCount: candidates.length };
@@ -211,17 +242,23 @@
             return;
         }
 
-        // 4) cheapest AVAILABLE merc across ENABLED markets, within the max-cost cap.
+        // 4) cheapest AVAILABLE merc across ENABLED markets, within the cost band.
         const [mercMarkets, configs, expConfigs] = await Promise.all([
             Store.local.getOne(C.STORAGE_LOCAL.MERC_MARKETS, {}),
             Store.local.getOne(C.STORAGE_LOCAL.MERC_CONFIG, {}),
             Store.local.getOne(C.STORAGE_LOCAL.EXPEDITION_CONFIGS, {}),
         ]);
         const disabledSet = new Set(Array.isArray(s.autoSend.marketsDisabled) ? s.autoSend.marketsDisabled : []);
-        const maxCost = Math.max(0, Math.floor(Number(s.autoSend.maxCost) || 0));  // 0 = no cap
+        const num = (v) => Math.max(0, Math.floor(Number(v) || 0));  // 0 = gate off
+        const minCost = num(s.autoSend.minCost);
+        const maxCost = num(s.autoSend.maxCost);
+        const insurance = !!s.autoSend.insurance;
+        const includeElite = s.autoSend.includeElite !== false;  // absent === on
         const { candidates, availableCount, pricedCount } =
-            buildCandidates(mercMarkets || {}, configs || {}, expConfigs || {}, disabledSet);
+            buildCandidates(mercMarkets || {}, configs || {}, expConfigs || {}, disabledSet,
+                { insurance, includeElite });
         let pool = candidates;
+        if (minCost > 0) pool = pool.filter((c) => c.cost >= minCost);
         if (maxCost > 0) pool = pool.filter((c) => c.cost <= maxCost);
         pool.sort((a, b) => (a.cost - b.cost) || (a.risk - b.risk));
         const pick = pool[0] || null;
@@ -232,8 +269,12 @@
             Bus.window.post('COR3_REQUEST_ALL_MERCENARIES', null);
             let status;
             if (availableCount === 0) status = 'waiting for a free merc (resting)…';
-            else if (pricedCount === 0) status = 'loading merc costs…';
-            else status = maxCost > 0 ? `all ${pricedCount} free merc(s) over max ${maxCost} CR` : 'no eligible merc';
+            else if (pricedCount === 0) status = insurance ? 'loading insured merc costs…' : 'loading merc costs…';
+            else {
+                status = (minCost > 0 || maxCost > 0)
+                    ? `all ${pricedCount} free merc(s) outside cost ${minCost || 0}–${maxCost || '∞'} CR`
+                    : 'no eligible merc';
+            }
             await setState({ armed: true, balance, status });
             return;
         }
@@ -241,15 +282,15 @@
         // 5) launch the cheapest pick from ITS market, then spend down toward Min.
         if (isBusy()) return;
         lock();
-        mod.info(`auto-send: launching ${pick.merc.callsign} from ${marketLabel(pick.marketId)} `
-            + `(cost ${pick.cost}); balance ${balance} → spend toward ${min}`);
+        mod.info(`auto-send: launching ${pick.elite ? 'ELITE ' : ''}${pick.merc.callsign} from ${marketLabel(pick.marketId)} `
+            + `(cost ${pick.cost}, risk ${pick.risk}${insurance ? ', insured' : ''}); balance ${balance} → spend toward ${min}`);
         await setState({ armed: true, balance, status: `sending ${pick.merc.callsign}…` });
         const cfg = {
             mercenaryId: pick.merc.id, marketId: pick.marketId,
             locationConfigId: pick.triple.locationConfigId,
             zoneConfigId: pick.triple.zoneConfigId,
             goalId: pick.triple.goalId,
-            hasInsurance: false,
+            hasInsurance: insurance,
         };
         Store.local.setOne(C.STORAGE_LOCAL.LAST_LAUNCH, cfg);
         Bus.window.post(MSG.GAME.LAUNCH_EXPEDITION, { config: cfg });
@@ -321,9 +362,25 @@
             // back off — the active run will complete and free the slot.
             this.track(Bus.window.on(C.MSG.WS.EXPEDITION_LAUNCH_ERROR, () => { unlock(); }));
 
+            // Keep MAIN's cost-preview cascade in the same insurance mode as
+            // the setting. On a flip, re-request all rosters so every merc is
+            // re-priced in the new mode (old prices are `_insured`-mismatched
+            // and already excluded from the pool).
+            let lastInsurance = null;
+            const syncPreviewPrefs = async () => {
+                const s = await getSettings();
+                const insurance = !!s.autoSend.insurance;
+                Bus.window.post(MSG.GAME.EXP_PREVIEW_PREFS, { insurance });
+                if (lastInsurance !== null && lastInsurance !== insurance) {
+                    this.info(`insurance ${insurance ? 'ON' : 'OFF'} — re-pricing all mercs`);
+                    Bus.window.post('COR3_REQUEST_ALL_MERCENARIES', null);
+                }
+                lastInsurance = insurance;
+            };
+
             // React to settings toggles immediately.
             this.track(Store.sync.onChanged((changes) => {
-                if (changes[C.STORAGE_SYNC.EXPEDITIONS_SETTINGS]) ev();
+                if (changes[C.STORAGE_SYNC.EXPEDITIONS_SETTINGS]) { syncPreviewPrefs(); ev(); }
             }));
 
             // Keep-alive poll: catches RESTING→AVAILABLE, balance drift, and any
@@ -343,14 +400,16 @@
             }, POLL_MS);
             this.track(() => clearInterval(poll));
 
-            // Seed a profile snapshot + all-market rosters once on start. Each
-            // roster delivery lazily fetches its market's config + prices its
-            // mercs, so the multi-market pool fills in without a separate config
-            // sweep here.
+            // Seed a profile snapshot + all-market rosters once on start. Push
+            // the insurance preview mode FIRST so the initial cascade prices in
+            // the right mode. Each roster delivery lazily fetches its market's
+            // config + prices its mercs, so the multi-market pool fills in
+            // without a separate config sweep here.
+            await syncPreviewPrefs();
             Bus.window.post(MSG.GAME.REQUEST_PROFILE, null);
             Bus.window.post('COR3_REQUEST_ALL_MERCENARIES', null);
             await evaluate(this);
-            this.info('auto-send engine ready (min/max latch · multi-market)');
+            this.info('auto-send engine ready (min/max latch · multi-market · elite + insurance aware)');
         }
     }
 

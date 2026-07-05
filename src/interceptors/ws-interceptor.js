@@ -856,7 +856,8 @@
         // No setTimeout pacing needed — __cor3RequestMercConfigure serializes
         // through configureChain (one reply at a time) and wsSend rate-limits.
         for (const id of mercIds) {
-            root.__cor3RequestMercConfigure(id, mid, ids.locationConfigId, ids.zoneConfigId, ids.goalId);
+            root.__cor3RequestMercConfigure(id, mid, ids.locationConfigId, ids.zoneConfigId, ids.goalId,
+                root.__cor3PreviewInsurance);
         }
     }
 
@@ -1006,6 +1007,10 @@
     root.__cor3ExpConfigIdsByMarket = {};     // { [marketId]: {locationConfigId, zoneConfigId, goalId} }
     root.__cor3CachedMercIdsByMarket = {};    // { [marketId]: string[] }
     root.__cor3LastMarketId = null;
+    // Auto-insurance preference for the configure cost-preview cascade. Pushed
+    // from the isolated world via MSG.GAME.EXP_PREVIEW_PREFS (auto-send-merc);
+    // false until the first push = today's uninsured pricing.
+    root.__cor3PreviewInsurance = false;
     root.__cor3WebVersion = null;
     root.__cor3SystemVersion = null;
     root.__serverPathFailed = false;
@@ -1094,8 +1099,16 @@
         // its OWN config — fetching that config first if we lack it (the
         // get.config reply re-triggers this market's cascade).
         const mercs = (data && data.mercenaries) || [];
-        if (mercs.length) {
-            const mercIds = mercs.map((m) => m.id);
+        // An UNLOCKED elite slot embeds a FULL standard mercenary object; the
+        // game hires/launches it through the ordinary configure/launch RPCs
+        // with that embedded merc's id (verified live 2026-07-05, Vector/USOL —
+        // see tmp_research/insurance-elite-wire-capture.md). Price elites in
+        // the same cascade so auto-send can pool them.
+        const eliteMercIds = (Array.isArray(data && data.eliteSlots) ? data.eliteSlots : [])
+            .filter((s) => s && s.state === 'UNLOCKED' && s.mercenary && s.mercenary.id)
+            .map((s) => s.mercenary.id);
+        if (mercs.length || eliteMercIds.length) {
+            const mercIds = mercs.map((m) => m.id).concat(eliteMercIds);
             root.__cor3CachedMercIdsByMarket[mid] = mercIds;
             if (mid === HOME_MARKET_ID) root.__cor3CachedMercIds = mercIds;  // back-compat alias
             if (root.__cor3ExpConfigIdsByMarket[mid]) {
@@ -1161,8 +1174,9 @@
         return true;
     };
 
-    root.__cor3RequestMercConfigure = function (mercenaryId, marketId, locationConfigId, zoneConfigId, goalId) {
+    root.__cor3RequestMercConfigure = function (mercenaryId, marketId, locationConfigId, zoneConfigId, goalId, hasInsurance) {
         const mid = marketId || root.__cor3LastMarketId || HOME_MARKET_ID;
+        const insured = !!hasInsurance;
         // Serialize through configureChain (one in-flight) so the reply — which
         // carries no mercId — is attributed to THIS merc. A dropped/429 reply
         // times out and leaves the merc UNPRICED (never mis-priced from another
@@ -1174,14 +1188,18 @@
                 done = true;
                 configureInflight = null;
                 clearTimeout(timer);
-                if (replyData !== undefined) post(MSG.WS.MERC_CONFIGURE, { mercenaryId, data: replyData });
+                // The reply does NOT echo hasInsurance, so stamp the request's
+                // flag onto the envelope — merc-config persists it as `_insured`
+                // and auto-send only trusts prices whose flag matches the
+                // current insurance setting (no mixed insured/uninsured pools).
+                if (replyData !== undefined) post(MSG.WS.MERC_CONFIGURE, { mercenaryId, data: replyData, insured });
                 resolve();
             };
             configureInflight = { mercId: mercenaryId, settle };
             const timer = setTimeout(() => settle(undefined), 12000);
             // Post-patch DTO uses `goalId` — the server rejects `objectiveId`
             // ("property objectiveId should not exist; goalId must be a string").
-            const data = { mercenaryId, marketId: mid, locationConfigId, zoneConfigId, goalId, hasInsurance: false };
+            const data = { mercenaryId, marketId: mid, locationConfigId, zoneConfigId, goalId, hasInsurance: insured };
             wsSendRpc('expeditions', 'configure', data);
         }));
         return true;
@@ -1950,6 +1968,7 @@
         'COR3_REQUEST_ALL_MERCENARIES': () => root.__cor3RequestAllMercenaries(),
         'COR3_REQUEST_EXPEDITION_CONFIG': () => root.__cor3RequestExpeditionConfig(),
         'COR3_REQUEST_ALL_EXPEDITION_CONFIGS': () => root.__cor3RequestAllExpeditionConfigs(),
+        [MSG.GAME.EXP_PREVIEW_PREFS]: (e) => { root.__cor3PreviewInsurance = !!(e && e.insurance); },
         [MSG.GAME.LAUNCH_EXPEDITION]: (e) => root.__cor3LaunchExpedition(e.config),
         'COR3_RELAUNCH_EXPEDITION': (e) => root.__cor3LaunchExpedition(e.data),
         [MSG.GAME.OPEN_CONTAINER]: (e) => root.__cor3OpenContainer(e.expeditionId),

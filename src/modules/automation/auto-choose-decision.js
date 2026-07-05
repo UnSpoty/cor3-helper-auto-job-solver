@@ -1,11 +1,14 @@
 // When the Expeditions master switch is ON and `autoChooseEnabled` is true,
 // auto-pick the highest-scoring option for any pending (unresolved) expedition
-// decision. Score formula uses a single user-tunable `riskThreshold` (0..10).
+// decision. Scoring lives in the SHARED src/shared/exp-decision-score.js
+// (COR3.expDecision — also rendered per-option in the popup's Pending list):
 //
-// Score(opt) = lootModifier - (riskModifier * riskWeight)
-//   where riskWeight = (10 - riskThreshold) / 5  (so threshold=0 → strong
-//   penalty for risk, threshold=10 → ignore risk).
-// Ties broken by lower riskModifier.
+// Score(opt) = lootModifier - riskModifier * (10 - riskThreshold)
+//   threshold 0 → risk weight 10 (risk-averse: +10 risk needs +100 loot),
+//   threshold 10 → weight 0 (pure loot-max). The OLD weight (10-t)/5 maxed
+//   at 2 while the wire scales are loot ±20..50 vs risk ±5..10, so loot
+//   always won and the slider did nothing — the "always picks the risky
+//   option" bug. Ties break toward the lower riskModifier.
 //
 // NOTE: we do NOT gate on `decisionDeadline` — it comes through as `null` on
 // the wire (verified live), and a decision pauses the raid at status=EVENT
@@ -34,13 +37,6 @@
         return { master, enabled: !!enabled, threshold: Math.max(0, Math.min(10, Number(threshold) || 5)) };
     }
 
-    function score(opt, threshold) {
-        const loot = Number(opt.lootModifier) || 0;
-        const risk = Number(opt.riskModifier) || 0;
-        const riskWeight = (10 - threshold) / 5;
-        return loot - (risk * riskWeight);
-    }
-
     async function tick(mod) {
         const { master, enabled, threshold } = await getSettings();
         if (!master || !enabled) return;
@@ -61,15 +57,13 @@
             const last = chosen.get(d.messageId);
             if (last != null && (Date.now() - last) < RETRY_AFTER_MS) continue;
 
-            let best = null, bestS = -Infinity;
-            for (const opt of d.decisionOptions) {
-                const s = score(opt, threshold);
-                if (s > bestS) { bestS = s; best = opt; }
-            }
+            const { best, scores } = root.COR3.expDecision.pick(d.decisionOptions, threshold);
             if (!best) continue;
 
             chosen.set(d.messageId, Date.now());
-            mod.info(`auto-choosing "${best.label}" score=${bestS.toFixed(2)} threshold=${threshold}`);
+            const bestS = scores[d.decisionOptions.indexOf(best)];
+            mod.info(`auto-choosing "${best.label}" (risk ${best.riskModifier > 0 ? '+' : ''}${best.riskModifier || 0}, `
+                + `loot ${best.lootModifier > 0 ? '+' : ''}${best.lootModifier || 0}) score=${bestS} threshold=${threshold}`);
             Bus.window.post(C.MSG.GAME.RESPOND_DECISION, {
                 expeditionId: d.expeditionId,
                 messageId: d.messageId,

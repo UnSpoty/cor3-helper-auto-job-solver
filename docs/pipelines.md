@@ -216,68 +216,56 @@ SAI batch — see above). By job type:
 
 ## 2. Auto-send-merc
 
-After an expedition completes, open the container, collect the rewards,
-optionally pick the cheapest mercenary and re-launch.
+Balance-latched engine: while armed it keeps ONE expedition running with the
+cheapest eligible mercenary across all enabled markets, auto-opening and
+collecting each completed run. Driven by
+`STORAGE_SYNC.EXPEDITIONS_SETTINGS.autoSend`
+`{ enabled, moneyMin, moneyMax, minCost, maxCost, insurance,
+includeElite, marketsDisabled[] }` under the tab-wide `masterEnabled` gate.
 
 ```
-WS_EXPEDITIONS arrives
+evaluate()  ← on WS_EXPEDITIONS / WS_MERCENARIES / WS_PROFILE, settings
+              change, container/collect events, and a 20 s poll
    │
-   └─ checkOnExpeditionData(expeditions):
-       │
-       ├─ if no active expeditions AND user enabled:
-       │     inProgress = true
-       │     awaitingMercenaries = true
-       │     post COR3_REQUEST_MERCENARIES (1 s)
-       │     [waits for WS_MERCENARIES → onMercenaries]
-       │
-       └─ for each exp where status==='COMPLETED' AND !completedAt:
-              inProgress = true
-              expeditionId = exp.id
-              if !exp.containerOpenedAt:
-                  post COR3_OPEN_CONTAINER (1-1.5 s)
-                  [waits for WS_CONTAINER_OPENED → onContainerOpened]
-              else:
-                  post COR3_COLLECT_ALL
-                  [waits for WS_COLLECTED_ALL → onCollectedAll]
+   ├─ COMPLETED run present?
+   │     not opened → OPEN_CONTAINER      (FULL_SUCCESS auto-opens even with
+   │     opened + uncollected + auto-send │  auto-send off — master-only)
+   │        → COLLECT_ALL (pays the remaining, banks loot, frees the slot)
+   │
+   ├─ balance latch: armed at balance ≥ moneyMax, disarmed at ≤ moneyMin
+   ├─ any non-COMPLETED expedition → wait (server allows max 1 active)
+   │
+   ├─ POOL: for each market NOT in marketsDisabled with a launchable config
+   │        (get.config returned ≥1 location):
+   │        • every mercenaries[] entry with status AVAILABLE
+   │        • includeElite: every eliteSlots[] entry with state UNLOCKED and
+   │          an embedded mercenary.status AVAILABLE — an unlocked elite is a
+   │          STANDARD merc on the wire (launches via ordinary configure/
+   │          launch with eliteSlots[].mercenary.id; verified live 2026-07-05)
+   │        priced by MERC_CONFIG (the interceptor's configure cascade);
+   │        an entry only counts when its `_insured` flag matches the current
+   │        insurance setting (flipping the setting re-prices, never mixes)
+   │
+   ├─ COST BAND (each side 0 = off): minCost ≤ totalCost ≤ maxCost
+   │        (no send-side risk knob — raid risk appetite is the auto-choose
+   │        Risk-threshold slider's job; riskScore only tie-breaks equal costs)
+   ├─ sort by (totalCost asc, riskScore asc) → pick cheapest
+   └─ LAUNCH_EXPEDITION { mercenaryId, marketId, locationConfigId,
+          zoneConfigId, goalId, hasInsurance: autoSend.insurance }
+          [WS_EXPEDITION_LAUNCH_ERROR / WS_INSUFFICIENT_CREDITS → back off]
 
-onContainerOpened(data):
-    spaceNeeded = (data.items || data.containerItems).length
-    if stash has space:
-        post COR3_COLLECT_ALL (1-1.5 s)
-    else:
-        autoSendMerc.enabled = false, disabledReason = 'stash_full'
-        inProgress = false
-
-onCollectedAll(_):
-    expeditionId = null
-    post COR3_REQUEST_STASH (500 ms)
-    post COR3_REQUEST_MERCENARIES (2.5-3.5 s)
-    awaitingMercenaries = true
-
-onMercenaries(data):
-    awaitingMercenaries = false
-    pick mercenaryId:
-        if autoChooseMerc:
-            sort by (totalCost asc, riskScore asc)
-            pick first AVAILABLE merc with config data
-        else:
-            use settings.mercenaryId
-    proceedWithMerc(mercId, mercs)
-        ├─ verify selected merc.status === 'AVAILABLE'
-        ├─ read expeditionConfigData → locationConfigId / zoneConfigId / goalId
-        │     // post-patch: zone.goals[0] (was zone.objectives); the launch
-        │     // DTO field is goalId (was objectiveId) + marketId = HOME_MARKET_ID
-        ├─ Store launchConfig to lastExpeditionLaunchData
-        └─ post COR3_LAUNCH_EXPEDITION { config: launchConfig }
-              [game emits WS_EXPEDITION_LAUNCHED on success]
-              [or WS_EXPEDITION_LAUNCH_ERROR / WS_INSUFFICIENT_CREDITS]
-
-onStash(stash):
-    if disabledReason === 'stash_full' AND now has space:
-        re-enable auto-send
-
-Watchdog: every 5 s, if inProgress AND age > 120 s → reset
+Soft pauses (disabledReason): 'stash_full' (auto-clears when the stash frees
+≥2 slots), 'insufficient_credits'.
 ```
+
+**Insurance.** `autoSend.insurance` governs EVERY plugin launch (auto-send
+AND the popup's manual "Send now" via runtime-bridge). The engine pushes the
+flag to MAIN over `MSG.GAME.EXP_PREVIEW_PREFS`; the interceptor's cost-preview
+cascade then sends `configure {…, hasInsurance:true}` so each merc's stored
+`totalCost` INCLUDES the premium (`insuranceCost`, ~30% of base — the reply
+returns `insuranceCost:0` unless the preview asked with insurance, verified
+live) and stamps `_insured` on the `MERC_CONFIG` entry via the
+`WS_MERC_CONFIGURE` envelope. The cost band therefore filters the REAL spend.
 
 ### Disable triggers
 
@@ -311,35 +299,36 @@ freed at least 2 slots.
 
 ## 3. Auto-choose-decision
 
-Tick every 10 s. Sees pending decisions; picks the highest-scoring option
-once < 60 s remain on the deadline.
+Tick every 10 s (gated by the Expeditions master switch + `autoChooseEnabled`).
+Answers every pending decision PROMPTLY — `decisionDeadline` is `null` on the
+wire and the raid pauses at `status:EVENT` until answered, so there is no
+countdown to gate on. A dropped RESPOND_DECISION retries after 15 s (per-message
+attempt map, pruned when the decision disappears).
 
 ```
 tick():
-    settings = { enabled: autoChooseEnabled, threshold: riskThreshold (0..10) }
-    if !enabled: return
-    decisions = chrome.storage.local.expeditionDecisions
-    for each d:
-        skip if d.isResolved
-        skip if no decisionDeadline
-        skip if no decisionOptions
-        skip if d.messageId in chosen (already handled)
-        remaining = deadline - now()
-        skip if remaining <= 0 or remaining > 60_000
-
-        for each option:
-            score = lootModifier - riskModifier * (10 - threshold) / 5
-        best = option with max score
-
-        chosen.add(d.messageId)
+    threshold = riskThreshold (0..10)
+    for each unresolved decision d (skip if attempted < 15 s ago):
+        { best } = COR3.expDecision.pick(d.decisionOptions, threshold)
         post COR3_RESPOND_DECISION { expeditionId, messageId, selectedOption: best.id }
         schedule REQUEST_EXPEDITIONS (3 s) to refresh state
 ```
 
-`riskWeight = (10 - threshold) / 5` means:
-- `threshold = 0`: `weight = 2.0` (risk doubles in cost)
-- `threshold = 5`: `weight = 1.0`
-- `threshold = 10`: `weight = 0.0` (ignore risk entirely)
+Scoring is the SHARED `src/shared/exp-decision-score.js` (`COR3.expDecision`
+— the popup's Pending-decisions list renders the same per-option scores and
+✓-marks the would-be pick, so UI and engine can never disagree):
+
+    score = lootModifier − riskModifier × (10 − threshold)
+
+- `threshold = 0`:  weight 10 — risk-averse: a +10-risk option needs +100 loot
+  to break even (never happens live; loot runs ±20..50, risk ±5..10)
+- `threshold = 5`:  weight 5 — risk ±10 genuinely competes with loot ±50
+- `threshold = 10`: weight 0 — pure loot-max, risk ignored
+- ties break toward the LOWER riskModifier
+
+History: the old weight `(10 − threshold)/5` maxed at 2, so with the wire's
+asymmetric scales the big-loot (risky) option won at EVERY slider position —
+the "auto-choose always picks the risky option" bug (fixed 2026-07-05).
 
 ---
 
