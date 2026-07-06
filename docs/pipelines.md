@@ -267,6 +267,21 @@ returns `insuranceCost:0` unless the preview asked with insurance, verified
 live) and stamps `_insured` on the `MERC_CONFIG` entry via the
 `WS_MERC_CONFIGURE` envelope. The cost band therefore filters the REAL spend.
 
+**The launch rides the same configure chain.** `__cor3LaunchExpedition` used
+to fire a bare `configure` OUTSIDE `configureChain` and `launch` ~1 s later.
+That broke twice over: the bare configure's reply settle()-d whatever preview
+was in flight (another merc inherited the launched merc's price — the exact
+mis-attribution the chain exists to kill), and because `evaluate()` launches
+off the same roster deliveries that start preview cascades, cascade configures
+for OTHER mercs landed between the launch's configure and the launch frame —
+clobbering the configure state and launching an insured pick UNINSURED. Now
+the whole sequence is one chain step: configure → reply ack (re-prices the
+launched merc, correctly attributed, `_insured` stamped) → `launch` → release
+the chain. A dropped/timed-out ack ABORTS the launch
+(`WS_EXPEDITION_LAUNCH_ERROR {error:'configure-timeout'}`); any other launch
+rejection is surfaced on the same envelope instead of the old silent
+fall-through to `WS_EXPEDITION_LAUNCHED` with no data.
+
 ### Disable triggers
 
 | Trigger | `disabledReason` |
@@ -328,7 +343,13 @@ Scoring is the SHARED `src/shared/exp-decision-score.js` (`COR3.expDecision`
 
 History: the old weight `(10 − threshold)/5` maxed at 2, so with the wire's
 asymmetric scales the big-loot (risky) option won at EVERY slider position —
-the "auto-choose always picks the risky option" bug (fixed 2026-07-05).
+the "auto-choose always picks the risky option" bug (fixed 2026-07-05). A
+second bug survived that fix: the engine's `Number(threshold) || 5` swallowed
+a slider at 0 into the 5 default, so max risk-aversion actually ran at weight 5
+("loot +50 / risk +5" scored +25 and still beat the safe option) while the
+popup previewed the true 0 — engine and ✓-mark disagreed. Normalization now
+lives ONLY in `COR3.expDecision.clampThreshold` (0 is valid; non-finite → 5),
+used by both the engine and `score()` itself (fixed 2026-07-06).
 
 ---
 

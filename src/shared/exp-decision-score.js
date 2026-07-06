@@ -24,11 +24,22 @@
     const root = (typeof globalThis !== 'undefined') ? globalThis : self;
     root.COR3 = root.COR3 || {};
 
+    // Threshold normalization lives HERE so the engine and the popup preview
+    // can never disagree. 0 is a VALID position (max risk-aversion) — the old
+    // engine-side `Number(threshold) || 5` swallowed it into the default, so
+    // the slider hard at 0 actually ran at 5 (weight 5): "loot +50 / risk +5"
+    // scored +25 and beat the safe option, while the popup ✓-marked the safe
+    // one — the "still picks the risky option at 0" mismatch. Only a
+    // non-finite value (unset/garbage) falls back to the 5 default.
+    function clampThreshold(t) {
+        const n = Number(t);
+        return Number.isFinite(n) ? Math.max(0, Math.min(10, n)) : 5;
+    }
+
     function score(opt, threshold) {
         const loot = Number(opt.lootModifier) || 0;
         const risk = Number(opt.riskModifier) || 0;
-        const riskWeight = 10 - Math.max(0, Math.min(10, Number(threshold) || 0));
-        return loot - (risk * riskWeight);
+        return loot - (risk * (10 - clampThreshold(threshold)));
     }
 
     // Returns { best, scores } — `scores[i]` matches options[i]; `best` is the
@@ -46,5 +57,5 @@
         return { best, scores };
     }
 
-    root.COR3.expDecision = { score, pick };
+    root.COR3.expDecision = { score, pick, clampThreshold };
 })();

@@ -323,7 +323,11 @@ find src -name '*.js' -exec node --check {} \;
   AND switches the interceptor's cost-preview cascade to insured pricing
   (`MSG.GAME.EXP_PREVIEW_PREFS` → configure with `hasInsurance:true`;
   `MERC_CONFIG` entries carry `_insured` and are only trusted when the flag
-  matches the setting). See docs/pipelines.md → Auto-send-merc.
+  matches the setting). The launch itself is ONE `configureChain` step —
+  configure → ack → launch — so no cost-preview configure can interleave
+  and clobber the insured configure state (a bare out-of-chain configure
+  used to do exactly that: insured picks launched uninsured), and a dropped
+  ack aborts the launch loudly. See docs/pipelines.md → Auto-send-merc.
 - Multi-alarm system (alarms tick every second, audio via Web Audio API).
 - Pop-out window mode (`?mode=popout`).
 

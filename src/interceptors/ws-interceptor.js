@@ -371,6 +371,14 @@
                     post(MSG.WS.INSUFFICIENT_CREDITS, { error: payload.error.message });
                     return;
                 }
+                if (payload.error) {
+                    // Any OTHER rejection (validation, unknown) must be loud —
+                    // this used to fall through and post EXPEDITION_LAUNCHED
+                    // with no data, so auto-send silently retried forever.
+                    console.warn('[COR3] Expedition launch rejected:', payload.error);
+                    post(MSG.WS.EXPEDITION_LAUNCH_ERROR, { error: payload.error.message || String(payload.error) });
+                    return;
+                }
                 post(MSG.WS.EXPEDITION_LAUNCHED, { data: payload.data });
                 post(MSG.WS.DECISIONS, { decisions: [] });
                 setTimeout(() => root.__cor3RequestExpeditions(), 1000 + Math.floor(Math.random() * 500));
@@ -1205,12 +1213,65 @@
         return true;
     };
 
+    // Launch = configure → (reply ack) → launch, riding configureChain.
+    // The old bare configure OUTSIDE the chain broke two ways at once:
+    //   1. Its reply settle()-d whatever cost-preview configure was in flight,
+    //      so another merc inherited the launched merc's price — the exact
+    //      mis-attribution class the chain was built to kill.
+    //   2. evaluate() launches are triggered by the same roster deliveries
+    //      that start preview cascades, so cascade configures for OTHER mercs
+    //      went out between this configure and the delayed launch — clobbering
+    //      the server-side configure state the launch draws on (an INSURED
+    //      configure followed by another merc's preview launched UNINSURED).
+    // Holding the chain until the launch frame is out makes configure→launch
+    // atomic w.r.t. every configure we send; the launch goes out only after
+    // the configure reply. A dropped/timed-out configure ABORTS the launch
+    // loudly (EXPEDITION_LAUNCH_ERROR → auto-send unlocks and retries).
+    // While the launch step waits behind queued cascade configures, auto-send
+    // may re-evaluate (its busy lock expires after 4 s) and post the same
+    // launch again — the server allows max 1 active expedition, so a queued
+    // duplicate can only bounce off 'Maximum 1 active'. Drop it here instead.
+    let launchInflight = false;
     root.__cor3LaunchExpedition = function (configData) {
-        console.log('[COR3] Launching expedition:', configData);
-        wsSendRpc('expeditions', 'configure', configData);
-        setTimeout(() => {
-            wsSendRpc('expeditions', 'launch', configData);
-        }, humanDelay() + 500);
+        // hasInsurance rides BOTH frames as an explicit boolean — the
+        // configure prices it (insuranceCost in the reply), the launch DTO
+        // carries it. No preview-pref fallback here: every producer
+        // (auto-send evaluate, sendMercNow) stamps the flag itself.
+        const cfg = Object.assign({}, configData, { hasInsurance: !!(configData && configData.hasInsurance) });
+        if (launchInflight) {
+            console.warn('[COR3] Launch already queued/in flight — dropping duplicate for', cfg.mercenaryId);
+            return false;
+        }
+        launchInflight = true;
+        console.log('[COR3] Launching expedition:', cfg);
+        configureChain = configureChain.then(() => new Promise((resolve) => {
+            let done = false;
+            const settle = (replyData) => {
+                if (done) return;
+                done = true;
+                configureInflight = null;
+                clearTimeout(timer);
+                if (replyData === undefined) {
+                    launchInflight = false;
+                    console.warn('[COR3] Launch ABORTED — configure not acked (dropped/timed out/rejected) for', cfg.mercenaryId);
+                    post(MSG.WS.EXPEDITION_LAUNCH_ERROR, { error: 'configure-timeout' });
+                    resolve();
+                    return;
+                }
+                // Correctly-attributed fresh price for the launched merc
+                // (includes insuranceCost when insured) — same envelope the
+                // cascade uses, so MERC_CONFIG + the popup 🛡 chip stay true.
+                post(MSG.WS.MERC_CONFIGURE, { mercenaryId: cfg.mercenaryId, data: replyData, insured: cfg.hasInsurance });
+                setTimeout(() => {
+                    wsSendRpc('expeditions', 'launch', cfg);
+                    launchInflight = false;
+                    resolve();
+                }, humanDelay() + 500);
+            };
+            configureInflight = { mercId: cfg.mercenaryId, settle };
+            const timer = setTimeout(() => settle(undefined), 12000);
+            wsSendRpc('expeditions', 'configure', cfg);
+        }));
         return true;
     };
 

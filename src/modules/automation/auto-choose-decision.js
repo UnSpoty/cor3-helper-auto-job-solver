@@ -34,7 +34,10 @@
         ]);
         // Master switch (#2) gates ALL expedition automation.
         const master = !!(exp && exp.masterEnabled);
-        return { master, enabled: !!enabled, threshold: Math.max(0, Math.min(10, Number(threshold) || 5)) };
+        // Shared clamp (exp-decision-score.js): 0 is a valid position — the
+        // old `Number(threshold) || 5` swallowed it into the default, so the
+        // engine ran at 5 while the popup previewed 0 (mismatched picks).
+        return { master, enabled: !!enabled, threshold: root.COR3.expDecision.clampThreshold(threshold) };
     }
 
     async function tick(mod) {
