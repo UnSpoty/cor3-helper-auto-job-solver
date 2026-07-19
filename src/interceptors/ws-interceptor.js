@@ -1645,7 +1645,13 @@
     };
     root.__cor3MarketSellItems = function (marketId, items) {
         if (!marketId || !Array.isArray(items) || !items.length) { console.warn('[COR3] __cor3MarketSellItems: missing marketId/items'); return false; }
-        return wsSendRpc('market', 'sell.items', { marketId, items });
+        // The server's sell DTO whitelists ONLY { itemType, itemId } and rejects
+        // ANY extra property with "Validation failed" (verified live). The
+        // Valuable Seller carries the get.sellable-items shape through — which
+        // also has price/repGain/name/tags/… — so strip each item to the two
+        // allowed fields at this boundary (same DTO discipline as file.upload).
+        const clean = items.map((it) => ({ itemType: it.itemType, itemId: it.itemId }));
+        return wsSendRpc('market', 'sell.items', { marketId, items: clean });
     };
     // desktop.get.file.analysis — read-only File Analysis of a Downloads file
     // (tags / source / cryptRate). Reply → MSG.WS.DESKTOP_FILE_ANALYSIS.
