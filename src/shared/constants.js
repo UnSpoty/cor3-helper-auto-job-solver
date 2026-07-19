@@ -70,6 +70,18 @@
             SAI_FILES: 'COR3_WS_SAI_FILES',
             SAI_LOGS: 'COR3_WS_SAI_LOGS',
             SAI_ACTION: 'COR3_WS_SAI_ACTION',
+            // desktop.get.file.analysis reply (the read-only File Analysis
+            // window request). data: { tags:[], source, cryptRate?, … }.
+            // Consumer: the Valuable Seller engine (tags/source of a valuable
+            // Downloads file).
+            DESKTOP_FILE_ANALYSIS: 'COR3_WS_DESKTOP_FILE_ANALYSIS',
+            // market.get.sellable-items reply. data: { items:[{itemType,itemId,…}],
+            // totalPrice, totalRepGain }. The endpoint must be ON the market's
+            // server when the request fires (remote markets), same rule as get.jobs.
+            MARKET_SELLABLE_ITEMS: 'COR3_WS_MARKET_SELLABLE_ITEMS',
+            // market.sell.items verdict ({ data, error }). One reply per sell.items
+            // request (the Valuable Seller sells one item per request).
+            MARKET_SELL_RESULT: 'COR3_WS_MARKET_SELL_RESULT',
             EXPEDITION_LAUNCHED: 'COR3_WS_EXPEDITION_LAUNCHED',
             EXPEDITION_LAUNCH_ERROR: 'COR3_WS_EXPEDITION_LAUNCH_ERROR',
             EXPEDITION_RETRY_LAUNCH: 'COR3_WS_EXPEDITION_RETRY_LAUNCH',
@@ -302,6 +314,41 @@
             HACK_TRANSIT: 'COR3_AJ_HACK_TRANSIT',
             HACK_RESULT: 'COR3_AJ_HACK_RESULT',
         },
+
+        // Valuable Seller — scan reachable servers for valuable files/logs
+        // (basePrice > 0, tagged), download the selected finds, sell everything
+        // sellable at the markets (USOL → SRM → DARK → HOME priority). Two
+        // halves mirror Auto Jobs: an isolated orchestrator (owns VS_STATE,
+        // computes scan candidates off NM_GRAPH reachability) and a MAIN engine
+        // (pure-WS SAI access via COR3.autoJobs.saiFlow.ensureAccess + the
+        // search/download/sell RPCs).
+        VALUABLE: {
+            // popup → isolated runtime actions (chrome.tabs.sendMessage type).
+            SCAN_ACTION: 'vsScan',       // start a scan of all reachable servers
+            SELL_ACTION: 'vsSell',       // payload { serverIds:[], minPrice } — download + sell
+            STOP_ACTION: 'vsStop',       // abort the running scan/sell
+            SELECT_ACTION: 'vsSelect',   // payload { serverId, selected } — persist a checkbox
+
+            // isolated orchestrator → MAIN engine (window messages).
+            // SCAN_START payload: { servers:[{ id, name, serverType, depth }] }
+            // SELL_START payload: { servers:[…same shape…], minPrice }
+            SCAN_START: 'COR3_VS_SCAN_START',
+            SELL_START: 'COR3_VS_SELL_START',
+            STOP: 'COR3_VS_STOP',
+
+            // MAIN engine → isolated orchestrator progress stream.
+            // SERVER_RESULT: { serverId, serverName, status:'open'|'empty'|'skipped'|
+            //   'downloaded', reason?, files:[{fileId,name,basePrice,detectRate,tags}],
+            //   logs:[{seq,message,basePrice,detectRate,tags}] }
+            // DOWNLOADS_RESULT: { files:[{id,name,source,tags}] }
+            // PROGRESS: { phase:'scan'|'sell', level, msg } — mirrored into the
+            //   VS_STATE log ring the popup renders.
+            // DONE: { mode:'scan'|'sell', ok, reason?, sold?, credits? }
+            SERVER_RESULT: 'COR3_VS_SERVER_RESULT',
+            DOWNLOADS_RESULT: 'COR3_VS_DOWNLOADS_RESULT',
+            PROGRESS: 'COR3_VS_PROGRESS',
+            DONE: 'COR3_VS_DONE',
+        },
     };
 
     // ──────────────────────────────────────────────────────────────────────
@@ -427,6 +474,17 @@
         // Shape: { [shapeKey]: { cells:[{dc,dr,mirror,revealed,g}], click:{dc,dr,mirror}, learnedAt, hits } }
         ICE_WALL_CLICK_DB: 'iceWallClickDb',
 
+        // ── Valuable Seller runtime ──────────────────────────────────────────
+        // Owned by the isolated valuable-seller orchestrator; the popup
+        // Valuables tab renders it live. Shape:
+        //   { running: bool, mode: 'scan'|'sell'|null, startedAt, updatedAt,
+        //     scannedAt,                    // ts of the last completed scan
+        //     servers: [{ id, name, serverType, depth, status, reason?,
+        //                 selected, files:[…], logs:[…] }],
+        //     downloads: [{ id, name, source, tags }],
+        //     log: [{ ts, level, msg }] }  // capped ring, newest last
+        VS_STATE: 'vsState',
+
         // Solver runtime
         DAILY_HACK_LOG: 'dailyHackLog',
         DAILY_HACK_LOG_AT: 'dailyHackLogUpdatedAt',
@@ -489,6 +547,11 @@
 
         // Auto-refresh
         AUTO_REFRESH: 'autoRefresh',
+
+        // Valuable Seller user prefs. Single object:
+        //   { minPrice: number }   // 0 = off; a find with basePrice below this
+        //                          // is not downloaded/sold by the Sell phase
+        VALUABLES_SETTINGS: 'valuablesSettings',
 
         // Auto-choose decision (replaces decisionModifiers; 0..10 risk threshold)
         RISK_THRESHOLD: 'riskThreshold',

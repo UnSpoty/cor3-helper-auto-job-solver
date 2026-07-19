@@ -1298,7 +1298,11 @@
         //   { status:'underpower', maxPower, sw, hw }       owns covering SW, none reaches
         //   { status:'none' }                               no owned SW covers target
         //   { status:'unknown' }                            no snapshot / incomplete inventory
-        _optimize(capType, matchKey, target, need) {
+        // `maximize` flips the cost function: MOST power first (swaps/tier/vuln
+        // only tie-break) and every bootable config qualifies (`need` ignored) —
+        // used for SEARCH, where a stronger tool finds more valuables and there
+        // is no pass/fail bar to clear.
+        _optimize(capType, matchKey, target, need, maximize) {
             if (!this._snapshot) return { status: 'unknown' };
             const owned = this._ownedBySlot();
             if (!owned.cpu.length || !owned.gpu.length || !owned.ram.length || !owned.psu.length) return { status: 'unknown' };
@@ -1321,10 +1325,15 @@
             // → (tie) more power. A band-less tool (power=Infinity sentinel) is treated
             // as LOWEST preference on the power tie-break — prefer a known-banded tool.
             const pw = (c) => c.power === Infinity ? -1 : c.power;
-            const better = (a, b) => a.swaps !== b.swaps ? a.swaps < b.swaps
-                : a.tier !== b.tier ? a.tier < b.tier
-                : a.vuln !== b.vuln ? a.vuln < b.vuln
-                : pw(a) > pw(b);
+            const better = maximize
+                ? (a, b) => pw(a) !== pw(b) ? pw(a) > pw(b)
+                    : a.swaps !== b.swaps ? a.swaps < b.swaps
+                    : a.tier !== b.tier ? a.tier < b.tier
+                    : a.vuln < b.vuln
+                : (a, b) => a.swaps !== b.swaps ? a.swaps < b.swaps
+                    : a.tier !== b.tier ? a.tier < b.tier
+                    : a.vuln !== b.vuln ? a.vuln < b.vuln
+                    : pw(a) > pw(b);
             // Strongest owned PSU — the most headroom any transition can be given.
             const maxPsuPower = owned.psu.reduce((m, p) => Math.max(m, Number(p.specs && p.specs.psuPower) || 0), 0);
             const curCpu = curHw.cpu, curGpu = curHw.gpu;
@@ -1351,7 +1360,7 @@
                         // maxAny (the "best achievable" diagnostic) tracks only FINITE
                         // powers — a band-less Infinity must not shadow a real banded ceiling.
                         if (p != null && (maxAny == null || p > maxAny.power)) maxAny = { sw, hw, power: p };
-                        const reaches = need <= 0 || (p != null && p >= need);
+                        const reaches = maximize || need <= 0 || (p != null && p >= need);
                         if (reaches && (best == null || better(cand, best))) best = cand;
                     }
                 }
@@ -1364,18 +1373,30 @@
         // Plan a capability: 'ready' (current rig already clears it — live-checked,
         // so multi-tool resource sharing is accounted for) else delegate to the
         // exhaustive optimizer ('apply'/'underpower'/'none'/'unknown').
-        _planCapability(capType, matchKey, target, need) {
+        // With `maximize` the any-live-power 'ready' shortcut is skipped (any
+        // weak equipped tool would satisfy it) — instead the optimizer's best
+        // config is compared against the CURRENT rig: already dedicated to that
+        // exact config → 'ready', else 'apply'.
+        _planCapability(capType, matchKey, target, need, maximize) {
             if (!this._snapshot) return { status: 'unknown' };
-            const livePow = this._equippedPowerFor(capType, matchKey, target);
-            if (livePow != null && (need <= 0 || livePow >= need)) return { status: 'ready', power: livePow };
+            if (!maximize) {
+                const livePow = this._equippedPowerFor(capType, matchKey, target);
+                if (livePow != null && (need <= 0 || livePow >= need)) return { status: 'ready', power: livePow };
+            }
             // Cache the (exhaustive) optimizer result keyed by snapshot identity, so a
             // planX immediately followed by ensureX on the same snapshot runs it ONCE.
             // The snapshot object is replaced wholesale on every loadout WS frame, so
             // identity is a sound cache key (the cache auto-invalidates on any change).
-            const key = `${capType}|${String(target || '').toLowerCase()}|${need}`;
+            const key = `${capType}|${String(target || '').toLowerCase()}|${need}|${maximize ? 'max' : 'bar'}`;
             if (!this._optCache || this._optCache.snap !== this._snapshot) this._optCache = { snap: this._snapshot, map: new Map() };
             if (this._optCache.map.has(key)) return this._optCache.map.get(key);
-            const r = this._optimize(capType, matchKey, target, need);
+            let r = this._optimize(capType, matchKey, target, need, maximize);
+            if (maximize && r.status === 'apply') {
+                // Rig already IS the optimal dedicated config → nothing to do.
+                const dedicated = ((this._snapshot.equippedSoftware) || []).length === 1
+                    && this._isEquipped(r.sw.id);
+                if (r.swaps === 0 && dedicated) r = { status: 'ready', power: this._equippedPowerFor(capType, matchKey, target) ?? r.power };
+            }
             this._optCache.map.set(key, r);
             return r;
         }
@@ -1489,10 +1510,11 @@
             return { ok: false, status: 'underpower', transient: false, reason: `power-unreachable:${target}:${need}` };
         }
         // Shared ensure: plan → (ready/none/underpower/unknown short-circuit) →
-        // apply the optimal config. Used by apiEnsureDecrypt / apiEnsureHack.
-        async _ensureCapability(capType, matchKey, target, need, say) {
+        // apply the optimal config. Used by apiEnsureDecrypt / apiEnsureHack /
+        // apiEnsureSearch (the latter with maximize — see _planCapability).
+        async _ensureCapability(capType, matchKey, target, need, say, maximize) {
             const verb = capType === 'HACK' ? 'hack' : capType === 'DECRYPT' ? 'decrypt' : capType.toLowerCase();
-            const plan = this._planCapability(capType, matchKey, target, need);
+            const plan = this._planCapability(capType, matchKey, target, need, maximize);
             if (plan.status === 'ready')      { say('info', `loadout already ${verb}s ${target}${need ? ` (power ≥ ${need})` : ''}`); return { ok: true, status: 'ready', power: plan.power }; }
             if (plan.status === 'unknown')    { say('warn', 'loadout snapshot still not loaded after request'); return { ok: false, status: 'unknown', transient: true, reason: 'no-loadout-snapshot' }; }
             if (plan.status === 'none')       { say('warn', `no owned software can ${verb} ${target}`); return { ok: false, status: 'none', transient: false, reason: `no-software:${capType}:${target}` }; }
@@ -1608,6 +1630,22 @@
             const say = typeof log === 'function' ? log : () => {};
             await this._ensureSnapshot(8000, say);   // auto-fetch the snapshot if not warmed yet
             return this._ensureCapability('HACK', 'serverTypes', serverType, Number(requiredPower) || 0, say);
+        }
+
+        // SEARCH — same target model as HACK (matched by spec.serverTypes) but
+        // MAXIMIZED instead of bar-gated: search has no pass/fail power bar, a
+        // stronger tool simply detects more/higher-value valuables, so the
+        // optimizer picks the most-power config (swaps only tie-break). Result
+        // shape matches apiEnsureDecrypt/Hack ('none' = no owned SEARCH software
+        // covers this server type — the caller proceeds without a search, it is
+        // not an error).
+        apiPlanSearch(serverType) {
+            return this._toLegacyPlan(this._planCapability('SEARCH', 'serverTypes', serverType, 0, true));
+        }
+        async apiEnsureSearch(serverType, log) {
+            const say = typeof log === 'function' ? log : () => {};
+            await this._ensureSnapshot(8000, say);   // auto-fetch the snapshot if not warmed yet
+            return this._ensureCapability('SEARCH', 'serverTypes', serverType, 0, say, true);
         }
 
         // ─── Capability chip click: equip cheapest available ──────────
@@ -2187,5 +2225,9 @@
         hackServerTypes: () => [...loadoutPanel._equippedHackTypes()],
         planHack: (serverType, requiredPower) => loadoutPanel.apiPlanHack(serverType, requiredPower),
         ensureHack: (serverType, requiredPower, log) => loadoutPanel.apiEnsureHack(serverType, requiredPower, log),
+        // SEARCH (Valuable Seller): maximize-power ensure — no bar, 'none' is
+        // a proceed-without verdict, not an error.
+        planSearch: (serverType) => loadoutPanel.apiPlanSearch(serverType),
+        ensureSearch: (serverType, log) => loadoutPanel.apiEnsureSearch(serverType, log),
     };
 })();

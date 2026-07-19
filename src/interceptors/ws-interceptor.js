@@ -287,6 +287,13 @@
                 post(MSG.WS.DESKTOP_FILE, { data: payload.data || null, error: payload.error || null });
                 return;
             }
+            // get.file.analysis — the read-only File Analysis window request.
+            // The Valuable Seller engine uses it for a Downloads file's
+            // tags/source (and the decrypt model reads cryptRate off it).
+            if (dAction === 'get.file.analysis') {
+                post(MSG.WS.DESKTOP_FILE_ANALYSIS, { data: payload.data || null, error: payload.error || null });
+                return;
+            }
             // Other desktop actions (move/rename/delete) — no consumers
             // today, drop silently to avoid noise on the bus.
             return;
@@ -523,6 +530,17 @@
                 }
                 return;
             }
+            // Valuable Seller market RPC replies. Neither carries a marketId
+            // echo — the engine serialises its requests (one in flight), so a
+            // plain relay is unambiguous.
+            if (action === 'get.sellable-items') {
+                post(MSG.WS.MARKET_SELLABLE_ITEMS, { data: payload.data || null, error: payload.error || null });
+                return;
+            }
+            if (action === 'sell.items') {
+                post(MSG.WS.MARKET_SELL_RESULT, { data: payload.data || null, error: payload.error || null });
+                return;
+            }
             // get.options still arrives (cor3.gg sends it alongside get.jobs
             // when the user opens the market UI manually) — it carries
             // marketName, reputation, userCredits. We seed the player's CR
@@ -611,7 +629,11 @@
                 post(MSG.WS.SAI_LOGS, { data: payload.data || null, error: payload.error || null });
             } else if (action === 'transit.add' || action === 'transit.remove'
                 || action === 'file.download' || action === 'file.delete' || action === 'file.upload'
-                || action === 'log.download' || action === 'log.delete') {
+                || action === 'log.download' || action === 'log.delete'
+                || action === 'file.search-valuable' || action === 'log.search-valuable') {
+                // search-valuable replies (Valuable Seller): data =
+                // { found:[{id, basePrice, …}], searchPowerUsed } — ride the
+                // action-tagged SAI_ACTION channel like the other mutations.
                 post(MSG.WS.SAI_ACTION, { action, data: payload.data || null, error: payload.error || null });
             }
             return;
@@ -1596,6 +1618,40 @@
     root.__cor3SaiFileUpload = function (serverId, name, sizeMb) {
         if (!serverId || !name || sizeMb == null) { console.warn('[COR3] __cor3SaiFileUpload: missing serverId/name/sizeMb'); return false; }
         return wsSendRpc('sai', 'file.upload', { serverId, name, sizeMb });
+    };
+
+    // ── Valuable Seller RPCs ──────────────────────────────────────────
+    // search-valuable — the SAI "Search for valuables" action (needs SEARCH
+    // software equipped; searchPowerUsed in the reply reflects it). Replies
+    // ride MSG.WS.SAI_ACTION tagged with the action. Wire actions match the
+    // in-game SAI terminal (verified against a live competitor capture).
+    root.__cor3SaiFileSearchValuable = function (serverId) {
+        if (!serverId) { console.warn('[COR3] __cor3SaiFileSearchValuable: missing serverId'); return false; }
+        return wsSendRpc('sai', 'file.search-valuable', { serverId });
+    };
+    root.__cor3SaiLogSearchValuable = function (serverId) {
+        if (!serverId) { console.warn('[COR3] __cor3SaiLogSearchValuable: missing serverId'); return false; }
+        return wsSendRpc('sai', 'log.search-valuable', { serverId });
+    };
+    // Market sell RPCs. get.sellable-items lists what THIS market accepts from
+    // the Downloads folder ({items, totalPrice, totalRepGain}); sell.items
+    // sells the given [{itemType, itemId}] batch. For a remote market the
+    // endpoint must be ON the market's server first (same rule as get.jobs) —
+    // the Valuable Seller engine handles the set.endpoint itself under its
+    // pipeline hold, so these are plain sends with no preflight dance.
+    root.__cor3MarketGetSellableItems = function (marketId) {
+        if (!marketId) { console.warn('[COR3] __cor3MarketGetSellableItems: missing marketId'); return false; }
+        return wsSendRpc('market', 'get.sellable-items', { marketId });
+    };
+    root.__cor3MarketSellItems = function (marketId, items) {
+        if (!marketId || !Array.isArray(items) || !items.length) { console.warn('[COR3] __cor3MarketSellItems: missing marketId/items'); return false; }
+        return wsSendRpc('market', 'sell.items', { marketId, items });
+    };
+    // desktop.get.file.analysis — read-only File Analysis of a Downloads file
+    // (tags / source / cryptRate). Reply → MSG.WS.DESKTOP_FILE_ANALYSIS.
+    root.__cor3DesktopGetFileAnalysis = function (fileId) {
+        if (!fileId) { console.warn('[COR3] __cor3DesktopGetFileAnalysis: missing fileId'); return false; }
+        return wsSendRpc('desktop', 'get.file.analysis', { fileId, source: 'desktop' });
     };
 
     root.__cor3SellItem = function (itemId, quantity) {

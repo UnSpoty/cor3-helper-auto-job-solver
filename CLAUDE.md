@@ -166,6 +166,31 @@ part live so toggling a switch / server-skip reflects instantly (no cycle wait).
    `flow-*`** (the MAIN flow modules). The Activity Log + Download Log filter
    to these ids.
 
+## Valuable Seller subsystem
+
+The **Valuables** tab scans reachable servers for valuable (basePrice > 0,
+tagged) files/logs, downloads the selected finds and sells everything at the
+markets in USOL → SRM → DARK → HOME priority (adapted from the competitor's
+auto-valuable-seller, rebuilt on our machinery — live BFS reachability instead
+of hardcoded paths, the loadout optimizer instead of greedy picks). Two
+halves mirror Auto Jobs: the isolated orchestrator
+[src/modules/automation/valuable-seller.js](src/modules/automation/valuable-seller.js)
+owns `STORAGE_LOCAL.VS_STATE` + the popup runtime actions (`vsScan`/`vsSell`/
+`vsStop`/`vsSelect`), computes scan candidates off `NM_GRAPH` via the shared
+`COR3.autoJobs.reachability.reachableSet`, and refuses to start while the Auto
+Jobs loop runs; the MAIN engine
+[src/modules/game/valuable-seller.js](src/modules/game/valuable-seller.js)
+does the work over pure WS — `COR3.autoJobs.saiFlow.ensureAccess` (grant login
+or WS hack + solvers), `COR3.game.loadout.ensureSearch` (a **maximize-power**
+optimizer mode: most SEARCH power first, swaps only tie-break — search has no
+pass/fail bar), `sai file/log.search-valuable` (replies ride `MSG.WS.SAI_ACTION`),
+`file/log.download`, then `market.get.sellable-items` + `market.sell.items`
+(new `MSG.WS.MARKET_SELLABLE_ITEMS` / `MARKET_SELL_RESULT`; remote markets need
+the endpoint on their server first). The engine holds `__cor3FlowLock` for the
+whole run and `__pipelineLocked` per server / per sell phase. UI:
+[src/ui/sections/valuables.js](src/ui/sections/valuables.js). Message contract:
+[docs/messaging.md → MSG.VALUABLE](docs/messaging.md).
+
 ## Documentation map
 
 Read these in order when ramping up:
@@ -329,6 +354,13 @@ find src -name '*.js' -exec node --check {} \;
   used to do exactly that: insured picks launched uninsured), and a dropped
   ack aborts the launch loudly. See docs/pipelines.md → Auto-send-merc.
 - Multi-alarm system (alarms tick every second, audio via Web Audio API).
+  Two triggers per alarm: `threshold` (classic countdown pre-warning) and
+  `update` (markets + daily) — fires when the reset moment passes (zero-cross
+  on the tracked countdown) OR when the stored envelope's
+  `nextJobsResetAt`/`nextTaskTime` VALUE changes (deduped per deadline, so the
+  pair can't double-beep; value comparison, because Auto Jobs rewrites market
+  envelopes each cycle with the same deadline). A continuous beep stops when
+  its alarm re-arms on a fresh deadline (used to loop forever).
 - Pop-out window mode (`?mode=popout`).
 
 ## Module ID reference
@@ -366,6 +398,8 @@ Quick list of every registered module ID and its world:
   Each listens on `MSG.AUTOJOBS.FLOW_START` for its job type and replies
   `FLOW_RESULT`; logs under its own `flow-*` id (the Activity Log filters to
   `auto-jobs` + `flow-*`). The SAI types share the `_sai-flow.js` base factory.
+- `valuable-seller-engine` — the Valuable Seller MAIN engine (scan/download/
+  sell over pure WS; see the Valuable Seller subsystem section).
 - `solver-decrypt`, `solver-daily-ops`, `solver-ice-wall`,
   `solver-simple-decrypt`
 - `desktop-window.js` — MAIN-world `COR3.game.desktop` namespace (NOT a
@@ -415,7 +449,7 @@ Quick list of every registered module ID and its world:
   `mercenaries`, `merc-config`, `expedition-config` — data
 - `timers`, `auto-refresh`, `auto-send-merc`, `auto-choose-decision`,
   `auto-decrypt`, `auto-ice-wall`, `auto-simple-decrypt`, `daily-ops`,
-  `auto-jobs`, `runtime-bridge` — automation
+  `auto-jobs`, `valuable-seller`, `runtime-bridge` — automation
 - `appearance-system-messages`, `appearance-background`,
   `appearance-network-fog`, `appearance-map-fx`,
   `appearance-loadout-widget` (bridges the Overview "Show LOADOUT widget"

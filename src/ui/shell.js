@@ -19,6 +19,7 @@
         { id: 'overview',    labelKey: 'tabs.overview' },
         { id: 'expeditions', labelKey: 'tabs.expeditions' },
         { id: 'autojobs',    labelKey: 'tabs.autojobs' },
+        { id: 'valuables',   labelKey: 'tabs.valuables' },
         { id: 'modules',     labelKey: 'tabs.modules' },
         { id: 'logs',        labelKey: 'tabs.logs' },
     ];

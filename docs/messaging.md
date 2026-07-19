@@ -39,6 +39,15 @@ modules (auto-jobs, auto-send-merc).
 | `WS.EXPEDITION_RETRY_LAUNCH` | `COR3_WS_EXPEDITION_RETRY_LAUNCH` | `{ retryData: requestId }` | fired by the WS interceptor 2 min after a launch error; auto-send-merc relays it as `COR3_RELAUNCH_EXPEDITION`. |
 | `WS.INSUFFICIENT_CREDITS` | `COR3_WS_INSUFFICIENT_CREDITS` | `{ error: 'insufficient-credits' }` | auto-send disables itself with `disabledReason: 'insufficient_credits'`. |
 | `WS.LOG` | `COR3_WS_LOG` | `{ direction: 'sent'\|'received', message: string }` | **deprecated** — superseded by Logger; not currently consumed. Safe to remove later. |
+| `WS.DESKTOP_FILE_ANALYSIS` | `COR3_WS_DESKTOP_FILE_ANALYSIS` | `{ data: { tags, source, … }, error }` | reply to `desktop.get.file.analysis` (`__cor3DesktopGetFileAnalysis(fileId)`) — the read-only File Analysis window request. Consumer: the Valuable Seller engine (tags/source of a valuable Downloads file). |
+| `WS.MARKET_SELLABLE_ITEMS` | `COR3_WS_MARKET_SELLABLE_ITEMS` | `{ data: { items:[{itemType,itemId,…}], totalPrice, totalRepGain }, error }` | reply to `market.get.sellable-items` (`__cor3MarketGetSellableItems(marketId)`). Endpoint must be ON the market's server for a remote market (same rule as `get.jobs`). |
+| `WS.MARKET_SELL_RESULT` | `COR3_WS_MARKET_SELL_RESULT` | `{ data, error }` | verdict of `market.sell.items` (`__cor3MarketSellItems(marketId, items)`). The Valuable Seller sells ONE item per request, so replies map 1:1. |
+
+> **search-valuable rides `WS.SAI_ACTION`.** The Valuable Seller's
+> `sai.file.search-valuable` / `sai.log.search-valuable` replies
+> (`{ found:[{id, basePrice, …}], searchPowerUsed }`) are relayed on the
+> existing action-tagged `MSG.WS.SAI_ACTION` channel, like the other SAI
+> mutations (fired via `__cor3SaiFileSearchValuable` / `__cor3SaiLogSearchValuable`).
 
 > **Market id registry.** The market/server ids above are no longer hardcoded
 > per file. `constants.js` exports a single source of truth `C.MARKETS =
@@ -193,6 +202,33 @@ the market board's `jobs[]` and reappears in `recentJobs[]` with
 
 ---
 
+## MSG.VALUABLE — Valuable Seller control
+
+Owned by the Valuable Seller subsystem: an isolated orchestrator
+(`src/modules/automation/valuable-seller.js`, owns `VS_STATE` + the guards) and
+a MAIN engine (`src/modules/game/valuable-seller.js`, the scan/download/sell
+work over pure WS, reusing `COR3.autoJobs.saiFlow.ensureAccess` +
+`COR3.game.loadout.ensureSearch`). Mutually exclusive with Auto Jobs: the
+orchestrator refuses to start while `AJ_PIPELINE_STATE.running`; the engine
+holds `__cor3FlowLock` for its whole run (a FLOW_START meanwhile gets the
+standard `flow-busy` retryable reply).
+
+| Constant | Wire string | Direction | Payload | What it does |
+|---|---|---|---|---|
+| `VALUABLE.SCAN_ACTION` | `vsScan` | popup → isolated (runtime) | — | start a scan. The orchestrator computes candidates off `NM_GRAPH` (shared transit-rule BFS `COR3.autoJobs.reachability.reachableSet`, non-HOME, not in maintenance, furthest first) and dispatches SCAN_START. Replies `{success}` or `{success:false, reason}` (`auto-jobs-running` / `already-running` / `no-nm-graph`). |
+| `VALUABLE.SELL_ACTION` | `vsSell` | popup → isolated (runtime) | `{ serverIds:[], minPrice }` | download + sell for the selected servers (empty list = just sell what's already in Downloads). Same guards as SCAN_ACTION. |
+| `VALUABLE.STOP_ACTION` | `vsStop` | popup → isolated (runtime) | — | abort the running scan/sell (relayed as VALUABLE.STOP; the engine flips the shared `__cor3Abort` flag). |
+| `VALUABLE.SELECT_ACTION` | `vsSelect` | popup → isolated (runtime) | `{ serverId, selected }` | persist a server checkbox into `VS_STATE` (selection survives popup close). |
+| `VALUABLE.SCAN_START` | `COR3_VS_SCAN_START` | isolated → MAIN (window) | `{ servers:[{id,name,serverType,depth}] }` | scan run: per server `ensureAccess` (grant login or WS hack) → `get.files`/`get.logs` → valuable filter (`basePrice>0 && tags.length`) → SERVER_RESULT; then the Downloads scan (isValuable + `get.file.analysis`). |
+| `VALUABLE.SELL_START` | `COR3_VS_SELL_START` | isolated → MAIN (window) | `{ servers:[…], minPrice }` | sell run: per server `ensureAccess` → `ensureSearch` (maximize-power SEARCH loadout) → `file/log.search-valuable` → re-read lists, filter to detected (+`minPrice` floor) → `file/log.download`; then per market (USOL → SRM → DARK → HOME) `get.sellable-items` → `sell.items` one by one. |
+| `VALUABLE.STOP` | `COR3_VS_STOP` | isolated → MAIN (window) | — | abort flag; the run breaks at the next checkpoint and posts DONE. |
+| `VALUABLE.SERVER_RESULT` | `COR3_VS_SERVER_RESULT` | MAIN → isolated (window) | `{ serverId, serverName, status:'open'\|'empty'\|'skipped'\|'downloaded', reason?, files:[{fileId,name,basePrice,detectRate,tags}], logs:[{seq,message,basePrice,detectRate,tags}] }` | per-server outcome; merged into `VS_STATE.servers` (an `open` result auto-selects the server). |
+| `VALUABLE.DOWNLOADS_RESULT` | `COR3_VS_DOWNLOADS_RESULT` | MAIN → isolated (window) | `{ files:[{id,name,source,tags}] }` | valuable Downloads listing → `VS_STATE.downloads`. |
+| `VALUABLE.PROGRESS` | `COR3_VS_PROGRESS` | MAIN → isolated (window) | `{ phase:'scan'\|'sell', level, msg }` | activity line → `VS_STATE.log` ring (cap 80). |
+| `VALUABLE.DONE` | `COR3_VS_DONE` | MAIN → isolated (window) | `{ mode, ok, reason?, sold? }` | run finished/aborted; clears `VS_STATE.running`, stamps `scannedAt` on a successful scan. |
+
+---
+
 ## STORAGE_LOCAL — chrome.storage.local keys
 
 ### Game data cache
@@ -259,6 +295,12 @@ Constants live under `STORAGE_LOCAL.AJ_*`.
 > `dataSkipReason`; the popup re-derives the config part live so a toggle
 > reflects in the Job List immediately, without waiting for a pipeline cycle.
 
+### Valuable Seller runtime
+
+| Key | Shape | Owner |
+|---|---|---|
+| `vsState` | `{ running, mode:'scan'\|'sell'\|null, startedAt, updatedAt, scannedAt, servers:[{id,name,serverType,depth,status,reason?,selected,files,logs}], downloads:[{id,name,source,tags}], log:[{ts,level,msg}] }` | `automation/valuable-seller.js` (the orchestrator; writes are debounced 200 ms). Rendered live by the popup Valuables tab. `running:true` left behind by a page reload is reset on module start. |
+
 ### Solver runtime
 
 | Key | Shape | Owner |
@@ -280,7 +322,8 @@ Constants live under `STORAGE_LOCAL.AJ_*`.
 | Key | Shape | Default | Owner |
 |---|---|---|---|
 | `selectedTheme` | `'cor3' \| 'amber-console' \| 'neon'` | `'cor3'` | `ui/shell.js` `applyTheme` + the Overview theme picker. `'cor3'` (or absent) = no body class. |
-| `alarms` | `Alarm[]` | `[]` | popup `alarms` section + `automation/timers.js` |
+| `alarms` | `Alarm[]` — `{ id, enabled, timerSource, trigger?, thresholdSeconds, volume, continuous }` | `[]` | popup `alarms` section + `automation/timers.js`. `trigger` = `'threshold'` (default, absent = threshold: fire once when the countdown drops into `(0, thresholdSeconds]`) or `'update'` (markets + daily only: fire when the reset moment passes — zero-cross — OR when the stored envelope's `nextJobsResetAt`/`nextTaskTime` VALUE changes; deduped per deadline so the two can't double-beep). A continuous beep now stops when its alarm re-arms on a fresh deadline. |
+| `valuablesSettings` | `{ minPrice }` | `{minPrice:0}` | Valuables tab; `minPrice` floors what the Sell phase downloads (0 = off). |
 | `autoJobsSettings` | `{enabled}` | `{enabled:false}` | `auto-jobs.js` — the only sync key Auto Jobs owns; toggling it starts/stops the loop (alongside `MSG.AUTOJOBS.TOGGLE`). |
 | `autoSendMerc` | `{enabled, autoChooseMerc, mercenaryId, mercenaryName, disabledReason}` | `{enabled:false, autoChooseMerc:true}` | `auto-send-merc.js`, mercenaries section |
 | `autoDecryptEnabled` | bool | `false` | `auto-decrypt.js` |

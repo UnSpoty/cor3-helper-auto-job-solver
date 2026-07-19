@@ -314,6 +314,20 @@
         const timerSelect = document.createElement('select');
         timerSelect.id = 'al-timer';
 
+        // Trigger: classic countdown threshold, or "on data update" (markets +
+        // daily only — an expedition end never "updates", so the option is
+        // forced back to threshold for exp_ sources).
+        const trigSelect = document.createElement('select');
+        trigSelect.id = 'al-trig';
+        const trigOptThreshold = document.createElement('option');
+        trigOptThreshold.value = 'threshold';
+        trigOptThreshold.textContent = t('overview.triggerThreshold');
+        const trigOptUpdate = document.createElement('option');
+        trigOptUpdate.value = 'update';
+        trigOptUpdate.textContent = t('overview.triggerUpdate');
+        trigSelect.appendChild(trigOptThreshold);
+        trigSelect.appendChild(trigOptUpdate);
+
         const threshInput = document.createElement('input');
         threshInput.type = 'number';
         threshInput.id = 'al-thresh';
@@ -338,10 +352,31 @@
         r1.appendChild(timerSelect);
         form.appendChild(r1);
 
+        const rTrig = el('div', 'row gap-sm mt-sm');
+        rTrig.appendChild(el('span', 'card-label flex1', escape(t('overview.trigger'))));
+        rTrig.appendChild(trigSelect);
+        form.appendChild(rTrig);
+
         const r2 = el('div', 'row gap-sm mt-sm');
         r2.appendChild(el('span', 'card-label flex1', escape(t('overview.threshold'))));
         r2.appendChild(threshInput);
         form.appendChild(r2);
+
+        const updateHint = el('div', 'muted xs mt-sm', escape(t('overview.updateHint')));
+        form.appendChild(updateHint);
+
+        // 'update' has no threshold; exp_ timers have no update semantics.
+        const syncTrigUi = () => {
+            const isExp = timerSelect.value && timerSelect.value.startsWith('exp_');
+            if (isExp && trigSelect.value === 'update') trigSelect.value = 'threshold';
+            trigOptUpdate.disabled = isExp;
+            const isUpdate = trigSelect.value === 'update';
+            r2.style.display = isUpdate ? 'none' : '';
+            updateHint.style.display = isUpdate ? '' : 'none';
+        };
+        syncTrigUi();
+        trigSelect.addEventListener('change', syncTrigUi);
+        timerSelect.addEventListener('change', syncTrigUi);
 
         const r3 = el('div', 'row gap-sm mt-sm');
         r3.appendChild(el('span', 'card-label flex1', escape(t('overview.volume'))));
@@ -381,6 +416,7 @@
             const a = {
                 id: genAlarmId(),
                 timerSource: timerSelect.value,
+                trigger: trigSelect.value,
                 thresholdSeconds: Math.max(1, Number(threshInput.value) || 60),
                 volume: Number(volInput.value),
                 continuous: contInput.checked,
@@ -414,6 +450,7 @@
             summary,
             listHost: alarmsListHost,
             timerSelect,
+            syncTrigUi,
         };
 
         // ─── Versions footer ──────────────────────────────────────────
@@ -760,7 +797,7 @@
                     <label class="switch"><input type="checkbox" data-id="${a.id}" data-act="toggle" ${a.enabled ? 'checked' : ''}><span class="switch-slider"></span></label>
                     <div>
                         <div class="sm">${escape(labels[a.timerSource] || a.timerSource)}</div>
-                        <div class="muted xs">≤ ${a.thresholdSeconds}s · ${a.volume}%${a.continuous ? ' · loop' : ''}</div>
+                        <div class="muted xs">${a.trigger === 'update' ? escape(t('overview.onUpdate')) : `≤ ${a.thresholdSeconds}s`} · ${a.volume}%${a.continuous ? ' · loop' : ''}</div>
                     </div>
                     <button class="btn btn-danger small" data-id="${a.id}" data-act="del">×</button>
                 `;
@@ -789,6 +826,9 @@
         if (Object.prototype.hasOwnProperty.call(labels, prev)) {
             panel.alarms.timerSelect.value = prev;
         }
+        // Programmatic value set fires no 'change' — re-sync the trigger UI
+        // (the update option is disabled for exp_ sources).
+        panel.alarms.syncTrigUi();
     }
 
     async function refreshVersions() {
