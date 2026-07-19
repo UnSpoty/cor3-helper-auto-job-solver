@@ -52,6 +52,7 @@
 
     let panel = null;
     let unsubStorage = null;
+    let unsubSync = null;
 
     // ── Derived stats over VS_STATE ──────────────────────────────────────────
     function serverValue(s) {
@@ -104,6 +105,12 @@
 
     function renderServers(state) {
         const host = panel.serversHost;
+        // A SERVER_RESULT arrives roughly once a second during a scan and
+        // triggers a full re-render. Capture the list's scroll offset so the
+        // rebuild below can restore it — otherwise every new server yanks the
+        // user back to the top mid-scroll.
+        const prevList = host.querySelector('.vs-srv-list');
+        const prevScroll = prevList ? prevList.scrollTop : 0;
         const all = state.servers || [];
         const openCount = all.filter((s) => s.status === 'open').length;
         // Title + count. Sync the segmented filter's active state.
@@ -135,13 +142,20 @@
                 for (const f of (s.files || [])) body.insertAdjacentHTML('beforeend', itemLine('📄', f.name, f.basePrice, f.tags));
                 for (const l of (s.logs || [])) body.insertAdjacentHTML('beforeend', itemLine('📜', l.name || l.message, l.basePrice, l.tags));
                 wrap.appendChild(body);
-                // Expand on row click, but not when toggling the checkbox.
-                head.addEventListener('click', (e) => { if (e.target && e.target.matches('input')) return; wrap.classList.toggle('open'); });
+                // Expanded state lives in panel.openIds (not the DOM), so the
+                // rebuild doesn't collapse rows the user opened mid-scan.
+                if (panel.openIds.has(s.id)) wrap.classList.add('open');
+                head.addEventListener('click', (e) => {
+                    if (e.target && e.target.matches('input')) return;
+                    if (wrap.classList.toggle('open')) panel.openIds.add(s.id);
+                    else panel.openIds.delete(s.id);
+                });
                 head.classList.add('expandable');
             }
             listWrap.appendChild(wrap);
         }
         host.replaceChildren(listWrap);
+        listWrap.scrollTop = prevScroll;
     }
 
     function renderDownloads(state) {
@@ -157,21 +171,48 @@
     }
 
     function renderLog(state) {
+        const host = panel.logHost;
+        // Stick to the bottom only if the user is already there — don't yank
+        // the view down while they're scrolled up reading earlier lines.
+        const atBottom = host.scrollHeight - host.scrollTop - host.clientHeight < 8;
         const lines = (state.log || []).slice(-25);
-        const list = el('div', 'log-stream');
+        const list = document.createDocumentFragment();
         for (const ln of lines) {
             const time = new Date(ln.ts).toLocaleTimeString();
             list.appendChild(el('div', `xs ${ln.level === 'error' ? 'err' : ln.level === 'warn' ? 'warn' : 'muted'}`, `[${time}] ${escape(ln.msg)}`));
         }
-        panel.logHost.replaceChildren(list);
-        panel.logHost.scrollTop = panel.logHost.scrollHeight;
+        host.replaceChildren(list);
+        if (atBottom) host.scrollTop = host.scrollHeight;
+    }
+
+    // Auto Jobs owns the endpoint + the SAI session, so the two subsystems
+    // must never run at once. Lock Scan/Sell whenever Auto Jobs is enabled OR
+    // its loop is live (the orchestrator's _guard enforces the same server-side).
+    async function readAjLocked() {
+        const [aj, s] = await Promise.all([
+            Store.local.getOne(C.STORAGE_LOCAL.AJ_PIPELINE_STATE),
+            Store.sync.getOne(C.STORAGE_SYNC.AUTOJOBS_SETTINGS, { enabled: false }),
+        ]);
+        return !!(s && s.enabled) || !!(aj && aj.running);
+    }
+    function syncButtons() {
+        if (!panel) return;
+        const vsRunning = !!panel.vsRunning, locked = !!panel.ajLocked;
+        panel.scanBtn.disabled = vsRunning || locked;
+        panel.sellBtn.disabled = vsRunning || locked;
+        panel.stopBtn.disabled = !vsRunning;
+        panel.lockNote.style.display = locked ? '' : 'none';
+    }
+    async function updateAjLock() {
+        if (!panel) return;
+        panel.ajLocked = await readAjLocked();
+        syncButtons();
     }
 
     function renderState(state) {
         if (!panel) return;
-        panel.scanBtn.disabled = !!state.running;
-        panel.sellBtn.disabled = !!state.running;
-        panel.stopBtn.disabled = !state.running;
+        panel.vsRunning = !!state.running;
+        syncButtons();
         renderTiles(state);
         renderServers(state);
         renderDownloads(state);
@@ -210,6 +251,10 @@
         .vs-row-wrap.open .vs-row-body{display:block}
         .vs-item{padding:1px 0}
         .vs-empty{padding:14px 6px;text-align:center}
+        .vs-log{margin-top:6px;max-height:150px;overflow-y:auto;background:var(--os-color-bg-card);border:1px solid var(--os-color-border-secondary);border-radius:8px;padding:6px 8px}
+        .vs-log>div{padding:1px 0;line-height:1.4}
+        .vs-log:empty::after{content:'—';color:var(--os-color-text-secondary)}
+        .vs-lock{margin-top:8px;font-size:11px;line-height:1.45;color:var(--os-color-text-secondary);background:var(--os-color-bg-card);border:1px solid var(--os-color-border-secondary);border-left:3px solid var(--os-color-primary-hex);border-radius:6px;padding:6px 9px}
         `;
         const style = document.createElement('style');
         style.id = 'vs-styles';
@@ -223,16 +268,6 @@
 
         container.appendChild(el('div', 'section-title', escape(t('vs.title'))));
 
-        // Hint (collapsible)
-        const hint = document.createElement('details');
-        hint.className = 'collapsible';
-        const hs = document.createElement('summary');
-        hs.className = 'muted xs';
-        hs.textContent = t('vs.howItWorks');
-        hint.appendChild(hs);
-        hint.appendChild(el('div', 'muted xs mt-sm', escape(t('vs.hint'))));
-        container.appendChild(hint);
-
         // Stat tiles
         const tilesHost = el('div');
         container.appendChild(tilesHost);
@@ -245,17 +280,11 @@
         controls.appendChild(scanBtn); controls.appendChild(sellBtn); controls.appendChild(stopBtn);
         container.appendChild(controls);
 
-        const priceRow = el('div', 'row gap-sm mt-sm');
-        priceRow.appendChild(el('span', 'card-label flex1', escape(t('vs.minPrice'))));
-        const priceInput = document.createElement('input');
-        priceInput.type = 'number'; priceInput.min = '0'; priceInput.style.width = '90px';
-        const vsSettings = (await Store.sync.getOne(C.STORAGE_SYNC.VALUABLES_SETTINGS, { minPrice: 0 })) || { minPrice: 0 };
-        priceInput.value = String(vsSettings.minPrice || 0);
-        priceInput.addEventListener('change', async () => {
-            await Store.sync.setOne(C.STORAGE_SYNC.VALUABLES_SETTINGS, { minPrice: Math.max(0, Number(priceInput.value) || 0) });
-        });
-        priceRow.appendChild(priceInput);
-        container.appendChild(priceRow);
+        // Shown while Auto Jobs is enabled — Scan/Sell are locked out (they
+        // share the endpoint + SAI session with the Auto Jobs loop).
+        const lockNote = el('div', 'vs-lock', `🔒 ${escape(t('vs.lockedByAutoJobs'))}`);
+        lockNote.style.display = 'none';
+        container.appendChild(lockNote);
 
         const errEl = el('div', 'warn xs mt-sm');
         container.appendChild(errEl);
@@ -293,14 +322,12 @@
         logSummary.className = 'section-title';
         logSummary.textContent = t('vs.activity');
         logBlock.appendChild(logSummary);
-        const logHost = el('div');
-        logHost.style.maxHeight = '160px';
-        logHost.style.overflowY = 'auto';
+        const logHost = el('div', 'vs-log');
         logBlock.appendChild(logHost);
         container.appendChild(logBlock);
 
-        panel = { tilesHost, scanBtn, sellBtn, stopBtn, errEl, serversHost, downloadsHost, dlSummary, logHost,
-            srvTitle, segFinds, segAll, filterMode: 'finds' };
+        panel = { tilesHost, scanBtn, sellBtn, stopBtn, errEl, lockNote, serversHost, downloadsHost, dlSummary, logHost,
+            srvTitle, segFinds, segAll, filterMode: 'finds', openIds: new Set(), vsRunning: false, ajLocked: false };
 
         scanBtn.addEventListener('click', async () => {
             errEl.textContent = '';
@@ -311,8 +338,7 @@
             errEl.textContent = '';
             const state = (await Store.local.getOne(C.STORAGE_LOCAL.VS_STATE)) || { servers: [] };
             const serverIds = (state.servers || []).filter((s) => s.selected).map((s) => s.id);
-            const prefs = (await Store.sync.getOne(C.STORAGE_SYNC.VALUABLES_SETTINGS, { minPrice: 0 })) || { minPrice: 0 };
-            const resp = await sendAction(VS.SELL_ACTION, { serverIds, minPrice: prefs.minPrice || 0 });
+            const resp = await sendAction(VS.SELL_ACTION, { serverIds });
             if (!resp || !resp.success) errEl.textContent = refuseText(resp);
         });
         stopBtn.addEventListener('click', async () => {
@@ -345,6 +371,7 @@
         selNoneBtn.addEventListener('click', () => applySelect(() => false));
 
         await refresh();
+        await updateAjLock();
     }
 
     root.COR3.ui.valuables = {
@@ -354,10 +381,18 @@
             if (unsubStorage) { try { unsubStorage(); } catch (_) {} }
             unsubStorage = Store.local.onChanged((changes) => {
                 if (changes[C.STORAGE_LOCAL.VS_STATE]) renderState(changes[C.STORAGE_LOCAL.VS_STATE].newValue || {});
+                // Auto Jobs starting/stopping its loop re-evaluates the lock.
+                if (changes[C.STORAGE_LOCAL.AJ_PIPELINE_STATE]) updateAjLock();
+            });
+            // The Auto Jobs enable toggle lives in chrome.storage.sync.
+            if (unsubSync) { try { unsubSync(); } catch (_) {} }
+            unsubSync = Store.sync.onChanged((changes) => {
+                if (changes[C.STORAGE_SYNC.AUTOJOBS_SETTINGS]) updateAjLock();
             });
         },
         deactivate() {
             if (unsubStorage) { try { unsubStorage(); } catch (_) {} unsubStorage = null; }
+            if (unsubSync) { try { unsubSync(); } catch (_) {} unsubSync = null; }
             panel = null;
         },
     };

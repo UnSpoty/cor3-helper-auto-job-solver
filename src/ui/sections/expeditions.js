@@ -185,7 +185,7 @@
         panel = {
             container, timers: [],
             master: { input: null, hint: null },
-            autoSend: { input: null, minMaxRow: null, minInput: null, maxInput: null, maxCostRow: null, minCostInput: null, maxCostInput: null, insuranceRow: null, insuranceHint: null, insuranceInput: null, eliteRow: null, eliteInput: null, marketsRow: null, marketToggles: {}, status: null, warn: null },
+            autoSend: { input: null, minMaxRow: null, minInput: null, maxInput: null, maxCostRow: null, minCostInput: null, maxCostInput: null, insuranceRow: null, insuranceInput: null, eliteRow: null, eliteInput: null, marketsRow: null, marketToggles: {}, status: null, warn: null },
             autoChoose: { enabledInput: null, sliderInput: null, label: null },
             active: { listHost: null, timers: [] },
             pending: { title: null, listHost: null, timers: [] },
@@ -265,8 +265,6 @@
         insSw.appendChild(insInput); insSw.appendChild(el('span', 'switch-slider'));
         insRow.appendChild(insSw);
         asCard.appendChild(insRow);
-        const insHint = el('div', 'muted xs mt-sm', t('expeditions.autoSend.insuranceHint'));
-        asCard.appendChild(insHint);
 
         const elRow = el('div', 'card-row mt-sm');
         elRow.appendChild(el('span', 'card-label', t('expeditions.autoSend.includeElite')));
@@ -321,7 +319,7 @@
         panel.autoSend = {
             input: asInput, minMaxRow: mmRow, minInput, maxInput,
             maxCostRow: mcRow, minCostInput, maxCostInput,
-            insuranceRow: insRow, insuranceHint: insHint, insuranceInput: insInput,
+            insuranceRow: insRow, insuranceInput: insInput,
             eliteRow: elRow, eliteInput: elInput,
             marketsRow: mkRow, marketToggles, status: asStatus, warn: asWarn,
         };

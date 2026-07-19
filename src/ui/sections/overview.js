@@ -117,7 +117,7 @@
         const [
             autoRefresh, autoDailyOps, autoDecrypt, autoIceWall, autoSimpleDecrypt,
             disableSystemMessages, disableBackground, disableNetworkFog, disableMapFx,
-            selectedTheme, showLoadoutWidget,
+            selectedTheme, showLoadoutWidget, antiAfk,
         ] = await Promise.all([
             Store.sync.getOne(C.STORAGE_SYNC.AUTO_REFRESH, { home_jobs: false, dark_jobs: false, srm_jobs: false, usol_jobs: false }),
             Store.sync.getOne(C.STORAGE_SYNC.AUTO_DAILY_OPS_ENABLED, false),
@@ -133,6 +133,7 @@
             Store.sync.getOne('disableMapFxEnabled', false),
             Store.sync.getOne(C.STORAGE_SYNC.SELECTED_THEME, 'cor3'),
             Store.sync.getOne(C.STORAGE_SYNC.SHOW_LOADOUT_WIDGET, false),
+            Store.sync.getOne(C.STORAGE_SYNC.ANTI_AFK_ENABLED, false),
         ]);
         const ar = autoRefresh || { home_jobs: false, dark_jobs: false, srm_jobs: false, usol_jobs: false };
 
@@ -293,6 +294,9 @@
         // Default OFF — the appearance-loadout-widget bridge relays this key
         // to MAIN, which injects/removes the pill live (no reload needed).
         container.appendChild(buildToggleCard(t('overview.showLoadout'), C.STORAGE_SYNC.SHOW_LOADOUT_WIDGET, showLoadoutWidget));
+        // Anti-AFK — MAIN-world anti-afk module keeps cor3.gg awake past its
+        // 5-min inactivity Sleep Mode (default OFF, bridged via MSG.UI.ANTI_AFK).
+        container.appendChild(buildToggleCard(t('overview.antiAfk'), C.STORAGE_SYNC.ANTI_AFK_ENABLED, antiAfk));
 
         // ─── Alarms (collapsible) ─────────────────────────────────────
         const alarmsBlock = document.createElement('details');
@@ -362,9 +366,6 @@
         r2.appendChild(threshInput);
         form.appendChild(r2);
 
-        const updateHint = el('div', 'muted xs mt-sm', escape(t('overview.updateHint')));
-        form.appendChild(updateHint);
-
         // 'update' has no threshold; exp_ timers have no update semantics.
         const syncTrigUi = () => {
             const isExp = timerSelect.value && timerSelect.value.startsWith('exp_');
@@ -372,7 +373,6 @@
             trigOptUpdate.disabled = isExp;
             const isUpdate = trigSelect.value === 'update';
             r2.style.display = isUpdate ? 'none' : '';
-            updateHint.style.display = isUpdate ? '' : 'none';
         };
         syncTrigUi();
         trigSelect.addEventListener('change', syncTrigUi);

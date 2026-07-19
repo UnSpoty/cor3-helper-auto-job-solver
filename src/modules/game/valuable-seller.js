@@ -169,12 +169,11 @@
         }
 
         // ── SELL: search + download on the selected servers, then sell ──────
-        async _runSell(servers, minPrice) {
+        async _runSell(servers) {
             const sf = this._saiFlow();
             if (!sf) { Bus.window.post(VS.DONE, { mode: 'sell', ok: false, reason: 'saiflow-missing' }); return; }
             const LO = root.COR3.game && root.COR3.game.loadout;
-            const floor = Number(minPrice) || 0;
-            this._progress('sell', 'info', `sell started — ${servers.length} server(s)${floor > 0 ? `, min price ${floor}` : ''}`);
+            this._progress('sell', 'info', `sell started — ${servers.length} server(s)`);
 
             for (let i = 0; i < servers.length; i++) {
                 if (root.__cor3Abort) break;
@@ -211,7 +210,6 @@
                 const filesData = await sf.getFiles(srv.id);
                 let files = valuableOf(filesData && filesData.files, 'fileId');
                 if (detectedFiles.size > 0) files = files.filter((f) => detectedFiles.has(f.fileId));
-                if (floor > 0) files = files.filter((f) => f.basePrice >= floor);
                 for (const f of files) {
                     if (root.__cor3Abort) break;
                     this._progress('sell', 'info', `[${srv.name}] downloading file "${f.name}" (${f.basePrice})`);
@@ -223,7 +221,6 @@
                 const logsData = await sf.getLogs(srv.id);
                 let logs = valuableOf(logsData && logsData.logs, 'seq');
                 if (detectedLogs.size > 0) logs = logs.filter((l) => detectedLogs.has(String(l.seq)));
-                if (floor > 0) logs = logs.filter((l) => l.basePrice >= floor);
                 for (const l of logs) {
                     if (root.__cor3Abort) break;
                     this._progress('sell', 'info', `[${srv.name}] downloading log "${l.name}" (${l.basePrice})`);
@@ -318,7 +315,7 @@
                 const servers = (env && Array.isArray(env.servers)) ? env.servers : [];
                 const release = this._takeRunLock('sell');
                 if (!release) { Bus.window.post(VS.DONE, { mode: 'sell', ok: false, reason: 'busy' }); return; }
-                try { await this._runSell(servers, env && env.minPrice); }
+                try { await this._runSell(servers); }
                 catch (e) {
                     this.error('sell crashed', { error: String(e), stack: e && e.stack });
                     Bus.window.post(VS.DONE, { mode: 'sell', ok: false, reason: 'crash' });

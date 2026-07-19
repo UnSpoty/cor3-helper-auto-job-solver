@@ -79,8 +79,12 @@
 
         async _guard() {
             if (this._state.running) return 'already-running';
+            // Refuse while Auto Jobs is enabled OR its loop is live — the two
+            // share the endpoint + SAI session (the popup locks the buttons too).
             const aj = await Store.local.getOne(C.STORAGE_LOCAL.AJ_PIPELINE_STATE);
             if (aj && aj.running) return 'auto-jobs-running';
+            const s = await Store.sync.getOne(C.STORAGE_SYNC.AUTOJOBS_SETTINGS, { enabled: false });
+            if (s && s.enabled) return 'auto-jobs-running';
             return null;
         }
 
@@ -132,7 +136,7 @@
                 this._state.startedAt = Date.now();
                 this._log('info', `sell dispatched — ${servers.length} server(s)`);
                 this._persist(true);
-                Bus.window.post(VS.SELL_START, { servers, minPrice: (payload && payload.minPrice) || 0 });
+                Bus.window.post(VS.SELL_START, { servers });
                 this.info(`sell dispatched (${servers.length} servers)`);
                 return { success: true, count: servers.length };
             }));

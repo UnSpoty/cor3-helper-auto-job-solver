@@ -223,6 +223,16 @@
             // COR3.game.loadout API (Auto Jobs's ensureDecrypt/ensureHack)
             // stays live regardless.
             SHOW_LOADOUT_WIDGET: 'COR3_SHOW_LOADOUT_WIDGET',
+
+            // Anti-AFK enable verdict for the MAIN-world anti-afk module.
+            // Bridged from STORAGE_SYNC.ANTI_AFK_ENABLED (MAIN has no
+            // chrome.storage) by the isolated automation/anti-afk module:
+            // posted once on boot and on every toggle change. Payload:
+            // { enabled: bool }. When enabled the MAIN module ticks a synthetic
+            // activity event on `window` (< the site's 5-min inactivity timer)
+            // so cor3.gg never drops into Sleep Mode, plus auto-exits the sleep
+            // overlay if it ever slips through.
+            ANTI_AFK: 'COR3_ANTI_AFK',
         },
 
         // Auto Jobs control. Owns its own runtime actions and window messages.
@@ -325,13 +335,13 @@
         VALUABLE: {
             // popup → isolated runtime actions (chrome.tabs.sendMessage type).
             SCAN_ACTION: 'vsScan',       // start a scan of all reachable servers
-            SELL_ACTION: 'vsSell',       // payload { serverIds:[], minPrice } — download + sell
+            SELL_ACTION: 'vsSell',       // payload { serverIds:[] } — download + sell
             STOP_ACTION: 'vsStop',       // abort the running scan/sell
             SELECT_ACTION: 'vsSelect',   // payload { serverId, selected } — persist a checkbox
 
             // isolated orchestrator → MAIN engine (window messages).
             // SCAN_START payload: { servers:[{ id, name, serverType, depth }] }
-            // SELL_START payload: { servers:[…same shape…], minPrice }
+            // SELL_START payload: { servers:[…same shape…] }
             SCAN_START: 'COR3_VS_SCAN_START',
             SELL_START: 'COR3_VS_SELL_START',
             STOP: 'COR3_VS_STOP',
@@ -548,11 +558,6 @@
         // Auto-refresh
         AUTO_REFRESH: 'autoRefresh',
 
-        // Valuable Seller user prefs. Single object:
-        //   { minPrice: number }   // 0 = off; a find with basePrice below this
-        //                          // is not downloaded/sold by the Sell phase
-        VALUABLES_SETTINGS: 'valuablesSettings',
-
         // Auto-choose decision (replaces decisionModifiers; 0..10 risk threshold)
         RISK_THRESHOLD: 'riskThreshold',
         AUTO_CHOOSE_ENABLED: 'autoChooseEnabled',
@@ -567,6 +572,11 @@
         // nothing is injected until the user enables it in Overview. Bridged
         // to MAIN by appearance-loadout-widget via MSG.UI.SHOW_LOADOUT_WIDGET.
         SHOW_LOADOUT_WIDGET: 'showLoadoutWidget',
+
+        // Anti-AFK. OFF by default. Bridged to the MAIN-world anti-afk module
+        // (which keeps cor3.gg awake past its 5-min inactivity Sleep Mode timer)
+        // by the isolated automation/anti-afk module via MSG.UI.ANTI_AFK.
+        ANTI_AFK_ENABLED: 'antiAfkEnabled',
 
         // Per-module enable/log state.
         // Shape: { [moduleId]: { enabled: boolean, logsEnabled: boolean } }
