@@ -14,7 +14,9 @@
     "activeTab",
     "tabs",
     "sidePanel",
-    "scripting"
+    "scripting",
+    "notifications",
+    "alarms"
   ],
   "side_panel": {
     "default_path": "src/ui/popup.html?mode=side-panel"
@@ -138,6 +140,7 @@
         "src/modules/automation/auto-jobs.js",
         "src/modules/automation/valuable-seller.js",
         "src/modules/automation/anti-afk.js",
+        "src/modules/automation/market-notify.js",
         "src/modules/automation/runtime-bridge.js",
         "src/modules/appearance/system-messages.js",
         "src/modules/appearance/background.js",

@@ -117,7 +117,7 @@
         const [
             autoRefresh, autoDailyOps, autoDecrypt, autoIceWall, autoSimpleDecrypt,
             disableSystemMessages, disableBackground, disableNetworkFog, disableMapFx,
-            selectedTheme, showLoadoutWidget, antiAfk,
+            selectedTheme, showLoadoutWidget, antiAfk, marketNotify,
         ] = await Promise.all([
             Store.sync.getOne(C.STORAGE_SYNC.AUTO_REFRESH, { home_jobs: false, dark_jobs: false, srm_jobs: false, usol_jobs: false }),
             Store.sync.getOne(C.STORAGE_SYNC.AUTO_DAILY_OPS_ENABLED, false),
@@ -134,6 +134,7 @@
             Store.sync.getOne(C.STORAGE_SYNC.SELECTED_THEME, 'cor3'),
             Store.sync.getOne(C.STORAGE_SYNC.SHOW_LOADOUT_WIDGET, false),
             Store.sync.getOne(C.STORAGE_SYNC.ANTI_AFK_ENABLED, false),
+            Store.sync.getOne(C.STORAGE_SYNC.MARKET_NOTIFY_ENABLED, false),
         ]);
         const ar = autoRefresh || { home_jobs: false, dark_jobs: false, srm_jobs: false, usol_jobs: false };
 
@@ -297,6 +298,17 @@
         // Anti-AFK — MAIN-world anti-afk module keeps cor3.gg awake past its
         // 5-min inactivity Sleep Mode (default OFF, bridged via MSG.UI.ANTI_AFK).
         container.appendChild(buildToggleCard(t('overview.antiAfk'), C.STORAGE_SYNC.ANTI_AFK_ENABLED, antiAfk));
+        // Market reset notifications — in-page toast + desktop notification when
+        // any of the 4 markets' job timers reset (detected in the SW on
+        // chrome.alarms so it works with the tab closed; default OFF, separate
+        // from the audio alarms). The "Test" button fires a sample of both.
+        const mnTestBtn = el('button', 'btn small', escape(t('mn.test')));
+        mnTestBtn.style.marginLeft = 'auto';
+        mnTestBtn.style.marginRight = '8px';
+        mnTestBtn.addEventListener('click', () => {
+            try { chrome.runtime.sendMessage({ action: C.MSG.NOTIFY.MARKET_RESET, source: 'test', short: 'HOME' }); } catch (_) {}
+        });
+        container.appendChild(buildToggleCard(t('overview.marketNotify'), C.STORAGE_SYNC.MARKET_NOTIFY_ENABLED, marketNotify, mnTestBtn));
 
         // ─── Alarms (collapsible) ─────────────────────────────────────
         const alarmsBlock = document.createElement('details');

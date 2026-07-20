@@ -17,6 +17,15 @@
         { key: 'usol_jobs', storage: C.STORAGE_LOCAL.USOL_MARKET, refresh: C.MSG.GAME.REFRESH_USOL_MARKET },
     ];
 
+    // The game's Network Map window (a cor3.gg desktop app). Present in the DOM
+    // ⇔ the map is open. The isolated content world shares the page DOM, so we
+    // read this game element directly — no cross-context signal needed. Same
+    // marker COR3.game.desktop.isAppOpen('NetworkMapApplication') uses.
+    const NM_WINDOW_SELECTOR = '[data-sentry-component="NetworkMapApplication"]';
+    function isNetworkMapOpen() {
+        return typeof document !== 'undefined' && !!document.querySelector(NM_WINDOW_SELECTOR);
+    }
+
     let settings = { home_jobs: false, dark_jobs: false, srm_jobs: false, usol_jobs: false };
     let retryPending = { home_jobs: false, dark_jobs: false, srm_jobs: false, usol_jobs: false };
     let intervalId = null;
@@ -43,6 +52,14 @@
                 if (retryPending[m.key]) continue;
                 const sec = await getSeconds(m);
                 if (sec !== null && sec <= 0) {
+                    // Defer REMOTE refreshes while the game's Network Map window
+                    // is open: they do a set.endpoint→get.jobs→revert dance
+                    // (~2.5s) that yanks/flickers the open map. HOME is a plain
+                    // get.jobs — never moves the endpoint — so it is never gated.
+                    // Pure `continue`: no retryPending mutation, so the market
+                    // stays due and the refresh fires the next tick (≤1s) after
+                    // the map closes.
+                    if (m.key !== 'home_jobs' && isNetworkMapOpen()) continue;
                     retryPending[m.key] = true;
                     mod.info(`auto-refresh: ${m.key} timer expired`);
                     Bus.window.post(m.refresh, null);

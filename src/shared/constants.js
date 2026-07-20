@@ -235,6 +235,21 @@
             ANTI_AFK: 'COR3_ANTI_AFK',
         },
 
+        // Market reset notifications. Detection lives in the background service
+        // worker on chrome.alarms (works even with the cor3.gg tab closed); it
+        // owns the desktop notification and forwards the in-page toast to the
+        // tab when open.
+        //   • MARKET_RESET — popup → SW (chrome.runtime action). The "Test"
+        //     button; payload { source, short }. SW fires a sample desktop
+        //     notification + toast.
+        //   • MARKET_TOAST — SW/popup → content (Bus.runtime type). Payload
+        //     { short }; the isolated market-notify module renders the toast
+        //     (localising the text itself).
+        NOTIFY: {
+            MARKET_RESET: 'COR3_NOTIFY_MARKET_RESET',
+            MARKET_TOAST: 'COR3_NOTIFY_MARKET_TOAST',
+        },
+
         // Auto Jobs control. Owns its own runtime actions and window messages.
         AUTOJOBS: {
             // chrome.tabs.sendMessage action the popup fires alongside the
@@ -577,6 +592,12 @@
         // (which keeps cor3.gg awake past its 5-min inactivity Sleep Mode timer)
         // by the isolated automation/anti-afk module via MSG.UI.ANTI_AFK.
         ANTI_AFK_ENABLED: 'antiAfkEnabled',
+
+        // Market reset notifications. OFF by default. When on, the isolated
+        // market-notify module fires an in-page toast AND a desktop notification
+        // when any of the 4 markets' job timers (nextJobsResetAt) resets —
+        // independent of the ALARMS config.
+        MARKET_NOTIFY_ENABLED: 'marketNotifyEnabled',
 
         // Per-module enable/log state.
         // Shape: { [moduleId]: { enabled: boolean, logsEnabled: boolean } }
